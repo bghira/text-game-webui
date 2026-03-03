@@ -290,6 +290,12 @@ pre {
   color: #4e5f58;
 }
 
+.inline-actions {
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: 1fr 1fr;
+}
+
 @media (max-width: 1150px) {
   .layout {
     grid-template-columns: 1fr;

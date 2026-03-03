@@ -5,7 +5,8 @@
 - Scope:
   - API contract behavior
   - gateway-backed tool surfaces
-  - websocket publish behavior
+  - websocket publish behavior (`tests/backend/test_campaign_api.py`)
+  - deterministic realtime publish contract assertions (`tests/backend/test_realtime_publish.py`)
   - 404 handling for missing campaigns
   - gateway backend factory behavior
 
@@ -25,7 +26,13 @@ Optional test:
 - Command: `cd tests/frontend && npm test`
 - Scope:
   - flow helper behavior
+  - session management network sequence (create/list/patch/list)
+  - roster management network sequence (upsert/remove + refresh)
+  - memory tool network sequence (search/terms/turn/store)
+  - sms tool network sequence (list/read/write)
+  - media avatar action sequence (accept/decline + refresh)
   - multi-step turn flow network sequence
+  - timers refresh in post-turn flow
   - player-state refresh in post-turn flow
   - media-status refresh in post-turn flow
   - runtime diagnostics and diagnostics bundle payload shape

@@ -26,14 +26,45 @@ def test_tge_gateway_smoke(tmp_path):
         campaign = await gateway.create_campaign("default", "main", "actor-1")
         assert campaign.id
 
+        session_row = await gateway.create_or_update_session(
+            campaign.id,
+            surface="discord_thread",
+            surface_key="discord:guild-1:thread-11",
+            surface_guild_id="guild-1",
+            surface_channel_id="channel-9",
+            surface_thread_id="thread-11",
+            enabled=True,
+            metadata={"active_campaign_id": campaign.id},
+        )
+        assert session_row["surface_key"] == "discord:guild-1:thread-11"
+        listed_sessions = await gateway.list_sessions(campaign.id)
+        assert listed_sessions
+        patched = await gateway.update_session(campaign.id, session_row["id"], enabled=False, metadata={"note": "off"})
+        assert patched["enabled"] is False
+
         result = await gateway.submit_turn(campaign.id, TurnRequest(actor_id="actor-1", action="look"))
         assert result.narration
+
+        timers = await gateway.get_timers(campaign.id)
+        assert "timers" in timers
 
         cal = await gateway.get_calendar(campaign.id)
         assert "game_time" in cal
 
         roster = await gateway.get_roster(campaign.id)
         assert "characters" in roster
+        upserted = await gateway.upsert_roster_character(
+            campaign.id,
+            slug="arsipea-denton",
+            name="Arsipea Denton",
+            location="visitor-room-b",
+            status="active",
+            player=False,
+            fields={"appearance": "gray jumpsuit"},
+        )
+        assert upserted["ok"] is True
+        removed = await gateway.remove_roster_character(campaign.id, "arsipea-denton", player=False)
+        assert removed["removed"] is True
 
         player_state = await gateway.get_player_state(campaign.id, "actor-1")
         assert player_state["actor_id"] == "actor-1"
@@ -41,6 +72,11 @@ def test_tge_gateway_smoke(tmp_path):
         media = await gateway.get_media(campaign.id, "actor-1")
         assert "scene" in media
         assert "avatars" in media
+
+        accept = await gateway.accept_pending_avatar(campaign.id, "actor-1")
+        assert "ok" in accept
+        decline = await gateway.decline_pending_avatar(campaign.id, "actor-1")
+        assert "ok" in decline
 
         sms = await gateway.sms_write(campaign.id, "saul", "actor-1", "saul", "test")
         assert sms["stored"] is True

@@ -9,7 +9,7 @@ Web UI shell for `text-game-engine`.
   - `inmemory` (default)
   - `tge` (uses local `text-game-engine` installation + SQLite)
 - Realtime campaign stream via websocket (`/ws/campaigns/{campaign_id}`).
-- Inspector surfaces for map/calendar/roster/player state+inventory/media status/memory/SMS/debug snapshot.
+- Inspector surfaces for sessions/map/timers/calendar/roster (including upsert/remove actions)/player state+inventory/media status+avatar actions/memory/SMS/debug snapshot.
 - Runtime checks endpoint for gateway/database/LLM probe status (`GET /api/runtime/checks`).
   - Supports explicit probe override: `GET /api/runtime/checks?probe_llm=true`.
 

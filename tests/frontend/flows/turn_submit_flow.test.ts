@@ -21,22 +21,26 @@ describe("turn submit flow", () => {
     expect(result.calls).toEqual([
       "/api/campaigns/campaign-1/turns",
       "/api/campaigns/campaign-1/map",
+      "/api/campaigns/campaign-1/timers",
       "/api/campaigns/campaign-1/calendar",
       "/api/campaigns/campaign-1/roster",
       "/api/campaigns/campaign-1/player-state",
       "/api/campaigns/campaign-1/media",
+      "/api/campaigns/campaign-1/sessions",
       "/api/campaigns/campaign-1/debug/snapshot",
     ]);
 
     expect(seen).toEqual([
       "/api/campaigns/campaign-1/turns",
       "/api/campaigns/campaign-1/map?actor_id=dale-denton",
+      "/api/campaigns/campaign-1/timers",
       "/api/campaigns/campaign-1/calendar",
       "/api/campaigns/campaign-1/roster",
       "/api/campaigns/campaign-1/player-state?actor_id=dale-denton",
       "/api/campaigns/campaign-1/media?actor_id=dale-denton",
+      "/api/campaigns/campaign-1/sessions",
       "/api/campaigns/campaign-1/debug/snapshot",
     ]);
-    expect(fetcher).toHaveBeenCalledTimes(7);
+    expect(fetcher).toHaveBeenCalledTimes(9);
   });
 });

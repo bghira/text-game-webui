@@ -23,7 +23,15 @@ try:
         build_session_factory,
         create_schema,
     )
-    from text_game_engine.persistence.sqlalchemy.models import Campaign, MediaRef, OutboxEvent, Player, Timer, Turn
+    from text_game_engine.persistence.sqlalchemy.models import (
+        Campaign,
+        MediaRef,
+        OutboxEvent,
+        Player,
+        Session as GameSession,
+        Timer,
+        Turn,
+    )
     from text_game_engine.zork_emulator import ZorkEmulator
 except Exception as exc:  # pragma: no cover - import guarded at runtime
     raise RuntimeError(
@@ -911,6 +919,22 @@ class TextGameEngineGateway(EngineGateway):
         )
 
     @staticmethod
+    def _to_session_record(row: GameSession) -> dict:
+        return {
+            "id": row.id,
+            "campaign_id": row.campaign_id,
+            "surface": row.surface,
+            "surface_key": row.surface_key,
+            "surface_guild_id": row.surface_guild_id,
+            "surface_channel_id": row.surface_channel_id,
+            "surface_thread_id": row.surface_thread_id,
+            "enabled": bool(row.enabled),
+            "metadata": {},
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    @staticmethod
     def _parse_json(text: str | None, default: Any) -> Any:
         if not text:
             return default
@@ -918,6 +942,31 @@ class TextGameEngineGateway(EngineGateway):
             return json.loads(text)
         except Exception:
             return default
+
+    @staticmethod
+    def _canonical_slug(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+
+    def _resolve_roster_slug(self, existing: dict[str, Any], raw_slug: str) -> str:
+        slug = str(raw_slug or "").strip()
+        if not slug:
+            return ""
+        if slug in existing:
+            return slug
+        canonical = self._canonical_slug(slug)
+        if not canonical:
+            return slug
+        for existing_slug in existing.keys():
+            if self._canonical_slug(existing_slug) == canonical:
+                return str(existing_slug)
+        partials: list[str] = []
+        for existing_slug in existing.keys():
+            esc = self._canonical_slug(existing_slug)
+            if esc.startswith(canonical) or canonical in esc:
+                partials.append(str(existing_slug))
+        if len(partials) == 1:
+            return partials[0]
+        return slug
 
     def _fallback_memory_state(self, campaign_id: str) -> list[dict[str, Any]]:
         with self._session_factory() as session:
@@ -944,6 +993,107 @@ class TextGameEngineGateway(EngineGateway):
     async def list_campaigns(self, namespace: str) -> list[CampaignSummary]:
         rows = self._emulator.list_campaigns(namespace)
         return [self._to_summary(row) for row in rows]
+
+    async def list_sessions(self, campaign_id: str) -> list[dict]:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            rows = (
+                session.query(GameSession)
+                .filter(GameSession.campaign_id == campaign_id)
+                .order_by(GameSession.created_at.asc())
+                .all()
+            )
+
+        out = []
+        for row in rows:
+            record = self._to_session_record(row)
+            meta = self._parse_json(row.metadata_json, {})
+            record["metadata"] = meta if isinstance(meta, dict) else {}
+            out.append(record)
+        return out
+
+    async def create_or_update_session(
+        self,
+        campaign_id: str,
+        *,
+        surface: str,
+        surface_key: str,
+        surface_guild_id: str | None = None,
+        surface_channel_id: str | None = None,
+        surface_thread_id: str | None = None,
+        enabled: bool = True,
+        metadata: dict | None = None,
+    ) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+
+            row = session.query(GameSession).filter(GameSession.surface_key == surface_key).first()
+            now = datetime.now(UTC).replace(tzinfo=None)
+            if row is None:
+                row = GameSession(
+                    campaign_id=campaign_id,
+                    surface=surface,
+                    surface_key=surface_key,
+                    surface_guild_id=surface_guild_id,
+                    surface_channel_id=surface_channel_id,
+                    surface_thread_id=surface_thread_id,
+                    enabled=bool(enabled),
+                    metadata_json=json.dumps(metadata if isinstance(metadata, dict) else {}, ensure_ascii=True),
+                )
+                session.add(row)
+                session.commit()
+                session.refresh(row)
+                record = self._to_session_record(row)
+                record["metadata"] = self._parse_json(row.metadata_json, {})
+                return record
+
+            if row.campaign_id != campaign_id:
+                raise ValueError(f"surface_key already belongs to campaign {row.campaign_id}")
+
+            row.surface = surface
+            row.surface_guild_id = surface_guild_id
+            row.surface_channel_id = surface_channel_id
+            row.surface_thread_id = surface_thread_id
+            row.enabled = bool(enabled)
+            if isinstance(metadata, dict):
+                row.metadata_json = json.dumps(metadata, ensure_ascii=True)
+            row.updated_at = now
+            session.commit()
+            session.refresh(row)
+            record = self._to_session_record(row)
+            record["metadata"] = self._parse_json(row.metadata_json, {})
+            return record
+
+    async def update_session(
+        self,
+        campaign_id: str,
+        session_id: str,
+        *,
+        enabled: bool | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            row = session.get(GameSession, session_id)
+            if row is None or row.campaign_id != campaign_id:
+                raise KeyError(f"Unknown session: {session_id}")
+
+            if enabled is not None:
+                row.enabled = bool(enabled)
+            if metadata is not None:
+                row.metadata_json = json.dumps(metadata if isinstance(metadata, dict) else {}, ensure_ascii=True)
+            row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            session.commit()
+            session.refresh(row)
+            record = self._to_session_record(row)
+            record["metadata"] = self._parse_json(row.metadata_json, {})
+            return record
 
     async def create_campaign(self, namespace: str, name: str, actor_id: str) -> CampaignSummary:
         actor = self._emulator.get_or_create_actor(actor_id, display_name=actor_id)
@@ -1085,6 +1235,46 @@ class TextGameEngineGateway(EngineGateway):
             lines.append(f"  {marker} {other.actor_id} - {oloc}")
         return "\n".join(lines)
 
+    async def get_timers(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            rows = (
+                session.query(Timer)
+                .filter(Timer.campaign_id == campaign_id)
+                .order_by(Timer.created_at.desc())
+                .limit(50)
+                .all()
+            )
+
+        timers = []
+        active_count = 0
+        for row in rows:
+            status = str(row.status or "")
+            if status in {"scheduled_unbound", "scheduled_bound"}:
+                active_count += 1
+            timers.append(
+                {
+                    "id": row.id,
+                    "status": status,
+                    "event_text": row.event_text,
+                    "interruptible": bool(row.interruptible),
+                    "interrupt_action": row.interrupt_action,
+                    "due_at": row.due_at.isoformat() if row.due_at else None,
+                    "fired_at": row.fired_at.isoformat() if row.fired_at else None,
+                    "cancelled_at": row.cancelled_at.isoformat() if row.cancelled_at else None,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                    "meta": self._parse_json(row.meta_json, {}),
+                }
+            )
+
+        return {
+            "active_count": active_count,
+            "timers": timers,
+        }
+
     async def get_calendar(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
@@ -1146,6 +1336,142 @@ class TextGameEngineGateway(EngineGateway):
             "characters": rows,
             "currently_attentive_players": currently_attentive,
         }
+
+    async def upsert_roster_character(
+        self,
+        campaign_id: str,
+        *,
+        slug: str,
+        name: str | None = None,
+        location: str | None = None,
+        status: str | None = None,
+        player: bool = False,
+        fields: dict | None = None,
+    ) -> dict:
+        slug_clean = str(slug or "").strip()
+        if not slug_clean:
+            raise ValueError("slug is required")
+        fields_dict = fields if isinstance(fields, dict) else {}
+
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+
+            player_row = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == slug_clean)
+                .first()
+            )
+            if bool(player) or player_row is not None:
+                if player_row is None:
+                    raise KeyError(f"Unknown player in campaign: {slug_clean}")
+                pstate = self._parse_json(player_row.state_json, {})
+                if not isinstance(pstate, dict):
+                    pstate = {}
+                if isinstance(name, str) and name.strip():
+                    pstate["character_name"] = name.strip()
+                if isinstance(location, str) and location.strip():
+                    pstate["location"] = location.strip()
+                if isinstance(status, str) and status.strip():
+                    pstate["current_status"] = status.strip()
+                for key, value in fields_dict.items():
+                    if key in {"name", "slug"}:
+                        continue
+                    pstate[key] = value
+                player_row.state_json = json.dumps(pstate, ensure_ascii=True)
+                player_row.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                session.commit()
+                return {
+                    "ok": True,
+                    "character": {
+                        "slug": player_row.actor_id,
+                        "name": pstate.get("character_name") or player_row.actor_id,
+                        "location": pstate.get("location") or pstate.get("room_title") or "unknown",
+                        "status": pstate.get("current_status") or "active",
+                        "player": True,
+                    },
+                }
+
+            characters = self._parse_json(campaign.characters_json, {})
+            if not isinstance(characters, dict):
+                characters = {}
+            resolved_slug = self._resolve_roster_slug(characters, slug_clean)
+            row = characters.get(resolved_slug, {})
+            if not isinstance(row, dict):
+                row = {}
+            updated = dict(row)
+            updated.update(fields_dict)
+            if isinstance(name, str) and name.strip():
+                updated["name"] = name.strip()
+            if isinstance(location, str) and location.strip():
+                updated["location"] = location.strip()
+            if isinstance(status, str) and status.strip():
+                updated["current_status"] = status.strip()
+            updated.pop("remove", None)
+            characters[resolved_slug] = updated
+
+            campaign.characters_json = json.dumps(characters, ensure_ascii=True)
+            campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            session.commit()
+            return {
+                "ok": True,
+                "character": {
+                    "slug": resolved_slug,
+                    "name": updated.get("name") or resolved_slug,
+                    "location": updated.get("location") or "unknown",
+                    "status": updated.get("current_status") or "active",
+                    "player": False,
+                },
+            }
+
+    async def remove_roster_character(self, campaign_id: str, slug: str, *, player: bool = False) -> dict:
+        slug_clean = str(slug or "").strip()
+        if not slug_clean:
+            raise ValueError("slug is required")
+
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            if slug_clean == str(campaign.created_by_actor_id or ""):
+                return {"ok": False, "removed": False, "slug": slug_clean, "message": "Cannot remove lead actor."}
+
+            player_row = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == slug_clean)
+                .first()
+            )
+            if bool(player):
+                if player_row is None:
+                    return {"ok": False, "removed": False, "slug": slug_clean, "player": True}
+                session.delete(player_row)
+                campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                session.commit()
+                return {"ok": True, "removed": True, "slug": slug_clean, "player": True}
+
+            characters = self._parse_json(campaign.characters_json, {})
+            if not isinstance(characters, dict):
+                characters = {}
+            resolved_slug = self._resolve_roster_slug(characters, slug_clean)
+            removed = characters.pop(resolved_slug, None)
+            if removed is not None:
+                campaign.characters_json = json.dumps(characters, ensure_ascii=True)
+                campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+                session.commit()
+                return {"ok": True, "removed": True, "slug": resolved_slug, "player": False}
+
+            if player_row is not None:
+                return {
+                    "ok": False,
+                    "removed": False,
+                    "slug": slug_clean,
+                    "player": True,
+                    "message": "Target is a player. Set player=true to remove player entries.",
+                }
+            return {"ok": False, "removed": False, "slug": slug_clean, "player": False}
 
     async def get_player_state(self, campaign_id: str, actor_id: str) -> dict:
         with self._session_factory() as session:
@@ -1307,6 +1633,52 @@ class TextGameEngineGateway(EngineGateway):
                 "images": avatar_images[:40],
                 "player_state": player_avatar_state,
             },
+        }
+
+    async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id}")
+
+        ok, message = self._emulator.accept_pending_avatar(campaign_id, actor_id)
+        player_state = await self.get_player_state(campaign_id, actor_id)
+        return {
+            "ok": bool(ok),
+            "message": message,
+            "actor_id": actor_id,
+            "player_state": player_state,
+        }
+
+    async def decline_pending_avatar(self, campaign_id: str, actor_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id}")
+
+        ok, message = self._emulator.decline_pending_avatar(campaign_id, actor_id)
+        player_state = await self.get_player_state(campaign_id, actor_id)
+        return {
+            "ok": bool(ok),
+            "message": message,
+            "actor_id": actor_id,
+            "player_state": player_state,
         }
 
     async def memory_search(self, campaign_id: str, queries: list[str], category: str | None) -> dict:

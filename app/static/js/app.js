@@ -75,6 +75,7 @@
         search: "",
         category: "",
         wildcard: "*",
+        turnId: "",
         storeCategory: "",
         storeTerm: "",
         storeText: "",
@@ -87,12 +88,37 @@
         recipient: "",
         message: "",
       },
+      sessions: {
+        surface: "discord_thread",
+        surface_key: "",
+        surface_guild_id: "",
+        surface_channel_id: "",
+        surface_thread_id: "",
+        enabled: true,
+        metadata_json: "{}",
+        update_session_id: "",
+        update_enabled: true,
+        update_metadata_json: "",
+      },
+      mediaActions: {
+        actor_id: "",
+      },
+      rosterActions: {
+        slug: "",
+        name: "",
+        location: "",
+        status: "",
+        player: false,
+        fields_json: "{}",
+      },
 
       mapText: "",
+      timersText: "",
       calendarText: "",
       rosterText: "",
       playerStateText: "",
       mediaText: "",
+      sessionsText: "",
       memoryText: "",
       smsText: "",
       debugText: "",
@@ -351,9 +377,18 @@
         if (selected && !this.turnForm.actor_id) {
           this.turnForm.actor_id = selected.actor_id;
         }
+        if (!this.mediaActions.actor_id && this.turnForm.actor_id) {
+          this.mediaActions.actor_id = this.turnForm.actor_id;
+        }
+        if (!this.rosterActions.slug && this.turnForm.actor_id) {
+          this.rosterActions.slug = this.turnForm.actor_id;
+          this.rosterActions.player = true;
+        }
         this.connectSocket();
         await Promise.all([
+          this.loadSessions(),
           this.loadMap(),
+          this.loadTimers(),
           this.loadCalendar(),
           this.loadRoster(),
           this.loadPlayerState(),
@@ -391,9 +426,26 @@
           const payload = JSON.parse(event.data);
           if (payload.type === "turn" && payload.payload) {
             this.pushStream("narrator", normalizeTurnNarration(payload.payload));
+            this.loadTimers();
           }
           if (payload.type === "sms" && payload.payload) {
             this.pushStream("sms", formatJson(payload.payload));
+          }
+          if (payload.type === "session" && payload.payload) {
+            this.pushStream("session", formatJson(payload.payload));
+            this.loadSessions();
+          }
+          if (payload.type === "media" && payload.payload) {
+            this.pushStream("media", formatJson(payload.payload));
+            this.loadMedia();
+          }
+          if (payload.type === "timers" && payload.payload) {
+            this.pushStream("timers", formatJson(payload.payload));
+            this.timersText = formatJson(payload.payload);
+          }
+          if (payload.type === "roster" && payload.payload) {
+            this.pushStream("roster", formatJson(payload.payload));
+            this.rosterText = formatJson(payload.payload);
           }
         };
         this.socket.onerror = () => {
@@ -442,7 +494,9 @@
           }
           this.turnForm.action = "";
           await Promise.all([
+            this.loadSessions(),
             this.loadMap(),
+            this.loadTimers(),
             this.loadCalendar(),
             this.loadRoster(),
             this.loadPlayerState(),
@@ -464,6 +518,14 @@
         this.mapText = body.map || "";
       },
 
+      async loadTimers() {
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/timers`);
+        this.timersText = formatJson(body);
+      },
+
       async loadCalendar() {
         if (!this.selectedCampaignId) {
           return;
@@ -478,6 +540,142 @@
         }
         const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster`);
         this.rosterText = formatJson(body);
+      },
+
+      async upsertRosterCharacter() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        const slug = (this.rosterActions.slug || "").trim();
+        if (!slug) {
+          this.errorMessage = "Roster slug is required.";
+          return;
+        }
+        try {
+          const fields = this.parseJsonInput(this.rosterActions.fields_json, {});
+          const payload = {
+            slug,
+            name: this.rosterActions.name.trim() || null,
+            location: this.rosterActions.location.trim() || null,
+            status: this.rosterActions.status.trim() || null,
+            player: this.rosterActions.player === true,
+            fields: fields && typeof fields === "object" ? fields : {},
+          };
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster/upsert`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          this.pushStream("roster", formatJson(body));
+          await Promise.all([this.loadRoster(), this.loadPlayerState(), this.loadDebugSnapshot()]);
+          this.statusMessage = "Roster character upserted.";
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async removeRosterCharacter() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        const slug = (this.rosterActions.slug || "").trim();
+        if (!slug) {
+          this.errorMessage = "Roster slug is required.";
+          return;
+        }
+        try {
+          const payload = {
+            slug,
+            player: this.rosterActions.player === true,
+          };
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster/remove`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          this.pushStream("roster", formatJson(body));
+          await Promise.all([this.loadRoster(), this.loadPlayerState(), this.loadDebugSnapshot()]);
+          this.statusMessage = "Roster character removal processed.";
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      parseJsonInput(raw, fallback) {
+        if (!raw || !raw.trim()) {
+          return fallback;
+        }
+        try {
+          return JSON.parse(raw);
+        } catch (_error) {
+          throw new Error("Invalid JSON payload.");
+        }
+      },
+
+      async loadSessions() {
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`);
+        this.sessionsText = formatJson(body);
+      },
+
+      async createOrUpdateSession() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        try {
+          const metadata = this.parseJsonInput(this.sessions.metadata_json, {});
+          const payload = {
+            surface: this.sessions.surface.trim(),
+            surface_key: this.sessions.surface_key.trim(),
+            surface_guild_id: this.sessions.surface_guild_id.trim() || null,
+            surface_channel_id: this.sessions.surface_channel_id.trim() || null,
+            surface_thread_id: this.sessions.surface_thread_id.trim() || null,
+            enabled: this.sessions.enabled === true,
+            metadata: metadata && typeof metadata === "object" ? metadata : {},
+          };
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          this.sessionsText = formatJson(body);
+          this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
+          await this.loadSessions();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async updateSession() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        const sessionId = (this.sessions.update_session_id || "").trim();
+        if (!sessionId) {
+          this.errorMessage = "Session id is required.";
+          return;
+        }
+        try {
+          const metadata =
+            this.sessions.update_metadata_json.trim().length > 0
+              ? this.parseJsonInput(this.sessions.update_metadata_json, {})
+              : null;
+          const payload = {
+            enabled: this.sessions.update_enabled === true,
+            metadata: metadata,
+          };
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions/${encodeURIComponent(sessionId)}`, {
+            method: "PATCH",
+            body: JSON.stringify(payload),
+          });
+          this.sessionsText = formatJson(body);
+          await this.loadSessions();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
       },
 
       async loadPlayerState() {
@@ -521,6 +719,52 @@
         }
       },
 
+      resolveMediaActorId() {
+        const actor = (this.mediaActions.actor_id || this.turnForm.actor_id || "").trim();
+        if (!actor) {
+          throw new Error("Actor id is required for avatar actions.");
+        }
+        return actor;
+      },
+
+      async acceptPendingAvatar() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        try {
+          const actor = this.resolveMediaActorId();
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/media/avatar/accept`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actor }),
+          });
+          this.pushStream("media", formatJson(body));
+          await Promise.all([this.loadMedia(), this.loadPlayerState()]);
+          this.statusMessage = "Processed avatar accept.";
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async declinePendingAvatar() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        try {
+          const actor = this.resolveMediaActorId();
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/media/avatar/decline`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actor }),
+          });
+          this.pushStream("media", formatJson(body));
+          await Promise.all([this.loadMedia(), this.loadPlayerState()]);
+          this.statusMessage = "Processed avatar decline.";
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
       async searchMemory() {
         this.resetError();
         if (!this.selectedCampaignId) {
@@ -550,6 +794,28 @@
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/memory/terms`, {
             method: "POST",
             body: JSON.stringify({ wildcard: this.memory.wildcard || "*" }),
+          });
+          this.memoryText = formatJson(body);
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async readMemoryTurn() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        const raw = String(this.memory.turnId || "").trim();
+        const turnId = Number.parseInt(raw, 10);
+        if (!Number.isFinite(turnId) || turnId <= 0) {
+          this.errorMessage = "Turn id must be a positive integer.";
+          return;
+        }
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/memory/turn`, {
+            method: "POST",
+            body: JSON.stringify({ turn_id: turnId }),
           });
           this.memoryText = formatJson(body);
         } catch (error) {

@@ -96,7 +96,9 @@
 
   <section class="panel right-column">
     <div class="tab-row">
+      <button type="button" @click="inspectorTab = 'sessions'" :class="{ active: inspectorTab === 'sessions' }">Sessions</button>
       <button type="button" @click="inspectorTab = 'map'" :class="{ active: inspectorTab === 'map' }">Map</button>
+      <button type="button" @click="inspectorTab = 'timers'" :class="{ active: inspectorTab === 'timers' }">Timers</button>
       <button type="button" @click="inspectorTab = 'calendar'" :class="{ active: inspectorTab === 'calendar' }">Calendar</button>
       <button type="button" @click="inspectorTab = 'roster'" :class="{ active: inspectorTab === 'roster' }">Roster</button>
       <button type="button" @click="inspectorTab = 'player'" :class="{ active: inspectorTab === 'player' }">Player</button>
@@ -106,9 +108,68 @@
       <button type="button" @click="inspectorTab = 'debug'" :class="{ active: inspectorTab === 'debug' }">Debug</button>
     </div>
 
+    <div x-show="inspectorTab === 'sessions'" class="stack">
+      <button type="button" @click="loadSessions()" :disabled="!selectedCampaignId">Refresh Sessions</button>
+
+      <form class="stack compact" @submit.prevent="createOrUpdateSession()">
+        <label>
+          Surface
+          <input x-model="sessions.surface" placeholder="discord_thread" />
+        </label>
+        <label>
+          Surface Key
+          <input x-model="sessions.surface_key" placeholder="discord:guild:thread" />
+        </label>
+        <label>
+          Guild ID (optional)
+          <input x-model="sessions.surface_guild_id" placeholder="guild id" />
+        </label>
+        <label>
+          Channel ID (optional)
+          <input x-model="sessions.surface_channel_id" placeholder="channel id" />
+        </label>
+        <label>
+          Thread ID (optional)
+          <input x-model="sessions.surface_thread_id" placeholder="thread id" />
+        </label>
+        <label>
+          Enabled
+          <input x-model="sessions.enabled" type="checkbox" />
+        </label>
+        <label>
+          Metadata JSON
+          <textarea x-model="sessions.metadata_json" rows="2" placeholder="{}"></textarea>
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Create/Update Session</button>
+      </form>
+
+      <form class="stack compact" @submit.prevent="updateSession()">
+        <label>
+          Session ID
+          <input x-model="sessions.update_session_id" placeholder="session id" />
+        </label>
+        <label>
+          Enabled
+          <input x-model="sessions.update_enabled" type="checkbox" />
+        </label>
+        <label>
+          Metadata JSON (optional)
+          <textarea x-model="sessions.update_metadata_json" rows="2" placeholder='{"active_campaign_id":"..."}'></textarea>
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Patch Session</button>
+      </form>
+
+      <pre x-text="sessionsText"></pre>
+    </div>
+
     <div x-show="inspectorTab === 'map'" class="stack">
       <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
       <pre x-text="mapText"></pre>
+    </div>
+
+    <div x-show="inspectorTab === 'timers'" class="stack">
+      <button type="button" @click="loadTimers()" :disabled="!selectedCampaignId">Refresh Timers</button>
+      <pre x-text="timersText"></pre>
     </div>
 
     <div x-show="inspectorTab === 'calendar'" class="stack">
@@ -118,6 +179,38 @@
 
     <div x-show="inspectorTab === 'roster'" class="stack">
       <button type="button" @click="loadRoster()" :disabled="!selectedCampaignId">Refresh Roster</button>
+
+      <form class="stack compact" @submit.prevent="upsertRosterCharacter()">
+        <label>
+          Slug
+          <input x-model="rosterActions.slug" placeholder="arsipea-denton" />
+        </label>
+        <label>
+          Name (optional)
+          <input x-model="rosterActions.name" placeholder="Arsipea Denton" />
+        </label>
+        <label>
+          Location (optional)
+          <input x-model="rosterActions.location" placeholder="visitor-room-b" />
+        </label>
+        <label>
+          Status (optional)
+          <input x-model="rosterActions.status" placeholder="active" />
+        </label>
+        <label>
+          Player Character
+          <input x-model="rosterActions.player" type="checkbox" />
+        </label>
+        <label>
+          Extra Fields JSON
+          <textarea x-model="rosterActions.fields_json" rows="2" placeholder="{}"></textarea>
+        </label>
+        <div class="inline-actions">
+          <button type="submit" :disabled="!selectedCampaignId">Upsert Character</button>
+          <button type="button" @click="removeRosterCharacter()" :disabled="!selectedCampaignId">Remove Character</button>
+        </div>
+      </form>
+
       <pre x-text="rosterText"></pre>
     </div>
 
@@ -128,6 +221,16 @@
 
     <div x-show="inspectorTab === 'media'" class="stack">
       <button type="button" @click="loadMedia()" :disabled="!selectedCampaignId">Refresh Media</button>
+      <form class="stack compact" @submit.prevent="acceptPendingAvatar()">
+        <label>
+          Actor ID
+          <input x-model="mediaActions.actor_id" placeholder="dale-denton" />
+        </label>
+        <div class="inline-actions">
+          <button type="submit" :disabled="!selectedCampaignId">Accept Pending Avatar</button>
+          <button type="button" @click="declinePendingAvatar()" :disabled="!selectedCampaignId">Decline Pending Avatar</button>
+        </div>
+      </form>
       <pre x-text="mediaText"></pre>
     </div>
 
@@ -150,6 +253,14 @@
           <input x-model="memory.wildcard" placeholder="char:*" />
         </label>
         <button type="submit" :disabled="!selectedCampaignId">Run memory_terms</button>
+      </form>
+
+      <form class="stack compact" @submit.prevent="readMemoryTurn()">
+        <label>
+          Turn ID
+          <input x-model="memory.turnId" type="number" min="1" placeholder="1234" />
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Run memory_turn</button>
       </form>
 
       <form class="stack compact" @submit.prevent="storeMemory()">

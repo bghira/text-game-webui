@@ -11,7 +11,9 @@ from .schemas import CampaignSummary, MemoryStoreRequest, SmsMessage, TurnReques
 
 FEATURES = [
     "campaigns",
+    "sessions",
     "turns",
+    "timers",
     "map",
     "calendar",
     "roster",
@@ -32,13 +34,49 @@ FEATURES = [
 class EngineGateway(Protocol):
     async def list_campaigns(self, namespace: str) -> list[CampaignSummary]: ...
     async def create_campaign(self, namespace: str, name: str, actor_id: str) -> CampaignSummary: ...
+    async def list_sessions(self, campaign_id: str) -> list[dict]: ...
+    async def create_or_update_session(
+        self,
+        campaign_id: str,
+        *,
+        surface: str,
+        surface_key: str,
+        surface_guild_id: str | None = None,
+        surface_channel_id: str | None = None,
+        surface_thread_id: str | None = None,
+        enabled: bool = True,
+        metadata: dict | None = None,
+    ) -> dict: ...
+    async def update_session(
+        self,
+        campaign_id: str,
+        session_id: str,
+        *,
+        enabled: bool | None = None,
+        metadata: dict | None = None,
+    ) -> dict: ...
     async def runtime_checks(self, probe_llm: bool = False) -> dict: ...
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
     async def get_map(self, campaign_id: str, actor_id: str) -> str: ...
+    async def get_timers(self, campaign_id: str) -> dict: ...
     async def get_calendar(self, campaign_id: str) -> dict: ...
     async def get_roster(self, campaign_id: str) -> dict: ...
+    async def upsert_roster_character(
+        self,
+        campaign_id: str,
+        *,
+        slug: str,
+        name: str | None = None,
+        location: str | None = None,
+        status: str | None = None,
+        player: bool = False,
+        fields: dict | None = None,
+    ) -> dict: ...
+    async def remove_roster_character(self, campaign_id: str, slug: str, *, player: bool = False) -> dict: ...
     async def get_player_state(self, campaign_id: str, actor_id: str) -> dict: ...
     async def get_media(self, campaign_id: str, actor_id: str | None = None) -> dict: ...
+    async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def decline_pending_avatar(self, campaign_id: str, actor_id: str) -> dict: ...
     async def memory_search(self, campaign_id: str, queries: list[str], category: str | None) -> dict: ...
     async def memory_terms(self, campaign_id: str, wildcard: str) -> dict: ...
     async def memory_turn(self, campaign_id: str, turn_id: int) -> dict: ...
@@ -54,10 +92,13 @@ class InMemoryEngineGateway:
 
     def __init__(self) -> None:
         self._campaigns: dict[str, CampaignSummary] = {}
+        self._sessions: dict[str, dict[str, dict]] = defaultdict(dict)
         self._turns: dict[str, list[dict]] = defaultdict(list)
+        self._timers: dict[str, list[dict]] = defaultdict(list)
         self._memory: dict[str, list[dict]] = defaultdict(list)
         self._sms: dict[str, dict[str, list[SmsMessage]]] = defaultdict(lambda: defaultdict(list))
         self._players: dict[str, dict[str, dict]] = defaultdict(dict)
+        self._roster_npcs: dict[str, dict[str, dict]] = defaultdict(dict)
         self._media: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
 
     def _require_campaign(self, campaign_id: str) -> CampaignSummary:
@@ -79,6 +120,92 @@ class InMemoryEngineGateway:
         self._campaigns[campaign.id] = campaign
         self._ensure_player(campaign.id, actor_id)
         return campaign
+
+    def _session_row(self, campaign_id: str, row: dict) -> dict:
+        return {
+            "id": row.get("id"),
+            "campaign_id": campaign_id,
+            "surface": row.get("surface"),
+            "surface_key": row.get("surface_key"),
+            "surface_guild_id": row.get("surface_guild_id"),
+            "surface_channel_id": row.get("surface_channel_id"),
+            "surface_thread_id": row.get("surface_thread_id"),
+            "enabled": bool(row.get("enabled", True)),
+            "metadata": row.get("metadata", {}),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+
+    async def list_sessions(self, campaign_id: str) -> list[dict]:
+        self._require_campaign(campaign_id)
+        rows = list(self._sessions[campaign_id].values())
+        rows.sort(key=lambda row: str(row.get("created_at") or ""))
+        return [self._session_row(campaign_id, row) for row in rows]
+
+    async def create_or_update_session(
+        self,
+        campaign_id: str,
+        *,
+        surface: str,
+        surface_key: str,
+        surface_guild_id: str | None = None,
+        surface_channel_id: str | None = None,
+        surface_thread_id: str | None = None,
+        enabled: bool = True,
+        metadata: dict | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        now = datetime.now(UTC).isoformat()
+        existing = None
+        for row in self._sessions[campaign_id].values():
+            if row.get("surface_key") == surface_key:
+                existing = row
+                break
+        if existing is None:
+            sid = str(uuid4())
+            row = {
+                "id": sid,
+                "surface": surface,
+                "surface_key": surface_key,
+                "surface_guild_id": surface_guild_id,
+                "surface_channel_id": surface_channel_id,
+                "surface_thread_id": surface_thread_id,
+                "enabled": bool(enabled),
+                "metadata": metadata if isinstance(metadata, dict) else {},
+                "created_at": now,
+                "updated_at": now,
+            }
+            self._sessions[campaign_id][sid] = row
+            return self._session_row(campaign_id, row)
+
+        existing["surface"] = surface
+        existing["surface_guild_id"] = surface_guild_id
+        existing["surface_channel_id"] = surface_channel_id
+        existing["surface_thread_id"] = surface_thread_id
+        existing["enabled"] = bool(enabled)
+        if isinstance(metadata, dict):
+            existing["metadata"] = metadata
+        existing["updated_at"] = now
+        return self._session_row(campaign_id, existing)
+
+    async def update_session(
+        self,
+        campaign_id: str,
+        session_id: str,
+        *,
+        enabled: bool | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        row = self._sessions[campaign_id].get(session_id)
+        if row is None:
+            raise KeyError(f"Unknown session: {session_id}")
+        if enabled is not None:
+            row["enabled"] = bool(enabled)
+        if metadata is not None:
+            row["metadata"] = metadata if isinstance(metadata, dict) else {}
+        row["updated_at"] = datetime.now(UTC).isoformat()
+        return self._session_row(campaign_id, row)
 
     def _ensure_player(self, campaign_id: str, actor_id: str) -> dict:
         existing = self._players[campaign_id].get(actor_id)
@@ -184,6 +311,10 @@ class InMemoryEngineGateway:
 Legend: @ current player
 """
 
+    async def get_timers(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"timers": self._timers[campaign_id][-30:]}
+
     async def get_calendar(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)
         return {
@@ -207,9 +338,20 @@ Legend: @ current player
             rows.append(
                 {
                     "slug": actor_id,
-                    "name": actor_id.replace("-", " ").title(),
+                    "name": state.get("character_name") or actor_id.replace("-", " ").title(),
                     "location": state.get("location", "Lobby"),
-                    "status": "active",
+                    "status": state.get("current_status") or "active",
+                    "player": True,
+                }
+            )
+        for slug, payload in sorted(self._roster_npcs[campaign_id].items()):
+            rows.append(
+                {
+                    "slug": slug,
+                    "name": payload.get("name") or slug,
+                    "location": payload.get("location") or "unknown",
+                    "status": payload.get("current_status") or "active",
+                    "player": False,
                 }
             )
         if not rows:
@@ -219,9 +361,103 @@ Legend: @ current player
                     "name": campaign.actor_id.replace("-", " ").title(),
                     "location": "Lobby",
                     "status": "active",
+                    "player": True,
                 }
             )
         return {"characters": rows}
+
+    async def upsert_roster_character(
+        self,
+        campaign_id: str,
+        *,
+        slug: str,
+        name: str | None = None,
+        location: str | None = None,
+        status: str | None = None,
+        player: bool = False,
+        fields: dict | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        slug_clean = str(slug or "").strip()
+        if not slug_clean:
+            raise ValueError("slug is required")
+        fields_dict = fields if isinstance(fields, dict) else {}
+
+        is_player = bool(player) or slug_clean in self._players[campaign_id]
+        if is_player:
+            prow = self._ensure_player(campaign_id, slug_clean)
+            pstate = prow.get("state", {})
+            if not isinstance(pstate, dict):
+                pstate = {}
+                prow["state"] = pstate
+            if isinstance(name, str) and name.strip():
+                pstate["character_name"] = name.strip()
+            if isinstance(location, str) and location.strip():
+                pstate["location"] = location.strip()
+            if isinstance(status, str) and status.strip():
+                pstate["current_status"] = status.strip()
+            for key, value in fields_dict.items():
+                if key in {"name", "slug"}:
+                    continue
+                pstate[key] = value
+            return {
+                "ok": True,
+                "character": {
+                    "slug": slug_clean,
+                    "name": pstate.get("character_name") or slug_clean,
+                    "location": pstate.get("location") or "unknown",
+                    "status": pstate.get("current_status") or "active",
+                    "player": True,
+                },
+            }
+
+        current = self._roster_npcs[campaign_id].get(slug_clean, {})
+        if not isinstance(current, dict):
+            current = {}
+        updated = dict(current)
+        updated.update(fields_dict)
+        if isinstance(name, str) and name.strip():
+            updated["name"] = name.strip()
+        if isinstance(location, str) and location.strip():
+            updated["location"] = location.strip()
+        if isinstance(status, str) and status.strip():
+            updated["current_status"] = status.strip()
+        self._roster_npcs[campaign_id][slug_clean] = updated
+        return {
+            "ok": True,
+            "character": {
+                "slug": slug_clean,
+                "name": updated.get("name") or slug_clean,
+                "location": updated.get("location") or "unknown",
+                "status": updated.get("current_status") or "active",
+                "player": False,
+            },
+        }
+
+    async def remove_roster_character(self, campaign_id: str, slug: str, *, player: bool = False) -> dict:
+        campaign = self._require_campaign(campaign_id)
+        slug_clean = str(slug or "").strip()
+        if not slug_clean:
+            raise ValueError("slug is required")
+        if slug_clean == campaign.actor_id:
+            return {"ok": False, "removed": False, "slug": slug_clean, "message": "Cannot remove lead actor."}
+
+        if bool(player):
+            removed = self._players[campaign_id].pop(slug_clean, None)
+            return {"ok": removed is not None, "removed": removed is not None, "slug": slug_clean, "player": True}
+
+        removed_npc = self._roster_npcs[campaign_id].pop(slug_clean, None)
+        if removed_npc is not None:
+            return {"ok": True, "removed": True, "slug": slug_clean, "player": False}
+        if slug_clean in self._players[campaign_id]:
+            return {
+                "ok": False,
+                "removed": False,
+                "slug": slug_clean,
+                "player": True,
+                "message": "Target is a player. Set player=true to remove player entries.",
+            }
+        return {"ok": False, "removed": False, "slug": slug_clean, "player": False}
 
     async def get_player_state(self, campaign_id: str, actor_id: str) -> dict:
         self._require_campaign(campaign_id)
@@ -275,6 +511,41 @@ Legend: @ current player
             },
             "avatars": avatars,
         }
+
+    async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        player = self._players[campaign_id].get(actor_id)
+        if player is None:
+            raise KeyError(f"Unknown player in campaign: {actor_id}")
+        state = player.get("state", {})
+        if not isinstance(state, dict):
+            state = {}
+            player["state"] = state
+        pending = state.get("pending_avatar_url")
+        if not isinstance(pending, str) or not pending.strip():
+            return {"ok": False, "message": "No pending avatar to accept.", "actor_id": actor_id}
+        state["avatar_url"] = pending.strip()
+        state.pop("pending_avatar_url", None)
+        state.pop("pending_avatar_prompt", None)
+        state.pop("pending_avatar_generated_at", None)
+        return {"ok": True, "message": f"Avatar accepted: {state.get('avatar_url')}", "actor_id": actor_id}
+
+    async def decline_pending_avatar(self, campaign_id: str, actor_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        player = self._players[campaign_id].get(actor_id)
+        if player is None:
+            raise KeyError(f"Unknown player in campaign: {actor_id}")
+        state = player.get("state", {})
+        if not isinstance(state, dict):
+            state = {}
+            player["state"] = state
+        had_pending = bool(state.get("pending_avatar_url"))
+        state.pop("pending_avatar_url", None)
+        state.pop("pending_avatar_prompt", None)
+        state.pop("pending_avatar_generated_at", None)
+        if had_pending:
+            return {"ok": True, "message": "Pending avatar discarded.", "actor_id": actor_id}
+        return {"ok": False, "message": "No pending avatar to discard.", "actor_id": actor_id}
 
     async def memory_search(self, campaign_id: str, queries: list[str], category: str | None) -> dict:
         self._require_campaign(campaign_id)
@@ -335,6 +606,7 @@ Legend: @ current player
     async def debug_snapshot(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)
         return {
+            "sessions": list(self._sessions[campaign_id].values()),
             "turns": self._turns[campaign_id][-30:],
             "players": self._players[campaign_id],
             "media": self._media[campaign_id],
