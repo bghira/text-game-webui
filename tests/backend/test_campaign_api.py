@@ -11,6 +11,34 @@ def test_campaign_flow_and_inspector_surfaces(client):
     campaign = _create_campaign(client)
     campaign_id = campaign["id"]
 
+    sessions_before = client.get(f"/api/campaigns/{campaign_id}/sessions")
+    assert sessions_before.status_code == 200
+    assert sessions_before.json()["sessions"] == []
+
+    session_create = client.post(
+        f"/api/campaigns/{campaign_id}/sessions",
+        json={
+            "surface": "discord_thread",
+            "surface_key": "discord:guild-1:thread-4",
+            "surface_guild_id": "guild-1",
+            "surface_channel_id": "channel-1",
+            "surface_thread_id": "thread-4",
+            "enabled": True,
+            "metadata": {"active_campaign_id": campaign_id},
+        },
+    )
+    assert session_create.status_code == 200
+    session_row = session_create.json()["session"]
+    assert session_row["surface_key"] == "discord:guild-1:thread-4"
+    assert session_row["enabled"] is True
+
+    session_patch = client.patch(
+        f"/api/campaigns/{campaign_id}/sessions/{session_row['id']}",
+        json={"enabled": False, "metadata": {"note": "paused"}},
+    )
+    assert session_patch.status_code == 200
+    assert session_patch.json()["session"]["enabled"] is False
+
     list_res = client.get("/api/campaigns", params={"namespace": "default"})
     assert list_res.status_code == 200
     assert any(row["id"] == campaign_id for row in list_res.json()["campaigns"])
@@ -28,6 +56,10 @@ def test_campaign_flow_and_inspector_surfaces(client):
     assert map_res.status_code == 200
     assert "TEST FACILITY" in map_res.json()["map"]
 
+    timers_res = client.get(f"/api/campaigns/{campaign_id}/timers")
+    assert timers_res.status_code == 200
+    assert "timers" in timers_res.json()
+
     cal_res = client.get(f"/api/campaigns/{campaign_id}/calendar")
     assert cal_res.status_code == 200
     assert "events" in cal_res.json()
@@ -35,6 +67,34 @@ def test_campaign_flow_and_inspector_surfaces(client):
     roster_res = client.get(f"/api/campaigns/{campaign_id}/roster")
     assert roster_res.status_code == 200
     assert roster_res.json()["characters"][0]["slug"] == "dale-denton"
+
+    roster_upsert = client.post(
+        f"/api/campaigns/{campaign_id}/roster/upsert",
+        json={
+            "slug": "arsipea-denton",
+            "name": "Arsipea Denton",
+            "location": "visitor-room-b",
+            "status": "active",
+            "fields": {"appearance": "gray jumpsuit"},
+        },
+    )
+    assert roster_upsert.status_code == 200
+    assert roster_upsert.json()["ok"] is True
+
+    roster_after_upsert = client.get(f"/api/campaigns/{campaign_id}/roster")
+    assert roster_after_upsert.status_code == 200
+    assert any(row["slug"] == "arsipea-denton" for row in roster_after_upsert.json()["characters"])
+
+    roster_remove = client.post(
+        f"/api/campaigns/{campaign_id}/roster/remove",
+        json={"slug": "arsipea-denton", "player": False},
+    )
+    assert roster_remove.status_code == 200
+    assert roster_remove.json()["removed"] is True
+
+    roster_after_remove = client.get(f"/api/campaigns/{campaign_id}/roster")
+    assert roster_after_remove.status_code == 200
+    assert not any(row["slug"] == "arsipea-denton" for row in roster_after_remove.json()["characters"])
 
     player_res = client.get(
         f"/api/campaigns/{campaign_id}/player-state",
@@ -56,10 +116,44 @@ def test_campaign_flow_and_inspector_surfaces(client):
     assert "requests" in media["scene"]
     assert media["scene"]["request_count"] >= 0
 
+    # Seed a pending avatar in the in-memory backend and verify action endpoints.
+    gateway = client.app.state.gateway
+    gateway._players[campaign_id]["dale-denton"]["state"]["pending_avatar_url"] = "https://example.com/pending-avatar.png"
+    gateway._players[campaign_id]["dale-denton"]["state"]["pending_avatar_prompt"] = "portrait, noir lighting"
+
+    accept_res = client.post(
+        f"/api/campaigns/{campaign_id}/media/avatar/accept",
+        json={"actor_id": "dale-denton"},
+    )
+    assert accept_res.status_code == 200
+    assert accept_res.json()["ok"] is True
+
+    decline_res = client.post(
+        f"/api/campaigns/{campaign_id}/media/avatar/decline",
+        json={"actor_id": "dale-denton"},
+    )
+    assert decline_res.status_code == 200
+    assert decline_res.json()["ok"] is False
+
 
 def test_memory_and_sms_tools(client):
     campaign = _create_campaign(client)
     campaign_id = campaign["id"]
+
+    turn_res = client.post(
+        f"/api/campaigns/{campaign_id}/turns",
+        json={"actor_id": "dale-denton", "action": "look around"},
+    )
+    assert turn_res.status_code == 200
+
+    memory_turn_res = client.post(
+        f"/api/campaigns/{campaign_id}/memory/turn",
+        json={"turn_id": 1},
+    )
+    assert memory_turn_res.status_code == 200
+    turn_payload = memory_turn_res.json()["turn"]
+    assert turn_payload is not None
+    assert turn_payload["id"] == 1
 
     store_res = client.post(
         f"/api/campaigns/{campaign_id}/memory/store",
@@ -127,11 +221,26 @@ def test_debug_snapshot_and_unknown_campaign(client):
     )
     assert missing_player.status_code == 404
 
+    missing_session = client.patch(
+        f"/api/campaigns/{campaign_id}/sessions/missing-session-id",
+        json={"enabled": False},
+    )
+    assert missing_session.status_code == 404
+
     missing_media_player = client.get(
         f"/api/campaigns/{campaign_id}/media",
         params={"actor_id": "missing-actor"},
     )
     assert missing_media_player.status_code == 200
+
+    missing_avatar_action = client.post(
+        f"/api/campaigns/{campaign_id}/media/avatar/accept",
+        json={"actor_id": "missing-actor"},
+    )
+    assert missing_avatar_action.status_code == 404
+
+    missing_campaign_sessions = client.get("/api/campaigns/missing-campaign/sessions")
+    assert missing_campaign_sessions.status_code == 404
 
 
 def test_diagnostics_bundle_with_campaign(client):
@@ -168,3 +277,64 @@ def test_ws_receives_turn_event(client):
         message = ws.receive_json()
         assert message["type"] == "turn"
         assert message["payload"]["narration"].startswith("TURN 1")
+
+
+def test_ws_receives_session_event(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    with client.websocket_connect(f"/ws/campaigns/{campaign_id}") as ws:
+        post = client.post(
+            f"/api/campaigns/{campaign_id}/sessions",
+            json={
+                "surface": "discord_thread",
+                "surface_key": "discord:guild-9:thread-77",
+                "surface_guild_id": "guild-9",
+                "surface_channel_id": "channel-77",
+                "surface_thread_id": "thread-77",
+                "enabled": True,
+                "metadata": {},
+            },
+        )
+        assert post.status_code == 200
+        message = ws.receive_json()
+        assert message["type"] == "session"
+        assert message["payload"]["surface_key"] == "discord:guild-9:thread-77"
+
+
+def test_ws_receives_roster_event(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    with client.websocket_connect(f"/ws/campaigns/{campaign_id}") as ws:
+        post = client.post(
+            f"/api/campaigns/{campaign_id}/roster/upsert",
+            json={
+                "slug": "arsipea-denton",
+                "name": "Arsipea Denton",
+                "location": "visitor-room-b",
+                "status": "active",
+            },
+        )
+        assert post.status_code == 200
+        message = ws.receive_json()
+        assert message["type"] == "roster"
+        assert any(row["slug"] == "arsipea-denton" for row in message["payload"]["characters"])
+
+
+def test_ws_receives_media_event_on_avatar_action(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+    gateway = client.app.state.gateway
+    gateway._players[campaign_id]["dale-denton"]["state"]["pending_avatar_url"] = "https://example.com/pending.png"
+
+    with client.websocket_connect(f"/ws/campaigns/{campaign_id}") as ws:
+        post = client.post(
+            f"/api/campaigns/{campaign_id}/media/avatar/accept",
+            json={"actor_id": "dale-denton"},
+        )
+        assert post.status_code == 200
+        message = ws.receive_json()
+        assert message["type"] == "media"
+        assert message["payload"]["action"] == "avatar_accept"
+        assert message["payload"]["ok"] is True

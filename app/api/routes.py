@@ -7,10 +7,15 @@ from pydantic import BaseModel
 
 from app.services.engine_gateway import FEATURES, EngineGateway
 from app.services.schemas import (
+    AvatarActionRequest,
     MemorySearchRequest,
     MemoryStoreRequest,
     MemoryTermsRequest,
     MemoryTurnRequest,
+    RosterRemoveRequest,
+    RosterUpsertRequest,
+    SessionCreateRequest,
+    SessionUpdateRequest,
     SmsListRequest,
     SmsReadRequest,
     SmsWriteRequest,
@@ -32,6 +37,10 @@ def get_gateway(request: Request) -> EngineGateway:
 
 def _not_found(err: KeyError) -> None:
     raise HTTPException(status_code=404, detail=str(err)) from err
+
+
+def _bad_request(err: ValueError) -> None:
+    raise HTTPException(status_code=400, detail=str(err)) from err
 
 
 @router.get("/health")
@@ -107,6 +116,62 @@ async def create_campaign(payload: CampaignCreateRequest, gateway: EngineGateway
     return {"campaign": row.model_dump()}
 
 
+@router.get("/campaigns/{campaign_id}/sessions")
+async def list_sessions(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        rows = await gateway.list_sessions(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+    return {"sessions": rows}
+
+
+@router.post("/campaigns/{campaign_id}/sessions")
+async def create_or_update_session(
+    campaign_id: str,
+    payload: SessionCreateRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        row = await gateway.create_or_update_session(
+            campaign_id,
+            surface=payload.surface,
+            surface_key=payload.surface_key,
+            surface_guild_id=payload.surface_guild_id,
+            surface_channel_id=payload.surface_channel_id,
+            surface_thread_id=payload.surface_thread_id,
+            enabled=payload.enabled,
+            metadata=payload.metadata,
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "session", "payload": row})
+    return {"session": row}
+
+
+@router.patch("/campaigns/{campaign_id}/sessions/{session_id}")
+async def update_session(
+    campaign_id: str,
+    session_id: str,
+    payload: SessionUpdateRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        row = await gateway.update_session(
+            campaign_id,
+            session_id,
+            enabled=payload.enabled,
+            metadata=payload.metadata,
+        )
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "session", "payload": row})
+    return {"session": row}
+
+
 @router.post("/campaigns/{campaign_id}/turns")
 async def submit_turn(
     campaign_id: str,
@@ -119,6 +184,16 @@ async def submit_turn(
     except KeyError as err:
         _not_found(err)
     await request.app.state.realtime.publish(campaign_id, {"type": "turn", "payload": result.model_dump()})
+    if result.image_prompt:
+        await request.app.state.realtime.publish(
+            campaign_id,
+            {"type": "media", "payload": {"image_prompt": result.image_prompt, "actor_id": payload.actor_id}},
+        )
+    try:
+        timers = await gateway.get_timers(campaign_id)
+        await request.app.state.realtime.publish(campaign_id, {"type": "timers", "payload": timers})
+    except KeyError:
+        pass
     return result.model_dump()
 
 
@@ -129,6 +204,14 @@ async def get_map(campaign_id: str, actor_id: str, gateway: EngineGateway = Depe
     except KeyError as err:
         _not_found(err)
     return {"map": data}
+
+
+@router.get("/campaigns/{campaign_id}/timers")
+async def get_timers(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_timers(campaign_id)
+    except KeyError as err:
+        _not_found(err)
 
 
 @router.get("/campaigns/{campaign_id}/calendar")
@@ -145,6 +228,54 @@ async def get_roster(campaign_id: str, gateway: EngineGateway = Depends(get_gate
         return await gateway.get_roster(campaign_id)
     except KeyError as err:
         _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/roster/upsert")
+async def upsert_roster_character(
+    campaign_id: str,
+    payload: RosterUpsertRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        result = await gateway.upsert_roster_character(
+            campaign_id,
+            slug=payload.slug,
+            name=payload.name,
+            location=payload.location,
+            status=payload.status,
+            player=payload.player,
+            fields=payload.fields,
+        )
+        roster = await gateway.get_roster(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "roster", "payload": roster})
+    return result
+
+
+@router.post("/campaigns/{campaign_id}/roster/remove")
+async def remove_roster_character(
+    campaign_id: str,
+    payload: RosterRemoveRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        result = await gateway.remove_roster_character(
+            campaign_id,
+            payload.slug,
+            player=payload.player,
+        )
+        roster = await gateway.get_roster(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "roster", "payload": roster})
+    return result
 
 
 @router.get("/campaigns/{campaign_id}/player-state")
@@ -167,6 +298,42 @@ async def get_media(
     except KeyError as err:
         _not_found(err)
     return {"media": data}
+
+
+@router.post("/campaigns/{campaign_id}/media/avatar/accept")
+async def accept_pending_avatar(
+    campaign_id: str,
+    payload: AvatarActionRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.accept_pending_avatar(campaign_id, payload.actor_id)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {"type": "media", "payload": {"action": "avatar_accept", **data}},
+    )
+    return data
+
+
+@router.post("/campaigns/{campaign_id}/media/avatar/decline")
+async def decline_pending_avatar(
+    campaign_id: str,
+    payload: AvatarActionRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.decline_pending_avatar(campaign_id, payload.actor_id)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {"type": "media", "payload": {"action": "avatar_decline", **data}},
+    )
+    return data
 
 
 @router.post("/campaigns/{campaign_id}/memory/search")

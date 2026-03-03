@@ -17,6 +17,39 @@ class TurnRequest(BaseModel):
     action: str
 
 
+class SessionCreateRequest(BaseModel):
+    surface: str
+    surface_key: str
+    surface_guild_id: str | None = None
+    surface_channel_id: str | None = None
+    surface_thread_id: str | None = None
+    enabled: bool = True
+    metadata: dict = Field(default_factory=dict)
+
+
+class SessionUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    metadata: dict | None = None
+
+
+class AvatarActionRequest(BaseModel):
+    actor_id: str
+
+
+class RosterUpsertRequest(BaseModel):
+    slug: str
+    name: str | None = None
+    location: str | None = None
+    status: str | None = None
+    player: bool = False
+    fields: dict = Field(default_factory=dict)
+
+
+class RosterRemoveRequest(BaseModel):
+    slug: str
+    player: bool = False
+
+
 class TurnResult(BaseModel):
     narration: str
     state_update: dict = Field(default_factory=dict)

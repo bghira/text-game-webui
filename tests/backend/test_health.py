@@ -9,9 +9,11 @@ def test_feature_list(client):
     assert res.status_code == 200
     body = res.json()
     assert "features" in body
+    assert "sessions" in body["features"]
     assert "memory_search" in body["features"]
     assert "sms_write" in body["features"]
     assert "debug_snapshot" in body["features"]
+    assert "timers" in body["features"]
     assert "player_state" in body["features"]
     assert "media_status" in body["features"]
 

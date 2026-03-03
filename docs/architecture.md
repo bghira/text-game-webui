@@ -26,6 +26,6 @@ Mode is selected by `TEXT_GAME_WEBUI_GATEWAY_BACKEND`.
 ## Request/Update Flow
 1. Browser submits turn to `POST /api/campaigns/{id}/turns`.
 2. API calls selected gateway `submit_turn`.
-3. API publishes turn payload to websocket hub.
+3. API publishes turn payload and derived async payloads (`timers`, `media`, `session`, `roster`) to websocket hub.
 4. Browser receives websocket event and updates stream.
-5. Browser refreshes map/calendar/roster/player-state/media/debug surfaces via API.
+5. Browser refreshes sessions/map/timers/calendar/roster/player-state/media/debug surfaces via API.

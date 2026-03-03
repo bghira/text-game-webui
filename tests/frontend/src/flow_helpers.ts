@@ -177,6 +177,9 @@ export async function submitTurnFlow(
   calls.push(`/api/campaigns/${campaignId}/map`);
   await fetcher(`/api/campaigns/${campaignId}/map?actor_id=${encodeURIComponent(payload.actor_id)}`);
 
+  calls.push(`/api/campaigns/${campaignId}/timers`);
+  await fetcher(`/api/campaigns/${campaignId}/timers`);
+
   calls.push(`/api/campaigns/${campaignId}/calendar`);
   await fetcher(`/api/campaigns/${campaignId}/calendar`);
 
@@ -189,8 +192,194 @@ export async function submitTurnFlow(
   calls.push(`/api/campaigns/${campaignId}/media`);
   await fetcher(`/api/campaigns/${campaignId}/media?actor_id=${encodeURIComponent(payload.actor_id)}`);
 
+  calls.push(`/api/campaigns/${campaignId}/sessions`);
+  await fetcher(`/api/campaigns/${campaignId}/sessions`);
+
   calls.push(`/api/campaigns/${campaignId}/debug/snapshot`);
   await fetcher(`/api/campaigns/${campaignId}/debug/snapshot`);
+
+  return { calls };
+}
+
+export async function sessionManagementFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  createPayload: {
+    surface: string;
+    surface_key: string;
+    surface_guild_id?: string | null;
+    surface_channel_id?: string | null;
+    surface_thread_id?: string | null;
+    enabled?: boolean;
+    metadata?: Record<string, unknown>;
+  },
+  patchPayload: {
+    session_id: string;
+    enabled?: boolean;
+    metadata?: Record<string, unknown> | null;
+  },
+): Promise<{ calls: string[] }> {
+  const calls: string[] = [];
+  calls.push(`/api/campaigns/${campaignId}/sessions`);
+  await fetcher(`/api/campaigns/${campaignId}/sessions`, {
+    method: "POST",
+    body: JSON.stringify(createPayload),
+  });
+
+  calls.push(`/api/campaigns/${campaignId}/sessions`);
+  await fetcher(`/api/campaigns/${campaignId}/sessions`);
+
+  calls.push(`/api/campaigns/${campaignId}/sessions/${patchPayload.session_id}`);
+  await fetcher(`/api/campaigns/${campaignId}/sessions/${patchPayload.session_id}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      enabled: patchPayload.enabled,
+      metadata: patchPayload.metadata,
+    }),
+  });
+
+  calls.push(`/api/campaigns/${campaignId}/sessions`);
+  await fetcher(`/api/campaigns/${campaignId}/sessions`);
+  return { calls };
+}
+
+export async function mediaAvatarActionsFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  actorId: string,
+): Promise<{ calls: string[] }> {
+  const calls: string[] = [];
+  calls.push(`/api/campaigns/${campaignId}/media/avatar/accept`);
+  await fetcher(`/api/campaigns/${campaignId}/media/avatar/accept`, {
+    method: "POST",
+    body: JSON.stringify({ actor_id: actorId }),
+  });
+  calls.push(`/api/campaigns/${campaignId}/media`);
+  await fetcher(`/api/campaigns/${campaignId}/media?actor_id=${encodeURIComponent(actorId)}`);
+  calls.push(`/api/campaigns/${campaignId}/player-state`);
+  await fetcher(`/api/campaigns/${campaignId}/player-state?actor_id=${encodeURIComponent(actorId)}`);
+
+  calls.push(`/api/campaigns/${campaignId}/media/avatar/decline`);
+  await fetcher(`/api/campaigns/${campaignId}/media/avatar/decline`, {
+    method: "POST",
+    body: JSON.stringify({ actor_id: actorId }),
+  });
+  calls.push(`/api/campaigns/${campaignId}/media`);
+  await fetcher(`/api/campaigns/${campaignId}/media?actor_id=${encodeURIComponent(actorId)}`);
+  calls.push(`/api/campaigns/${campaignId}/player-state`);
+  await fetcher(`/api/campaigns/${campaignId}/player-state?actor_id=${encodeURIComponent(actorId)}`);
+
+  return { calls };
+}
+
+export async function rosterManagementFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  payload: {
+    slug: string;
+    name?: string | null;
+    location?: string | null;
+    status?: string | null;
+    player?: boolean;
+    fields?: Record<string, unknown>;
+  },
+): Promise<{ calls: string[] }> {
+  const calls: string[] = [];
+  calls.push(`/api/campaigns/${campaignId}/roster/upsert`);
+  await fetcher(`/api/campaigns/${campaignId}/roster/upsert`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  calls.push(`/api/campaigns/${campaignId}/roster`);
+  await fetcher(`/api/campaigns/${campaignId}/roster`);
+
+  calls.push(`/api/campaigns/${campaignId}/roster/remove`);
+  await fetcher(`/api/campaigns/${campaignId}/roster/remove`, {
+    method: "POST",
+    body: JSON.stringify({ slug: payload.slug, player: payload.player === true }),
+  });
+  calls.push(`/api/campaigns/${campaignId}/roster`);
+  await fetcher(`/api/campaigns/${campaignId}/roster`);
+  return { calls };
+}
+
+export async function memoryToolsFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  payload: {
+    queries: string[];
+    category?: string | null;
+    wildcard: string;
+    turn_id: number;
+    store: { category: string; term?: string | null; memory: string };
+  },
+): Promise<{ calls: string[] }> {
+  const calls: string[] = [];
+  calls.push(`/api/campaigns/${campaignId}/memory/search`);
+  await fetcher(`/api/campaigns/${campaignId}/memory/search`, {
+    method: "POST",
+    body: JSON.stringify({
+      queries: payload.queries,
+      category: payload.category ?? null,
+    }),
+  });
+
+  calls.push(`/api/campaigns/${campaignId}/memory/terms`);
+  await fetcher(`/api/campaigns/${campaignId}/memory/terms`, {
+    method: "POST",
+    body: JSON.stringify({ wildcard: payload.wildcard }),
+  });
+
+  calls.push(`/api/campaigns/${campaignId}/memory/turn`);
+  await fetcher(`/api/campaigns/${campaignId}/memory/turn`, {
+    method: "POST",
+    body: JSON.stringify({ turn_id: payload.turn_id }),
+  });
+
+  calls.push(`/api/campaigns/${campaignId}/memory/store`);
+  await fetcher(`/api/campaigns/${campaignId}/memory/store`, {
+    method: "POST",
+    body: JSON.stringify(payload.store),
+  });
+
+  return { calls };
+}
+
+export async function smsToolsFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  payload: {
+    wildcard: string;
+    thread: string;
+    limit: number;
+    sender: string;
+    recipient: string;
+    message: string;
+  },
+): Promise<{ calls: string[] }> {
+  const calls: string[] = [];
+  calls.push(`/api/campaigns/${campaignId}/sms/list`);
+  await fetcher(`/api/campaigns/${campaignId}/sms/list`, {
+    method: "POST",
+    body: JSON.stringify({ wildcard: payload.wildcard }),
+  });
+
+  calls.push(`/api/campaigns/${campaignId}/sms/read`);
+  await fetcher(`/api/campaigns/${campaignId}/sms/read`, {
+    method: "POST",
+    body: JSON.stringify({ thread: payload.thread, limit: payload.limit }),
+  });
+
+  calls.push(`/api/campaigns/${campaignId}/sms/write`);
+  await fetcher(`/api/campaigns/${campaignId}/sms/write`, {
+    method: "POST",
+    body: JSON.stringify({
+      thread: payload.thread,
+      sender: payload.sender,
+      recipient: payload.recipient,
+      message: payload.message,
+    }),
+  });
 
   return { calls };
 }
