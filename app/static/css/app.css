@@ -1,0 +1,48 @@
+:root {
+  --bg: #f3f5f0;
+  --fg: #1f2a1f;
+  --panel: #ffffff;
+  --line: #d6dbd2;
+  --accent: #31543a;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--fg);
+  background: radial-gradient(circle at top left, #dce8d9, var(--bg));
+}
+.topbar {
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 1rem;
+  padding: 1rem;
+}
+.panel {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 0.8rem;
+}
+button {
+  display: block;
+  width: 100%;
+  margin-bottom: 0.4rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8faf7;
+  color: var(--accent);
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}

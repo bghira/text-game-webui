@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="layout" x-data="textGameApp()" x-init="init()">
+  <aside class="panel left-column">
+    <h2>Campaigns</h2>
+    <form class="stack" @submit.prevent="createCampaign()">
+      <label>
+        Namespace
+        <input x-model="campaignForm.namespace" placeholder="default" />
+      </label>
+      <label>
+        Campaign Name
+        <input x-model="campaignForm.name" placeholder="New Campaign" required />
+      </label>
+      <label>
+        Lead Actor
+        <input x-model="campaignForm.actor_id" placeholder="dale-denton" required />
+      </label>
+      <button type="submit">Create Campaign</button>
+    </form>
+
+    <div class="stack compact">
+      <button type="button" @click="refreshCampaigns()">Refresh Campaign List</button>
+      <template x-for="campaign in campaigns" :key="campaign.id">
+        <button
+          type="button"
+          class="campaign-button"
+          :class="{ active: selectedCampaignId === campaign.id }"
+          @click="selectCampaign(campaign.id)"
+        >
+          <span x-text="campaign.name"></span>
+          <small x-text="campaign.namespace"></small>
+        </button>
+      </template>
+    </div>
+
+    <h2>Available Features</h2>
+    <div hx-get="/partials/feature-list" hx-trigger="load"></div>
+  </aside>
+
+  <section class="panel center-column">
+    <div class="section-head">
+      <h2>Turn Stream</h2>
+      <small x-text="selectedCampaignId ? selectedCampaignId : 'No campaign selected'"></small>
+    </div>
+
+    <div class="turn-stream" id="turn-stream">
+      <template x-for="entry in turnStream" :key="entry.id">
+        <article class="turn-entry">
+          <header>
+            <strong x-text="entry.type"></strong>
+            <small x-text="entry.at"></small>
+          </header>
+          <pre x-text="entry.text"></pre>
+        </article>
+      </template>
+      <p x-show="turnStream.length === 0" class="empty">No turns yet.</p>
+    </div>
+
+    <form class="stack" @submit.prevent="submitTurn()">
+      <label>
+        Actor ID
+        <input x-model="turnForm.actor_id" placeholder="dale-denton" required />
+      </label>
+      <label>
+        Action
+        <input x-model="turnForm.action" placeholder="look" required />
+      </label>
+      <button type="submit" :disabled="!selectedCampaignId">Submit Turn</button>
+    </form>
+
+    <p class="status" x-text="statusMessage"></p>
+    <p class="error" x-show="errorMessage" x-text="errorMessage"></p>
+  </section>
+
+  <section class="panel right-column">
+    <div class="tab-row">
+      <button type="button" @click="inspectorTab = 'map'" :class="{ active: inspectorTab === 'map' }">Map</button>
+      <button type="button" @click="inspectorTab = 'calendar'" :class="{ active: inspectorTab === 'calendar' }">Calendar</button>
+      <button type="button" @click="inspectorTab = 'roster'" :class="{ active: inspectorTab === 'roster' }">Roster</button>
+      <button type="button" @click="inspectorTab = 'memory'" :class="{ active: inspectorTab === 'memory' }">Memory</button>
+      <button type="button" @click="inspectorTab = 'sms'" :class="{ active: inspectorTab === 'sms' }">SMS</button>
+      <button type="button" @click="inspectorTab = 'debug'" :class="{ active: inspectorTab === 'debug' }">Debug</button>
+    </div>
+
+    <div x-show="inspectorTab === 'map'" class="stack">
+      <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
+      <pre x-text="mapText"></pre>
+    </div>
+
+    <div x-show="inspectorTab === 'calendar'" class="stack">
+      <button type="button" @click="loadCalendar()" :disabled="!selectedCampaignId">Refresh Calendar</button>
+      <pre x-text="calendarText"></pre>
+    </div>
+
+    <div x-show="inspectorTab === 'roster'" class="stack">
+      <button type="button" @click="loadRoster()" :disabled="!selectedCampaignId">Refresh Roster</button>
+      <pre x-text="rosterText"></pre>
+    </div>
+
+    <div x-show="inspectorTab === 'memory'" class="stack">
+      <form class="stack compact" @submit.prevent="searchMemory()">
+        <label>
+          Search
+          <input x-model="memory.search" placeholder="Belmond room" />
+        </label>
+        <label>
+          Category (optional)
+          <input x-model="memory.category" placeholder="char:elizabeth" />
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Run memory_search</button>
+      </form>
+
+      <form class="stack compact" @submit.prevent="listMemoryTerms()">
+        <label>
+          Wildcard
+          <input x-model="memory.wildcard" placeholder="char:*" />
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Run memory_terms</button>
+      </form>
+
+      <form class="stack compact" @submit.prevent="storeMemory()">
+        <label>
+          Store Category
+          <input x-model="memory.storeCategory" placeholder="char:dale-denton" />
+        </label>
+        <label>
+          Store Term
+          <input x-model="memory.storeTerm" placeholder="arrest" />
+        </label>
+        <label>
+          Memory
+          <textarea x-model="memory.storeText" rows="3" placeholder="Short memory payload"></textarea>
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Run memory_store</button>
+      </form>
+
+      <pre x-text="memoryText"></pre>
+    </div>
+
+    <div x-show="inspectorTab === 'sms'" class="stack">
+      <form class="stack compact" @submit.prevent="listSmsThreads()">
+        <label>
+          Wildcard
+          <input x-model="sms.wildcard" placeholder="*" />
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Run sms_list</button>
+      </form>
+
+      <form class="stack compact" @submit.prevent="readSmsThread()">
+        <label>
+          Thread
+          <input x-model="sms.thread" placeholder="saul" />
+        </label>
+        <label>
+          Limit
+          <input x-model.number="sms.limit" type="number" min="1" />
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Run sms_read</button>
+      </form>
+
+      <form class="stack compact" @submit.prevent="writeSms()">
+        <label>
+          Thread
+          <input x-model="sms.thread" placeholder="saul" />
+        </label>
+        <label>
+          Sender
+          <input x-model="sms.sender" placeholder="dale-denton" />
+        </label>
+        <label>
+          Recipient
+          <input x-model="sms.recipient" placeholder="saul-silver" />
+        </label>
+        <label>
+          Message
+          <textarea x-model="sms.message" rows="3" placeholder="Need pickup now."></textarea>
+        </label>
+        <button type="submit" :disabled="!selectedCampaignId">Run sms_write</button>
+      </form>
+
+      <pre x-text="smsText"></pre>
+    </div>
+
+    <div x-show="inspectorTab === 'debug'" class="stack">
+      <button type="button" @click="loadDebugSnapshot()" :disabled="!selectedCampaignId">Refresh Debug Snapshot</button>
+      <pre x-text="debugText"></pre>
+    </div>
+  </section>
+</section>
+{% endblock %}
