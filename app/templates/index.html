@@ -2,6 +2,27 @@
 {% block content %}
 <section class="layout" x-data="textGameApp()" x-init="init()">
   <aside class="panel left-column">
+    <h2>Runtime</h2>
+    <div class="stack compact runtime-panel">
+      <div class="runtime-actions">
+        <button type="button" @click="loadRuntime()">Refresh Runtime</button>
+        <button type="button" @click="runRuntimeChecks(true)">Run LLM Probe</button>
+      </div>
+      <p><strong>Backend:</strong> <span x-text="runtimeInfo.gateway_backend || 'unknown'"></span></p>
+      <p><strong>Mode:</strong> <span x-text="runtimeInfo.tge_completion_mode || 'n/a'"></span></p>
+      <p><strong>Model:</strong> <span x-text="runtimeInfo.tge_llm_model || 'n/a'"></span></p>
+      <p><strong>Base URL:</strong> <code x-text="runtimeInfo.tge_llm_base_url || 'n/a'"></code></p>
+      <p><strong>API Health:</strong> <span x-text="runtimeInfo.health_ok ? 'ok' : 'unreachable'"></span></p>
+      <p><strong>DB Check:</strong> <span x-text="runtimeCheckLabel(runtimeChecks.database)"></span></p>
+      <p><strong>Engine Check:</strong> <span x-text="runtimeCheckLabel(runtimeChecks.engine)"></span></p>
+      <p><strong>LLM Check:</strong> <span x-text="runtimeLlmLabel()"></span></p>
+      <p><strong>LLM Probe Default:</strong> <span x-text="runtimeInfo.tge_runtime_probe_llm_default ? 'on' : 'off'"></span></p>
+      <p><strong>Last Check:</strong> <span x-text="runtimeChecksMeta.generated_at || 'never'"></span></p>
+      <p><strong>Probe Used:</strong> <span x-text="runtimeChecksMeta.probe_llm ? 'yes' : 'no'"></span></p>
+      <p><strong>DB Detail:</strong> <span x-text="(runtimeChecks.database && runtimeChecks.database.detail) || 'n/a'"></span></p>
+      <p><strong>LLM Detail:</strong> <span x-text="(runtimeChecks.llm && runtimeChecks.llm.detail) || 'n/a'"></span></p>
+    </div>
+
     <h2>Campaigns</h2>
     <form class="stack" @submit.prevent="createCampaign()">
       <label>
@@ -78,6 +99,8 @@
       <button type="button" @click="inspectorTab = 'map'" :class="{ active: inspectorTab === 'map' }">Map</button>
       <button type="button" @click="inspectorTab = 'calendar'" :class="{ active: inspectorTab === 'calendar' }">Calendar</button>
       <button type="button" @click="inspectorTab = 'roster'" :class="{ active: inspectorTab === 'roster' }">Roster</button>
+      <button type="button" @click="inspectorTab = 'player'" :class="{ active: inspectorTab === 'player' }">Player</button>
+      <button type="button" @click="inspectorTab = 'media'" :class="{ active: inspectorTab === 'media' }">Media</button>
       <button type="button" @click="inspectorTab = 'memory'" :class="{ active: inspectorTab === 'memory' }">Memory</button>
       <button type="button" @click="inspectorTab = 'sms'" :class="{ active: inspectorTab === 'sms' }">SMS</button>
       <button type="button" @click="inspectorTab = 'debug'" :class="{ active: inspectorTab === 'debug' }">Debug</button>
@@ -96,6 +119,16 @@
     <div x-show="inspectorTab === 'roster'" class="stack">
       <button type="button" @click="loadRoster()" :disabled="!selectedCampaignId">Refresh Roster</button>
       <pre x-text="rosterText"></pre>
+    </div>
+
+    <div x-show="inspectorTab === 'player'" class="stack">
+      <button type="button" @click="loadPlayerState()" :disabled="!selectedCampaignId">Refresh Player State</button>
+      <pre x-text="playerStateText"></pre>
+    </div>
+
+    <div x-show="inspectorTab === 'media'" class="stack">
+      <button type="button" @click="loadMedia()" :disabled="!selectedCampaignId">Refresh Media</button>
+      <pre x-text="mediaText"></pre>
     </div>
 
     <div x-show="inspectorTab === 'memory'" class="stack">
@@ -183,6 +216,20 @@
     </div>
 
     <div x-show="inspectorTab === 'debug'" class="stack">
+      <section class="stack compact diagnostics-panel">
+        <h2>Connection Diagnostics</h2>
+        <p><strong>WebSocket state:</strong> <span x-text="diagnostics.ws_state"></span></p>
+        <p><strong>WebSocket last event:</strong> <span x-text="diagnostics.ws_last_event_at || 'never'"></span></p>
+        <p><strong>WebSocket reconnects:</strong> <span x-text="diagnostics.ws_reconnect_attempts"></span></p>
+        <p><strong>WebSocket last error:</strong> <span x-text="diagnostics.ws_last_error || 'none'"></span></p>
+        <p><strong>API last success:</strong> <span x-text="diagnostics.api_last_success_at || 'never'"></span></p>
+        <p><strong>API last error:</strong> <span x-text="diagnostics.api_last_error_at || 'never'"></span></p>
+        <p><strong>API error message:</strong> <span x-text="diagnostics.api_last_error_message || 'none'"></span></p>
+      </section>
+      <div class="debug-actions">
+        <button type="button" @click="copyDiagnosticsBundle()">Copy Diagnostics Bundle</button>
+        <small x-text="diagnosticsBundleStatus || 'No diagnostics export yet.'"></small>
+      </div>
       <button type="button" @click="loadDebugSnapshot()" :disabled="!selectedCampaignId">Refresh Debug Snapshot</button>
       <pre x-text="debugText"></pre>
     </div>

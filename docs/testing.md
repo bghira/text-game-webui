@@ -1,11 +1,37 @@
 # Testing
 
 ## Backend
-- Run: `pytest`
-- Scope: API handlers, gateway behavior, route contracts.
+- Command: `pytest`
+- Scope:
+  - API contract behavior
+  - gateway-backed tool surfaces
+  - websocket publish behavior
+  - 404 handling for missing campaigns
+  - gateway backend factory behavior
 
-## Frontend (Jest)
-- Run in `tests/frontend`: `npm test`
-- Required:
-  - flow tests in `tests/frontend/flows/*.test.ts`
-  - deterministic mocks for network/websocket behavior
+Optional test:
+- `tests/backend/test_tge_gateway_optional.py` runs only when `text_game_engine` is installed.
+- Diagnostics endpoint coverage:
+  - `GET /api/diagnostics/bundle`
+  - `GET /api/runtime/checks` (including `probe_llm=true` override path)
+  - with and without `campaign_id`
+- In `tge` + `openai` mode, run a manual integration check against your model endpoint:
+  - create campaign
+  - submit turn
+  - verify tool-call turns (memory/sms) resolve into final narration JSON
+  - if using runtime probes, set `TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_LLM=1` and verify `GET /api/runtime/checks` reports `llm.probe_attempted=true`
+
+## Frontend
+- Command: `cd tests/frontend && npm test`
+- Scope:
+  - flow helper behavior
+  - multi-step turn flow network sequence
+  - player-state refresh in post-turn flow
+  - media-status refresh in post-turn flow
+  - runtime diagnostics and diagnostics bundle payload shape
+
+## Required Change Discipline
+For any user-facing behavior change:
+1. Update code.
+2. Update canonical docs in `docs/`.
+3. Update or add backend/Jest flow tests.

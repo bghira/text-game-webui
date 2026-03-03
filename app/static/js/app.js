@@ -7,6 +7,10 @@
     return new Date().toLocaleTimeString();
   }
 
+  function isoNow() {
+    return new Date().toISOString();
+  }
+
   function normalizeTurnNarration(payload) {
     if (payload.narration && payload.narration.trim().length > 0) {
       return payload.narration;
@@ -26,7 +30,37 @@
       errorMessage: "",
       turnCounter: 0,
       socket: null,
+      socketReconnectTimer: null,
       turnStream: [],
+
+      runtimeInfo: {
+        gateway_backend: "unknown",
+        tge_completion_mode: null,
+        tge_llm_model: null,
+        tge_llm_base_url: null,
+        tge_runtime_probe_llm_default: null,
+        health_ok: false,
+      },
+      runtimeChecks: {
+        backend: "unknown",
+        completion_mode: null,
+        database: { ok: null, detail: "Not checked." },
+        engine: { ok: null, detail: "Not checked." },
+        llm: { configured: false, probe_attempted: false, ok: null, detail: "Not checked." },
+      },
+      runtimeChecksMeta: {
+        generated_at: null,
+        probe_llm: false,
+      },
+      diagnostics: {
+        ws_state: "disconnected",
+        ws_last_event_at: null,
+        ws_last_error: null,
+        ws_reconnect_attempts: 0,
+        api_last_success_at: null,
+        api_last_error_at: null,
+        api_last_error_message: null,
+      },
 
       campaignForm: {
         namespace: "default",
@@ -57,33 +91,66 @@
       mapText: "",
       calendarText: "",
       rosterText: "",
+      playerStateText: "",
+      mediaText: "",
       memoryText: "",
       smsText: "",
       debugText: "",
+      diagnosticsBundleStatus: "",
 
       async init() {
+        await this.loadRuntime();
         await this.refreshCampaigns();
-        this.statusMessage = "Initialized.";
-      },
-
-      async api(path, options) {
-        const config = {
-          method: "GET",
-          headers: { "Content-Type": "application/json" },
-          ...options,
-        };
-        const response = await fetch(path, config);
-        const raw = await response.text();
-        const data = raw ? JSON.parse(raw) : {};
-        if (!response.ok) {
-          const detail = data.detail || raw || "Request failed";
-          throw new Error(detail);
+        if (!this.statusMessage.startsWith("Runtime backend:")) {
+          this.statusMessage = "Initialized.";
         }
-        return data;
       },
 
       resetError() {
         this.errorMessage = "";
+      },
+
+      recordApiSuccess() {
+        this.diagnostics.api_last_success_at = isoNow();
+      },
+
+      recordApiError(message) {
+        this.diagnostics.api_last_error_at = isoNow();
+        this.diagnostics.api_last_error_message = String(message || "Request failed");
+      },
+
+      async api(path, options) {
+        let alreadyRecorded = false;
+        try {
+          const config = {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
+            ...options,
+          };
+          const response = await fetch(path, config);
+          const raw = await response.text();
+          let data = {};
+          if (raw) {
+            try {
+              data = JSON.parse(raw);
+            } catch (_err) {
+              data = { detail: raw };
+            }
+          }
+          if (!response.ok) {
+            const detail = data.detail || raw || "Request failed";
+            this.recordApiError(detail);
+            alreadyRecorded = true;
+            throw new Error(detail);
+          }
+          this.recordApiSuccess();
+          return data;
+        } catch (error) {
+          if (!alreadyRecorded) {
+            this.recordApiError(String(error));
+          }
+          throw error;
+        }
       },
 
       pushStream(type, text) {
@@ -95,6 +162,152 @@
             stream.scrollTop = stream.scrollHeight;
           }
         });
+      },
+
+      async loadRuntime() {
+        this.resetError();
+        try {
+          const runtime = await this.api("/api/runtime");
+          this.runtimeInfo.gateway_backend = runtime.gateway_backend || "unknown";
+          this.runtimeInfo.tge_completion_mode = runtime.tge_completion_mode || null;
+          this.runtimeInfo.tge_llm_model = runtime.tge_llm_model || null;
+          this.runtimeInfo.tge_llm_base_url = runtime.tge_llm_base_url || null;
+          this.runtimeInfo.tge_runtime_probe_llm_default = runtime.tge_runtime_probe_llm_default === true;
+
+          const health = await this.api("/api/health");
+          this.runtimeInfo.health_ok = health.ok === true;
+          await this.runRuntimeChecks(false);
+
+          this.statusMessage = `Runtime backend: ${this.runtimeInfo.gateway_backend}.`;
+        } catch (error) {
+          this.runtimeInfo.health_ok = false;
+          this.errorMessage = String(error);
+        }
+      },
+
+      async runRuntimeChecks(probeLlm) {
+        const query = probeLlm === true ? "?probe_llm=true" : "";
+        try {
+          const checksBody = await this.api(`/api/runtime/checks${query}`);
+          if (checksBody && checksBody.checks && typeof checksBody.checks === "object") {
+            this.runtimeChecks = checksBody.checks;
+            this.runtimeChecksMeta.generated_at = checksBody.generated_at || null;
+            this.runtimeChecksMeta.probe_llm = checksBody.probe_llm === true;
+          }
+          if (probeLlm === true) {
+            this.statusMessage = "LLM probe check completed.";
+          }
+        } catch (_error) {
+          this.runtimeChecks = {
+            ...this.runtimeChecks,
+            database: { ok: null, detail: "Runtime checks unavailable." },
+            engine: { ok: null, detail: "Runtime checks unavailable." },
+            llm: {
+              configured: false,
+              probe_attempted: false,
+              ok: null,
+              detail: "Runtime checks unavailable.",
+            },
+          };
+          this.runtimeChecksMeta.generated_at = null;
+          this.runtimeChecksMeta.probe_llm = false;
+        }
+      },
+
+      runtimeCheckLabel(node) {
+        if (!node || typeof node.ok !== "boolean") {
+          return "unknown";
+        }
+        return node.ok ? "ok" : "error";
+      },
+
+      runtimeLlmLabel() {
+        const llm = this.runtimeChecks.llm || {};
+        if (!llm.configured) {
+          return "not configured";
+        }
+        if (llm.probe_attempted !== true) {
+          return "configured (probe skipped)";
+        }
+        if (typeof llm.ok !== "boolean") {
+          return "probe unknown";
+        }
+        return llm.ok ? "probe ok" : "probe failed";
+      },
+
+      buildClientDiagnosticsBundle() {
+        const version =
+          window.TextGameWebUI && typeof window.TextGameWebUI.version === "string"
+            ? window.TextGameWebUI.version
+            : "unknown";
+        let parsedDebug = null;
+        if (this.debugText && this.debugText.trim()) {
+          try {
+            parsedDebug = JSON.parse(this.debugText);
+          } catch (_err) {
+            parsedDebug = this.debugText;
+          }
+        }
+        return {
+          generated_at_client: isoNow(),
+          app_version: version,
+          selected_campaign_id: this.selectedCampaignId,
+          runtime_cache: this.runtimeInfo,
+          runtime_checks_cache: this.runtimeChecks,
+          runtime_checks_meta: this.runtimeChecksMeta,
+          diagnostics: this.diagnostics,
+          selected_actor: this.turnForm.actor_id || null,
+          debug_snapshot_cache: parsedDebug,
+        };
+      },
+
+      async copyDiagnosticsBundle() {
+        this.resetError();
+        let payload;
+        let usedServerBundle = false;
+        const clientBundle = this.buildClientDiagnosticsBundle();
+        try {
+          const query = this.selectedCampaignId
+            ? `?campaign_id=${encodeURIComponent(this.selectedCampaignId)}`
+            : "";
+          const serverBundle = await this.api(`/api/diagnostics/bundle${query}`);
+          payload = {
+            ...serverBundle,
+            client_bundle: clientBundle,
+          };
+          usedServerBundle = true;
+        } catch (_error) {
+          payload = clientBundle;
+        }
+        const text = JSON.stringify(payload, null, 2);
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+            await navigator.clipboard.writeText(text);
+            this.diagnosticsBundleStatus = usedServerBundle
+              ? `Copied diagnostics bundle at ${nowLabel()}.`
+              : `Copied local-only diagnostics bundle at ${nowLabel()}.`;
+            return;
+          }
+          throw new Error("Clipboard API unavailable");
+        } catch (_error) {
+          try {
+            const blob = new Blob([text], { type: "application/json" });
+            const href = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = href;
+            link.download = `diagnostics-bundle-${Date.now()}.json`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(href);
+            this.diagnosticsBundleStatus = usedServerBundle
+              ? `Clipboard unavailable; downloaded bundle at ${nowLabel()}.`
+              : `Clipboard unavailable; downloaded local-only bundle at ${nowLabel()}.`;
+          } catch (downloadError) {
+            this.diagnosticsBundleStatus = "";
+            this.errorMessage = String(downloadError);
+          }
+        }
       },
 
       async refreshCampaigns() {
@@ -143,6 +356,8 @@
           this.loadMap(),
           this.loadCalendar(),
           this.loadRoster(),
+          this.loadPlayerState(),
+          this.loadMedia(),
           this.loadDebugSnapshot(),
         ]);
         this.statusMessage = `Selected campaign ${campaignId}.`;
@@ -152,16 +367,27 @@
         if (!this.selectedCampaignId) {
           return;
         }
+        if (this.socketReconnectTimer) {
+          clearTimeout(this.socketReconnectTimer);
+          this.socketReconnectTimer = null;
+        }
         if (this.socket) {
           this.socket.close();
         }
+        const campaignId = this.selectedCampaignId;
+        this.diagnostics.ws_state = "connecting";
+        this.diagnostics.ws_last_error = null;
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        const socketUrl = `${protocol}://${window.location.host}/ws/campaigns/${this.selectedCampaignId}`;
+        const socketUrl = `${protocol}://${window.location.host}/ws/campaigns/${campaignId}`;
         this.socket = new WebSocket(socketUrl);
         this.socket.onopen = () => {
+          this.diagnostics.ws_state = "connected";
+          this.diagnostics.ws_last_event_at = isoNow();
+          this.diagnostics.ws_reconnect_attempts = 0;
           this.statusMessage = "Realtime connected.";
         };
         this.socket.onmessage = (event) => {
+          this.diagnostics.ws_last_event_at = isoNow();
           const payload = JSON.parse(event.data);
           if (payload.type === "turn" && payload.payload) {
             this.pushStream("narrator", normalizeTurnNarration(payload.payload));
@@ -171,7 +397,23 @@
           }
         };
         this.socket.onerror = () => {
+          this.diagnostics.ws_state = "error";
+          this.diagnostics.ws_last_error = "WebSocket transport error.";
           this.errorMessage = "WebSocket error.";
+        };
+        this.socket.onclose = () => {
+          this.diagnostics.ws_state = "disconnected";
+          if (!this.selectedCampaignId || this.selectedCampaignId !== campaignId) {
+            return;
+          }
+          if (this.diagnostics.ws_reconnect_attempts >= 5) {
+            this.diagnostics.ws_last_error = "WebSocket reconnect limit reached.";
+            return;
+          }
+          this.diagnostics.ws_reconnect_attempts += 1;
+          this.socketReconnectTimer = setTimeout(() => {
+            this.connectSocket();
+          }, 1500);
         };
       },
 
@@ -203,6 +445,8 @@
             this.loadMap(),
             this.loadCalendar(),
             this.loadRoster(),
+            this.loadPlayerState(),
+            this.loadMedia(),
             this.loadDebugSnapshot(),
           ]);
           this.statusMessage = "Turn submitted.";
@@ -234,6 +478,47 @@
         }
         const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster`);
         this.rosterText = formatJson(body);
+      },
+
+      async loadPlayerState() {
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        const actor = this.turnForm.actor_id || "";
+        if (!actor.trim()) {
+          this.playerStateText = formatJson({ detail: "Set actor id to inspect player state." });
+          return;
+        }
+        try {
+          const body = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/player-state?actor_id=${encodeURIComponent(actor.trim())}`,
+          );
+          this.playerStateText = formatJson(body);
+        } catch (error) {
+          this.playerStateText = formatJson({
+            detail: "Player state unavailable for selected actor.",
+            actor_id: actor.trim(),
+            error: String(error),
+          });
+        }
+      },
+
+      async loadMedia() {
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        const actor = this.turnForm.actor_id || "";
+        const query = actor.trim() ? `?actor_id=${encodeURIComponent(actor.trim())}` : "";
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/media${query}`);
+          this.mediaText = formatJson(body);
+        } catch (error) {
+          this.mediaText = formatJson({
+            detail: "Media status unavailable.",
+            actor_id: actor.trim() || null,
+            error: String(error),
+          });
+        }
       },
 
       async searchMemory() {

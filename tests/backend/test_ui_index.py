@@ -3,4 +3,13 @@ def test_index_renders(client):
     assert res.status_code == 200
     text = res.text
     assert "text-game-webui" in text
-    assert "Feature Surface" in text
+    assert "Turn Stream" in text
+    assert "Runtime" in text
+    assert "Player" in text
+    assert "Media" in text
+    assert "DB Check:" in text
+    assert "LLM Check:" in text
+    assert "Run LLM Probe" in text
+    assert "Connection Diagnostics" in text
+    assert "Copy Diagnostics Bundle" in text
+    assert "Available Features" in text

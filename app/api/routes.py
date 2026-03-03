@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -35,6 +37,57 @@ def _not_found(err: KeyError) -> None:
 @router.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@router.get("/runtime")
+async def runtime(request: Request) -> dict:
+    out = {"gateway_backend": request.app.state.gateway_backend}
+    settings = request.app.state.settings
+    if out["gateway_backend"] == "tge":
+        out["tge_completion_mode"] = settings.tge_completion_mode
+        out["tge_llm_model"] = settings.tge_llm_model
+        out["tge_llm_base_url"] = settings.tge_llm_base_url
+        out["tge_runtime_probe_llm_default"] = bool(settings.tge_runtime_probe_llm)
+    return out
+
+
+@router.get("/runtime/checks")
+async def runtime_checks(
+    request: Request,
+    probe_llm: bool | None = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    settings = request.app.state.settings
+    should_probe = bool(settings.tge_runtime_probe_llm) if probe_llm is None else bool(probe_llm)
+    checks = await gateway.runtime_checks(probe_llm=should_probe)
+    return {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "probe_llm": should_probe,
+        "checks": checks,
+    }
+
+
+@router.get("/diagnostics/bundle")
+async def diagnostics_bundle(
+    request: Request,
+    campaign_id: str | None = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    runtime_info = await runtime(request)
+    runtime_check_info = await runtime_checks(request, None, gateway)
+    payload: dict[str, object] = {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "runtime": runtime_info,
+        "runtime_checks": runtime_check_info,
+        "features": FEATURES,
+    }
+    if campaign_id:
+        try:
+            payload["campaign_id"] = campaign_id
+            payload["campaign_debug_snapshot"] = await gateway.debug_snapshot(campaign_id)
+        except KeyError as err:
+            _not_found(err)
+    return payload
 
 
 @router.get("/features")
@@ -92,6 +145,28 @@ async def get_roster(campaign_id: str, gateway: EngineGateway = Depends(get_gate
         return await gateway.get_roster(campaign_id)
     except KeyError as err:
         _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/player-state")
+async def get_player_state(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        data = await gateway.get_player_state(campaign_id, actor_id)
+    except KeyError as err:
+        _not_found(err)
+    return {"player_state": data}
+
+
+@router.get("/campaigns/{campaign_id}/media")
+async def get_media(
+    campaign_id: str,
+    actor_id: str | None = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.get_media(campaign_id, actor_id)
+    except KeyError as err:
+        _not_found(err)
+    return {"media": data}
 
 
 @router.post("/campaigns/{campaign_id}/memory/search")
