@@ -228,6 +228,7 @@ class DeterministicLLM:
 
 class ZorkToolAwareLLM:
     """Model adapter that reuses ZorkEmulator prompt + tool call semantics."""
+    AUTO_FIX_COUNTERS_KEY = "_auto_fix_counters"
 
     def __init__(
         self,
@@ -257,6 +258,213 @@ class ZorkToolAwareLLM:
             return json.loads(text)
         except Exception:
             return default
+
+    def _bump_auto_fix_counter(
+        self,
+        campaign_id: str,
+        key: str,
+        amount: int = 1,
+    ) -> None:
+        safe_key = re.sub(r"[^a-z0-9_]+", "_", str(key or "").strip().lower()).strip("_")
+        if not safe_key:
+            return
+        try:
+            safe_amount = max(1, int(amount))
+        except Exception:
+            safe_amount = 1
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                return
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+            counters = state.get(self.AUTO_FIX_COUNTERS_KEY)
+            if not isinstance(counters, dict):
+                counters = {}
+                state[self.AUTO_FIX_COUNTERS_KEY] = counters
+            try:
+                current = max(0, int(counters.get(safe_key, 0) or 0))
+            except Exception:
+                current = 0
+            counters[safe_key] = min(10**9, current + safe_amount)
+            campaign.state_json = json.dumps(state, ensure_ascii=True)
+            campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            session.commit()
+
+    @staticmethod
+    def _should_force_auto_memory_search(action_text: str) -> bool:
+        if re.match(r"\s*\[OOC\b", str(action_text or ""), re.IGNORECASE):
+            return False
+        text = " ".join(str(action_text or "").strip().lower().split())
+        if not text or text.startswith("!") or len(text) < 6:
+            return False
+        trivial = {
+            "look",
+            "l",
+            "inventory",
+            "inv",
+            "i",
+            "map",
+            "yes",
+            "y",
+            "no",
+            "n",
+            "ok",
+            "okay",
+            "thanks",
+            "thank you",
+        }
+        return text not in trivial
+
+    def _derive_auto_memory_queries(
+        self,
+        campaign_id: str,
+        actor_id: str,
+        action_text: str,
+        limit: int = 4,
+    ) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+
+        def _push(raw: object) -> None:
+            text = " ".join(str(raw or "").strip().split())
+            if not text:
+                return
+            key = text.lower()
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(text[:120])
+
+        with self._session_factory() as session:
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            pstate = self._parse_json(player.state_json if player is not None else "{}", {})
+            if isinstance(pstate, dict):
+                _push(pstate.get("location"))
+                _push(pstate.get("room_title"))
+                player_name = " ".join(str(pstate.get("character_name") or "").strip().lower().split())
+            else:
+                player_name = ""
+
+            others = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .order_by(Player.actor_id.asc())
+                .all()
+            )
+            for row in others[:6]:
+                ostate = self._parse_json(row.state_json or "{}", {})
+                if not isinstance(ostate, dict):
+                    continue
+                name = " ".join(str(ostate.get("character_name") or "").strip().split())
+                if not name:
+                    continue
+                if name.lower() == player_name:
+                    continue
+                _push(name)
+                if len(out) >= limit:
+                    break
+
+        _push(action_text)
+        return out[: max(1, int(limit or 4))]
+
+    @staticmethod
+    def _is_emptyish_payload(payload: dict[str, Any]) -> bool:
+        if not isinstance(payload, dict):
+            return True
+        narration = " ".join(str(payload.get("narration") or "").strip().lower().split())
+        trivial_narration = narration in {
+            "",
+            "the world shifts, but nothing clear emerges.",
+            "a hollow silence answers. try again.",
+            "a hollow silence answers.",
+        }
+        short_narration = len(narration) < 24
+        state_update = payload.get("state_update")
+        player_state_update = payload.get("player_state_update")
+        summary_update = payload.get("summary_update")
+        character_updates = payload.get("character_updates")
+        calendar_update = payload.get("calendar_update")
+        scene_image_prompt = payload.get("scene_image_prompt")
+        xp_awarded = payload.get("xp_awarded", 0)
+        has_signal = bool(state_update) or bool(player_state_update) or bool(character_updates) or bool(calendar_update)
+        has_signal = has_signal or bool(str(summary_update or "").strip()) or bool(str(scene_image_prompt or "").strip())
+        try:
+            has_signal = has_signal or int(xp_awarded or 0) > 0
+        except Exception:
+            pass
+        if trivial_narration and not has_signal:
+            return True
+        if short_narration and not has_signal:
+            return True
+        return False
+
+    @staticmethod
+    def _looks_like_major_narrative_beat(payload: dict[str, Any]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        narration = " ".join(str(payload.get("narration") or "").lower().split())
+        summary = " ".join(str(payload.get("summary_update") or "").lower().split())
+        text = f"{narration} {summary}".strip()
+        cues = (
+            "reveals",
+            "reveal",
+            "confirms",
+            "confirmed",
+            "pregnant",
+            "paternity",
+            "dies",
+            "dead",
+            "betray",
+            "arrest",
+            "results",
+            "test result",
+            "identity",
+            "truth",
+            "confession",
+            "escape",
+            "ambush",
+        )
+        if any(cue in text for cue in cues):
+            return True
+        if isinstance(payload.get("character_updates"), dict):
+            for row in payload.get("character_updates", {}).values():
+                if isinstance(row, dict) and str(row.get("deceased_reason") or "").strip():
+                    return True
+        if isinstance(payload.get("calendar_update"), dict):
+            cal = payload.get("calendar_update") or {}
+            if isinstance(cal.get("add"), list) or isinstance(cal.get("remove"), list):
+                return True
+        if isinstance(payload.get("state_update"), dict):
+            if "current_chapter" in payload.get("state_update", {}) or "current_scene" in payload.get("state_update", {}):
+                return True
+        return False
+
+    @staticmethod
+    def _action_requests_clock_time(action_text: str) -> bool:
+        text = " ".join(str(action_text or "").strip().lower().split())
+        if not text:
+            return False
+        return any(
+            token in text
+            for token in (
+                "what time",
+                "current time",
+                "check time",
+                "clock",
+                "time is it",
+            )
+        )
+
+    @staticmethod
+    def _narration_has_explicit_clock_time(narration_text: str) -> bool:
+        return bool(re.search(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b", str(narration_text or "")))
 
     def _fallback_memory_state(self, campaign_id: str) -> list[dict[str, Any]]:
         with self._session_factory() as session:
@@ -409,6 +617,17 @@ class ZorkToolAwareLLM:
                     )
                 )
 
+        roster_hints: list[dict[str, Any]] = []
+        if self._emulator is not None and hasattr(self._emulator, "record_memory_search_usage"):
+            try:
+                roster_hints_raw = self._emulator.record_memory_search_usage(campaign_id, queries[:8])
+                if isinstance(roster_hints_raw, list):
+                    for row in roster_hints_raw:
+                        if isinstance(row, dict):
+                            roster_hints.append(row)
+            except Exception:
+                roster_hints = []
+
         narrator_hits: dict[int, dict[str, Any]] = {}
         with self._session_factory() as session:
             turns = (
@@ -484,8 +703,25 @@ class ZorkToolAwareLLM:
                 "- To inspect off-scene SMS communications:",
                 '  {"tool_call": "sms_list", "wildcard": "*"}',
                 '  {"tool_call": "sms_read", "thread": "contact-slug", "limit": 20}',
+                "- To schedule a delayed incoming SMS (hidden until delivery):",
+                '  {"tool_call": "sms_schedule", "thread": "contact-slug", "from": "NPC", "to": "Player", "message": "...", "delay_seconds": 120}',
             ]
         )
+        if roster_hints:
+            lines.append("MEMORY_RECALL_ROSTER_RECOMMENDATIONS:")
+            for hint in roster_hints[:6]:
+                term = str(hint.get("term") or hint.get("slug") or "").strip() or "unknown-term"
+                slug = str(hint.get("slug") or "").strip() or "character-slug"
+                try:
+                    count = int(hint.get("count") or 0)
+                except Exception:
+                    count = 0
+                lines.append(
+                    "- You have looked for "
+                    f"'{term}' {count} times and it is not present in WORLD_CHARACTERS. "
+                    "If this is stable/non-stale information and you can confirm it, "
+                    f"store it with character_updates using slug '{slug}'."
+                )
         return "\n".join(lines)
 
     def _tool_memory_terms(self, campaign_id: str, payload: dict[str, Any]) -> str:
@@ -607,11 +843,18 @@ class ZorkToolAwareLLM:
                 "NEXT_ACTIONS:",
                 '- {"tool_call": "sms_read", "thread": "contact-slug", "limit": 20}',
                 '- {"tool_call": "sms_write", "thread": "contact-slug", "from": "A", "to": "B", "message": "..."}',
+                '- {"tool_call": "sms_schedule", "thread": "contact-slug", "from": "NPC", "to": "Player", "message": "...", "delay_seconds": 120}',
             ]
         )
         return "\n".join(lines)
 
-    def _tool_sms_read(self, campaign_id: str, payload: dict[str, Any]) -> str:
+    def _tool_sms_read(
+        self,
+        campaign_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+    ) -> str:
         thread_raw = payload.get("thread")
         limit_raw = payload.get("limit", 20)
         thread = thread_raw.strip() if isinstance(thread_raw, str) and thread_raw.strip() else ""
@@ -623,7 +866,16 @@ class ZorkToolAwareLLM:
         if not thread:
             return "SMS_READ_RESULT: invalid thread"
 
-        canonical, matched, messages = self._emulator.read_sms_thread(campaign_id, thread, limit=limit) if self._emulator else (None, None, [])
+        canonical, matched, messages = (
+            self._emulator.read_sms_thread(
+                campaign_id,
+                thread,
+                limit=limit,
+                viewer_actor_id=actor_id,
+            )
+            if self._emulator
+            else (None, None, [])
+        )
         lines = [f"SMS_READ_RESULT: thread={canonical or thread} matched={matched}"]
         if messages:
             for msg in messages[-limit:]:
@@ -685,6 +937,66 @@ class ZorkToolAwareLLM:
         )
         return f"SMS_WRITE_RESULT: stored={bool(ok)} reason={reason} thread={thread}"
 
+    def _tool_sms_schedule(self, campaign_id: str, payload: dict[str, Any]) -> str:
+        thread_raw = payload.get("thread")
+        sender_raw = payload.get("from", payload.get("sender"))
+        recipient_raw = payload.get("to", payload.get("recipient"))
+        message_raw = payload.get("message")
+        delay_raw = payload.get("delay_seconds", payload.get("delay"))
+        delay_minutes_raw = payload.get("delay_minutes")
+
+        thread = thread_raw.strip() if isinstance(thread_raw, str) and thread_raw.strip() else ""
+        sender = sender_raw.strip() if isinstance(sender_raw, str) and sender_raw.strip() else ""
+        recipient = recipient_raw.strip() if isinstance(recipient_raw, str) and recipient_raw.strip() else ""
+        message = message_raw.strip() if isinstance(message_raw, str) and message_raw.strip() else ""
+
+        if not thread or not sender or not recipient or not message:
+            return "SMS_SCHEDULE_RESULT: invalid payload"
+
+        if delay_raw is None and delay_minutes_raw is not None:
+            try:
+                delay_raw = int(delay_minutes_raw) * 60
+            except Exception:
+                delay_raw = None
+        try:
+            delay_seconds = int(delay_raw)
+        except Exception:
+            delay_seconds = 90
+
+        if self._emulator is None:
+            return "SMS_SCHEDULE_RESULT: emulator unavailable"
+
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                return "SMS_SCHEDULE_RESULT: campaign not found"
+            latest_turn = (
+                session.query(Turn)
+                .filter(Turn.campaign_id == campaign_id)
+                .order_by(Turn.id.desc())
+                .first()
+            )
+        speed = self._emulator.get_speed_multiplier(campaign) if campaign is not None else 1.0
+        if speed > 0:
+            delay_seconds = int(delay_seconds / speed)
+        delay_seconds = max(15, min(86_400, delay_seconds))
+        turn_id = int(latest_turn.id) if latest_turn is not None else 0
+        ok, reason, applied_delay = self._emulator.schedule_sms_thread_delivery(
+            campaign_id,
+            thread=thread,
+            sender=sender,
+            recipient=recipient,
+            message=message,
+            delay_seconds=delay_seconds,
+            turn_id=turn_id,
+        )
+        return (
+            "SMS_SCHEDULE_RESULT: "
+            f"scheduled={bool(ok)} reason={reason} "
+            f"thread={thread} delay_seconds={applied_delay if ok else delay_seconds} "
+            "delivery_visibility=hidden_until_delivery interruptible=false"
+        )
+
     def _tool_story_outline(self, campaign_id: str, payload: dict[str, Any]) -> str:
         chapter_key_raw = payload.get("chapter")
         chapter_key = chapter_key_raw.strip().lower() if isinstance(chapter_key_raw, str) and chapter_key_raw.strip() else None
@@ -722,7 +1034,225 @@ class ZorkToolAwareLLM:
             text = text[:9999] + "..."
         return f"STORY_OUTLINE:\n{text}"
 
-    def _execute_tool_call(self, campaign_id: str, payload: dict[str, Any]) -> str:
+    def _tool_plot_plan(self, campaign_id: str, payload: dict[str, Any]) -> str:
+        plans = payload.get("plans")
+        if isinstance(plans, dict):
+            plans = [plans]
+        if not isinstance(plans, list):
+            return "PLOT_PLAN_RESULT: invalid payload"
+
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                return "PLOT_PLAN_RESULT: campaign not found"
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+            threads = state.get("_plot_threads")
+            if not isinstance(threads, dict):
+                threads = {}
+            updated = 0
+            removed = 0
+            for row in plans[:12]:
+                if not isinstance(row, dict):
+                    continue
+                slug_raw = row.get("thread") or row.get("slug")
+                slug = re.sub(r"[^a-z0-9]+", "-", str(slug_raw or "").strip().lower()).strip("-")[:80]
+                if not slug:
+                    continue
+                if bool(row.get("remove") or row.get("delete") or row.get("_delete")):
+                    if slug in threads:
+                        threads.pop(slug, None)
+                        removed += 1
+                    continue
+                item = dict(threads.get(slug) or {"thread": slug, "status": "active"})
+                for field in ("setup", "intended_payoff", "resolution"):
+                    if row.get(field) is not None:
+                        item[field] = " ".join(str(row.get(field) or "").split())[:260]
+                if row.get("target_turns") is not None:
+                    try:
+                        item["target_turns"] = max(1, min(250, int(row.get("target_turns"))))
+                    except Exception:
+                        item["target_turns"] = int(item.get("target_turns") or 8)
+                deps = row.get("dependencies")
+                if isinstance(deps, list):
+                    clean = []
+                    for dep in deps[:8]:
+                        text = " ".join(str(dep or "").split())[:120]
+                        if text:
+                            clean.append(text)
+                    item["dependencies"] = clean
+                status = str(row.get("status") or item.get("status") or "active").strip().lower()
+                if row.get("resolve"):
+                    status = "resolved"
+                if status not in {"active", "resolved"}:
+                    status = "active"
+                item["status"] = status
+                threads[slug] = item
+                updated += 1
+            state["_plot_threads"] = threads
+            campaign.state_json = json.dumps(state, ensure_ascii=True)
+            campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            session.commit()
+        return f"PLOT_PLAN_RESULT: updated={updated} removed={removed} total={len(threads)}"
+
+    def _tool_chapter_plan(self, campaign_id: str, payload: dict[str, Any]) -> str:
+        action = str(payload.get("action") or "create").strip().lower()
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                return "CHAPTER_PLAN_RESULT: campaign not found"
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+            if bool(state.get("on_rails")):
+                return "CHAPTER_PLAN_RESULT: ignored (on_rails enabled)"
+            chapters = state.get("_chapter_plan")
+            if not isinstance(chapters, dict):
+                chapters = {}
+
+            chapter_obj = payload.get("chapter")
+            if isinstance(chapter_obj, dict):
+                slug_raw = chapter_obj.get("slug") or chapter_obj.get("title")
+            else:
+                slug_raw = payload.get("chapter") or payload.get("slug")
+            slug = re.sub(r"[^a-z0-9]+", "-", str(slug_raw or "").strip().lower()).strip("-")[:80]
+            changed = 0
+
+            if action in {"create", "update"}:
+                if not slug:
+                    return "CHAPTER_PLAN_RESULT: missing slug"
+                row = dict(chapters.get(slug) or {"slug": slug, "status": "active"})
+                if isinstance(chapter_obj, dict):
+                    if chapter_obj.get("title") is not None:
+                        row["title"] = " ".join(str(chapter_obj.get("title") or "").split())[:120]
+                    if chapter_obj.get("summary") is not None:
+                        row["summary"] = " ".join(str(chapter_obj.get("summary") or "").split())[:260]
+                    scenes = chapter_obj.get("scenes")
+                    if isinstance(scenes, list):
+                        row["scenes"] = [
+                            re.sub(r"[^a-z0-9]+", "-", str(scene or "").strip().lower()).strip("-")[:80]
+                            for scene in scenes[:20]
+                            if str(scene or "").strip()
+                        ]
+                    if chapter_obj.get("current_scene") is not None:
+                        row["current_scene"] = re.sub(
+                            r"[^a-z0-9]+", "-", str(chapter_obj.get("current_scene") or "").strip().lower()
+                        ).strip("-")[:80]
+                    if chapter_obj.get("active") is not None:
+                        row["status"] = "active" if bool(chapter_obj.get("active")) else "resolved"
+                chapters[slug] = row
+                changed += 1
+            elif action == "advance_scene":
+                if slug and slug in chapters:
+                    row = dict(chapters.get(slug) or {})
+                    to_scene = payload.get("to_scene") or payload.get("scene")
+                    scene_slug = re.sub(r"[^a-z0-9]+", "-", str(to_scene or "").strip().lower()).strip("-")[:80]
+                    if scene_slug:
+                        row["current_scene"] = scene_slug
+                        scenes = row.get("scenes")
+                        if not isinstance(scenes, list):
+                            scenes = []
+                        if scene_slug not in scenes:
+                            scenes.append(scene_slug)
+                        row["scenes"] = scenes[:20]
+                    row["status"] = "active"
+                    chapters[slug] = row
+                    changed += 1
+            elif action in {"resolve", "close"}:
+                if slug and slug in chapters:
+                    row = dict(chapters.get(slug) or {})
+                    row["status"] = "resolved"
+                    row["resolution"] = " ".join(str(payload.get("resolution") or "").split())[:260]
+                    chapters[slug] = row
+                    changed += 1
+
+            state["_chapter_plan"] = chapters
+            campaign.state_json = json.dumps(state, ensure_ascii=True)
+            campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            session.commit()
+        return f"CHAPTER_PLAN_RESULT: updated={changed} total={len(chapters)}"
+
+    def _tool_consequence_log(self, campaign_id: str, payload: dict[str, Any]) -> str:
+        def _iter_rows(value: Any) -> list[dict[str, Any]]:
+            if isinstance(value, dict):
+                return [value]
+            if isinstance(value, list):
+                return [row for row in value if isinstance(row, dict)]
+            return []
+
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                return "CONSEQUENCE_LOG_RESULT: campaign not found"
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+            rows = state.get("_consequences")
+            if not isinstance(rows, dict):
+                rows = {}
+
+            added = 0
+            resolved = 0
+            removed = 0
+            for entry in _iter_rows(payload.get("add")):
+                trigger = " ".join(str(entry.get("trigger") or "").split())[:240]
+                consequence = " ".join(str(entry.get("consequence") or "").split())[:300]
+                if not trigger or not consequence:
+                    continue
+                cid_raw = entry.get("id") or entry.get("slug") or trigger[:60]
+                cid = re.sub(r"[^a-z0-9]+", "-", str(cid_raw or "").strip().lower()).strip("-")[:90]
+                if not cid:
+                    continue
+                severity = str(entry.get("severity") or "low").strip().lower()
+                if severity not in {"low", "moderate", "high", "critical"}:
+                    severity = "low"
+                row = dict(rows.get(cid) or {})
+                row.update(
+                    {
+                        "id": cid,
+                        "trigger": trigger,
+                        "consequence": consequence,
+                        "severity": severity,
+                        "status": "active",
+                        "resolution": str(row.get("resolution") or "")[:260],
+                    }
+                )
+                rows[cid] = row
+                added += 1
+
+            for entry in _iter_rows(payload.get("resolve")):
+                cid_raw = entry.get("id") or entry.get("slug") or entry.get("trigger")
+                cid = re.sub(r"[^a-z0-9]+", "-", str(cid_raw or "").strip().lower()).strip("-")[:90]
+                if not cid or cid not in rows:
+                    continue
+                row = dict(rows.get(cid) or {})
+                row["status"] = "resolved"
+                row["resolution"] = " ".join(str(entry.get("resolution") or row.get("resolution") or "resolved").split())[:260]
+                rows[cid] = row
+                resolved += 1
+
+            remove_keys = payload.get("remove")
+            if isinstance(remove_keys, list):
+                for raw in remove_keys:
+                    cid = re.sub(r"[^a-z0-9]+", "-", str(raw or "").strip().lower()).strip("-")[:90]
+                    if cid and cid in rows:
+                        rows.pop(cid, None)
+                        removed += 1
+
+            state["_consequences"] = rows
+            campaign.state_json = json.dumps(state, ensure_ascii=True)
+            campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+            session.commit()
+        return f"CONSEQUENCE_LOG_RESULT: added={added} resolved={resolved} removed={removed} total={len(rows)}"
+
+    def _execute_tool_call(
+        self,
+        campaign_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+    ) -> str:
         tool = payload.get("tool_call")
         if not isinstance(tool, str):
             return "TOOL_ERROR: missing tool_call"
@@ -739,14 +1269,29 @@ class ZorkToolAwareLLM:
         if name == "sms_list":
             return self._tool_sms_list(campaign_id, payload)
         if name == "sms_read":
-            return self._tool_sms_read(campaign_id, payload)
+            return self._tool_sms_read(campaign_id, payload, actor_id=actor_id)
         if name == "sms_write":
             return self._tool_sms_write(campaign_id, payload)
+        if name == "sms_schedule":
+            return self._tool_sms_schedule(campaign_id, payload)
         if name == "story_outline":
             return self._tool_story_outline(campaign_id, payload)
+        if name == "plot_plan":
+            return self._tool_plot_plan(campaign_id, payload)
+        if name == "chapter_plan":
+            return self._tool_chapter_plan(campaign_id, payload)
+        if name == "consequence_log":
+            return self._tool_consequence_log(campaign_id, payload)
         return f"TOOL_ERROR: unsupported tool_call '{name}'"
 
-    async def _resolve_payload(self, campaign_id: str, system_prompt: str, user_prompt: str) -> dict[str, Any] | None:
+    async def _resolve_payload(
+        self,
+        campaign_id: str,
+        actor_id: str,
+        action_text: str,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> dict[str, Any] | None:
         first = await self._completion.complete(
             system_prompt,
             user_prompt,
@@ -758,13 +1303,55 @@ class ZorkToolAwareLLM:
             return None
 
         tool_history = ""
+        used_tool_names: set[str] = set()
+        emulator = self._emulator
+        if emulator is None:
+            return None
+        if (
+            not emulator._is_tool_call(payload)  # noqa: SLF001
+            and self._should_force_auto_memory_search(action_text)
+        ):
+            forced_queries = self._derive_auto_memory_queries(
+                campaign_id,
+                actor_id,
+                action_text,
+                limit=4,
+            )
+            if forced_queries:
+                tool_payload = {"tool_call": "memory_search", "queries": forced_queries}
+                tool_result = self._execute_tool_call(
+                    campaign_id,
+                    tool_payload,
+                    actor_id=actor_id,
+                )
+                tool_history += f"\n\n{tool_result}"
+                augmented_prompt = (
+                    f"{user_prompt}\n"
+                    f"{tool_history}\n\n"
+                    "Use the memory results above. Return ONLY the final turn JSON object."
+                )
+                nxt = await self._completion.complete(
+                    system_prompt,
+                    augmented_prompt,
+                    temperature=max(0.1, self._temperature - 0.2),
+                    max_tokens=self._max_tokens,
+                )
+                payload = self._parse_model_payload(nxt)
+                self._bump_auto_fix_counter(campaign_id, "forced_memory_search")
+                if payload is None:
+                    return None
+
         for _ in range(max(0, self._max_tool_rounds)):
-            emulator = self._emulator
-            if emulator is None:
-                return None
             if not emulator._is_tool_call(payload):  # noqa: SLF001
-                return payload
-            tool_result = self._execute_tool_call(campaign_id, payload)
+                break
+            tool_name = str(payload.get("tool_call") or "").strip().lower()
+            if tool_name:
+                used_tool_names.add(tool_name)
+            tool_result = self._execute_tool_call(
+                campaign_id,
+                payload,
+                actor_id=actor_id,
+            )
             tool_history += f"\n\n{tool_result}"
             augmented_prompt = (
                 f"{user_prompt}\n"
@@ -781,11 +1368,84 @@ class ZorkToolAwareLLM:
             if payload is None:
                 return None
 
-        emulator = self._emulator
-        if emulator is None:
-            return None
         if emulator._is_tool_call(payload):  # noqa: SLF001
             return None
+        if self._is_emptyish_payload(payload):
+            self._bump_auto_fix_counter(campaign_id, "empty_response_repair_retry")
+            repair_prompt = (
+                f"{user_prompt}\n"
+                f"{tool_history}\n\n"
+                "OUTPUT_VALIDATION_FAILED: previous response was too empty.\n"
+                "Return ONLY final JSON (no tool_call) with:\n"
+                "- narration containing one concrete scene development\n"
+                "- state_update object with game_time advanced\n"
+                "- summary_update with durable consequence when applicable.\n"
+            )
+            repaired = await self._completion.complete(
+                system_prompt,
+                repair_prompt,
+                temperature=max(0.1, self._temperature - 0.1),
+                max_tokens=self._max_tokens,
+            )
+            repaired_payload = self._parse_model_payload(repaired)
+            if (
+                repaired_payload is not None
+                and not emulator._is_tool_call(repaired_payload)  # noqa: SLF001
+            ):
+                payload = repaired_payload
+
+        narration = str(payload.get("narration") or "")
+        if (
+            self._narration_has_explicit_clock_time(narration)
+            and not self._action_requests_clock_time(action_text)
+        ):
+            self._bump_auto_fix_counter(campaign_id, "clock_drift_retry")
+            clock_prompt = (
+                f"{user_prompt}\n"
+                f"{tool_history}\n\n"
+                "OUTPUT_VALIDATION_FAILED: Do not invent explicit HH:MM clock timestamps unless asked.\n"
+                "Use canonical CURRENT_GAME_TIME or omit exact times.\n"
+                "Return ONLY final JSON (no tool_call).\n"
+            )
+            clock_retry = await self._completion.complete(
+                system_prompt,
+                clock_prompt,
+                temperature=max(0.1, self._temperature - 0.1),
+                max_tokens=self._max_tokens,
+            )
+            clock_payload = self._parse_model_payload(clock_retry)
+            if (
+                clock_payload is not None
+                and not emulator._is_tool_call(clock_payload)  # noqa: SLF001
+            ):
+                payload = clock_payload
+
+        planning_used = bool({"plot_plan", "chapter_plan", "consequence_log"} & used_tool_names)
+        if not planning_used and self._looks_like_major_narrative_beat(payload):
+            planning_prompt = (
+                f"{user_prompt}\n"
+                f"{tool_history}\n\n"
+                "PLANNING_ENFORCEMENT: A major beat occurred.\n"
+                "Return ONLY one planning tool call JSON now: plot_plan OR consequence_log "
+                "(chapter_plan optional off-rails).\n"
+                "No narration.\n"
+            )
+            planning_resp = await self._completion.complete(
+                system_prompt,
+                planning_prompt,
+                temperature=max(0.1, self._temperature - 0.2),
+                max_tokens=700,
+            )
+            planning_payload = self._parse_model_payload(planning_resp)
+            if planning_payload is not None and emulator._is_tool_call(planning_payload):  # noqa: SLF001
+                planning_name = str(planning_payload.get("tool_call") or "").strip().lower()
+                if planning_name in {"plot_plan", "chapter_plan", "consequence_log"}:
+                    _ = self._execute_tool_call(
+                        campaign_id,
+                        planning_payload,
+                        actor_id=actor_id,
+                    )
+                    self._bump_auto_fix_counter(campaign_id, "forced_planning_tool")
         return payload
 
     async def complete_turn(self, context) -> LLMTurnOutput:
@@ -816,7 +1476,13 @@ class ZorkToolAwareLLM:
 
         try:
             system_prompt, user_prompt = emulator.build_prompt(campaign, player, context.action, turns)
-            payload = await self._resolve_payload(context.campaign_id, system_prompt, user_prompt)
+            payload = await self._resolve_payload(
+                context.campaign_id,
+                context.actor_id,
+                context.action,
+                system_prompt,
+                user_prompt,
+            )
             if payload is None:
                 return await self._fallback.complete_turn(context)
             return self._payload_to_output(payload)
