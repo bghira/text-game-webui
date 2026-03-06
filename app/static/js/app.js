@@ -38,6 +38,7 @@
         tge_completion_mode: null,
         tge_llm_model: null,
         tge_llm_base_url: null,
+        tge_ollama_keep_alive: null,
         tge_runtime_probe_llm_default: null,
         health_ok: false,
       },
@@ -198,6 +199,7 @@
           this.runtimeInfo.tge_completion_mode = runtime.tge_completion_mode || null;
           this.runtimeInfo.tge_llm_model = runtime.tge_llm_model || null;
           this.runtimeInfo.tge_llm_base_url = runtime.tge_llm_base_url || null;
+          this.runtimeInfo.tge_ollama_keep_alive = runtime.tge_ollama_keep_alive || null;
           this.runtimeInfo.tge_runtime_probe_llm_default = runtime.tge_runtime_probe_llm_default === true;
 
           const health = await this.api("/api/health");

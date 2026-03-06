@@ -48,6 +48,24 @@ export TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS=8
 curl 'http://127.0.0.1:8080/api/runtime/checks?probe_llm=true'
 ```
 
+Optional: use native Ollama for full model-driven turns/tool calls:
+
+```bash
+export TEXT_GAME_WEBUI_TGE_COMPLETION_MODE=ollama
+export TEXT_GAME_WEBUI_TGE_LLM_BASE_URL='http://127.0.0.1:11434'
+export TEXT_GAME_WEBUI_TGE_LLM_MODEL='qwen2.5:14b'
+export TEXT_GAME_WEBUI_TGE_OLLAMA_KEEP_ALIVE='30m'
+export TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON='{"num_ctx":32768}'
+# optional runtime LLM probe in /api/runtime/checks
+export TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_LLM=1
+export TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS=8
+
+# one-off manual probe
+curl 'http://127.0.0.1:8080/api/runtime/checks?probe_llm=true'
+```
+
+The runtime panel will show `Mode: ollama`, the active model, base URL, and configured keep-alive value.
+
 ## Test
 ```bash
 source .venv/bin/activate
@@ -63,6 +81,7 @@ npm test
 ## Docs
 - `AGENTS.md`: contributor/agent contract
 - `docs/architecture.md`: runtime architecture and boundaries
+- `docs/backends.md`: local model backend configuration for `tge` mode
 - `docs/feature-matrix.md`: feature-to-surface mapping
 - `docs/testing.md`: backend + Jest flow testing requirements
 - `docs/generated/README.md`: generated-doc policy

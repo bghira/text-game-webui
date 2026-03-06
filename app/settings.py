@@ -37,6 +37,12 @@ class Settings(BaseModel):
     tge_llm_max_tokens: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MAX_TOKENS", "3200"))
     )
+    tge_ollama_keep_alive: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_OLLAMA_KEEP_ALIVE", "30m")
+    )
+    tge_ollama_options_json: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON", "{}")
+    )
     tge_runtime_probe_llm: bool = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_LLM", "0") in {"1", "true", "True"}
     )

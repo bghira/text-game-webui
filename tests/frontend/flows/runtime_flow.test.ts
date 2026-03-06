@@ -69,6 +69,7 @@ describe("runtime bootstrap flow", () => {
         tge_completion_mode: "openai",
         tge_llm_model: "qwen-local",
         tge_llm_base_url: "http://127.0.0.1:1234/v1",
+        tge_ollama_keep_alive: null,
         tge_runtime_probe_llm_default: true,
         health_ok: true,
       },

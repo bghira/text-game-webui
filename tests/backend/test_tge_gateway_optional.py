@@ -107,3 +107,36 @@ def test_runtime_reports_tge_mode(monkeypatch, tmp_path):
     assert checks_body["backend"] == "tge"
     assert checks_body["database"]["ok"] is True
     assert checks_body["llm"]["configured"] is False
+
+
+@pytest.mark.skipif(importlib.util.find_spec("text_game_engine") is None, reason="text_game_engine not installed")
+def test_runtime_reports_ollama_mode(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime-tge-ollama.db"
+    monkeypatch.setenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "tge")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_DATABASE_URL", f"sqlite+pysqlite:///{db_path}")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "ollama")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_LLM_BASE_URL", "http://127.0.0.1:11434")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "llama3.1")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_OLLAMA_KEEP_ALIVE", "45m")
+
+    app = create_app()
+    client = TestClient(app)
+    res = client.get("/api/runtime")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["gateway_backend"] == "tge"
+    assert body["tge_completion_mode"] == "ollama"
+    assert body["tge_llm_base_url"] == "http://127.0.0.1:11434"
+    assert body["tge_llm_model"] == "llama3.1"
+    assert body["tge_ollama_keep_alive"] == "45m"
+
+    checks = client.get("/api/runtime/checks")
+    assert checks.status_code == 200
+    checks_json = checks.json()
+    checks_body = checks_json["checks"]
+    assert checks_json["probe_llm"] is False
+    assert checks_body["backend"] == "tge"
+    assert checks_body["completion_mode"] == "ollama"
+    assert checks_body["database"]["ok"] is True
+    assert checks_body["llm"]["configured"] is True
+    assert checks_body["llm"]["probe_attempted"] is False

@@ -12,6 +12,7 @@
       <p><strong>Mode:</strong> <span x-text="runtimeInfo.tge_completion_mode || 'n/a'"></span></p>
       <p><strong>Model:</strong> <span x-text="runtimeInfo.tge_llm_model || 'n/a'"></span></p>
       <p><strong>Base URL:</strong> <code x-text="runtimeInfo.tge_llm_base_url || 'n/a'"></code></p>
+      <p><strong>Ollama Keep-Alive:</strong> <span x-text="runtimeInfo.tge_ollama_keep_alive || 'n/a'"></span></p>
       <p><strong>API Health:</strong> <span x-text="runtimeInfo.health_ok ? 'ok' : 'unreachable'"></span></p>
       <p><strong>DB Check:</strong> <span x-text="runtimeCheckLabel(runtimeChecks.database)"></span></p>
       <p><strong>Engine Check:</strong> <span x-text="runtimeCheckLabel(runtimeChecks.engine)"></span></p>
