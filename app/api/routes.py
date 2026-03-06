@@ -56,6 +56,7 @@ async def runtime(request: Request) -> dict:
         out["tge_completion_mode"] = settings.tge_completion_mode
         out["tge_llm_model"] = settings.tge_llm_model
         out["tge_llm_base_url"] = settings.tge_llm_base_url
+        out["tge_ollama_keep_alive"] = settings.tge_ollama_keep_alive
         out["tge_runtime_probe_llm_default"] = bool(settings.tge_runtime_probe_llm)
     return out
 

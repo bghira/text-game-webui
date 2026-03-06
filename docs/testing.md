@@ -16,11 +16,12 @@ Optional test:
   - `GET /api/diagnostics/bundle`
   - `GET /api/runtime/checks` (including `probe_llm=true` override path)
   - with and without `campaign_id`
-- In `tge` + `openai` mode, run a manual integration check against your model endpoint:
+- In `tge` + model-backed mode, run a manual integration check against your model endpoint:
   - create campaign
   - submit turn
   - verify tool-call turns (memory/sms) resolve into final narration JSON
   - if using runtime probes, set `TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_LLM=1` and verify `GET /api/runtime/checks` reports `llm.probe_attempted=true`
+  - for `ollama` mode, verify `TEXT_GAME_WEBUI_TGE_LLM_BASE_URL` points at the Ollama root URL like `http://127.0.0.1:11434`, not an OpenAI-compatible `/v1` path
 
 ## Frontend
 - Command: `cd tests/frontend && npm test`

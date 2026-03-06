@@ -5,7 +5,7 @@ import json
 import re
 from datetime import UTC, datetime
 from fnmatch import fnmatch
-from typing import Any
+from typing import Any, Protocol
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -17,6 +17,7 @@ from .engine_gateway import EngineGateway
 try:
     from text_game_engine.core.engine import GameEngine
     from text_game_engine.core.types import GiveItemInstruction, LLMTurnOutput, TimerInstruction
+    from text_game_engine import build_text_completion_port
     from text_game_engine.persistence.sqlalchemy import (
         SQLAlchemyUnitOfWork,
         build_engine,
@@ -32,12 +33,28 @@ try:
         Timer,
         Turn,
     )
+    from text_game_engine.core.source_material_memory import SourceMaterialMemory
     from text_game_engine.zork_emulator import ZorkEmulator
 except Exception as exc:  # pragma: no cover - import guarded at runtime
     raise RuntimeError(
         "text-game-engine backend selected but package is unavailable. "
         "Install it with: pip install -e ../text-game-engine"
     ) from exc
+
+
+class CompletionPortProtocol(Protocol):
+    async def complete(
+        self,
+        system_prompt: str,
+        prompt: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str | None:
+        ...
+
+    async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
+        ...
 
 
 class OpenAICompatibleCompletionPort:
@@ -150,6 +167,66 @@ class OpenAICompatibleCompletionPort:
         return True, "Completion endpoint responded."
 
 
+class OllamaCompletionPort:
+    """Probe-capable wrapper around text-game-engine's native Ollama backend."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model: str,
+        timeout_seconds: int = 90,
+        keep_alive: str | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> None:
+        backend_kwargs: dict[str, Any] = {
+            "model": model,
+            "base_url": base_url,
+            "request_timeout": max(int(timeout_seconds or 90), 1),
+        }
+        if keep_alive:
+            backend_kwargs["keep_alive"] = keep_alive
+        if options:
+            backend_kwargs["options"] = options
+        self._completion = build_text_completion_port("ollama", **backend_kwargs)
+
+    async def complete(
+        self,
+        system_prompt: str,
+        prompt: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str | None:
+        return await self._completion.complete(
+            system_prompt,
+            prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
+        timeout = max(int(timeout_seconds or 8), 1)
+        try:
+            response = await asyncio.wait_for(
+                self.complete(
+                    "Return ONLY the token OK.",
+                    "health check",
+                    temperature=0.0,
+                    max_tokens=8,
+                ),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            return False, f"Timed out after {timeout}s."
+        except Exception as exc:
+            return False, f"Probe failed: {exc.__class__.__name__}"
+
+        if not response or not response.strip():
+            return False, "No completion content returned."
+        return True, "Ollama endpoint responded."
+
+
 class DeterministicLLM:
     """Local fallback LLM for webui adapter bring-up."""
 
@@ -234,7 +311,7 @@ class ZorkToolAwareLLM:
         self,
         *,
         session_factory,
-        completion_port: OpenAICompatibleCompletionPort,
+        completion_port: CompletionPortProtocol,
         temperature: float,
         max_tokens: int,
         max_tool_rounds: int = 4,
@@ -258,6 +335,15 @@ class ZorkToolAwareLLM:
             return json.loads(text)
         except Exception:
             return default
+
+    @staticmethod
+    def _tool_call_signature(payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        try:
+            return json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+        except Exception:
+            return str(payload)
 
     def _bump_auto_fix_counter(
         self,
@@ -524,6 +610,11 @@ class ZorkToolAwareLLM:
         summary_update = payload.get("summary_update")
         if not isinstance(summary_update, str) or not summary_update.strip():
             summary_update = None
+        reasoning = payload.get("reasoning")
+        if isinstance(reasoning, str):
+            reasoning = " ".join(reasoning.strip().split())[:1200] or None
+        else:
+            reasoning = None
 
         xp_awarded_raw = payload.get("xp_awarded", 0)
         try:
@@ -579,6 +670,7 @@ class ZorkToolAwareLLM:
 
         return LLMTurnOutput(
             narration=narration,
+            reasoning=reasoning,
             state_update=state_update,
             summary_update=summary_update,
             xp_awarded=xp_awarded,
@@ -602,11 +694,48 @@ class ZorkToolAwareLLM:
             queries.append(queries_raw.strip())
 
         category = category_raw.strip() if isinstance(category_raw, str) and category_raw.strip() else None
+        category_scope = " ".join((category or "").lower().split())
         if not queries:
             return "MEMORY_RECALL: No queries provided."
+        try:
+            source_before_lines = int(payload.get("before_lines", 0))
+        except Exception:
+            source_before_lines = 0
+        try:
+            source_after_lines = int(payload.get("after_lines", 0))
+        except Exception:
+            source_after_lines = 0
+        source_before_lines = max(0, min(50, source_before_lines))
+        source_after_lines = max(0, min(50, source_after_lines))
 
         curated_hits: list[tuple[str, str, float]] = []
+        source_docs: list[dict[str, Any]] = []
+        has_source_material = False
+        source_scope = False
+        source_scope_key: str | None = None
+        source_doc_formats: dict[str, str] = {}
         if self._emulator is not None:
+            source_docs = self._emulator.list_source_material_documents(campaign_id, limit=8)
+            has_source_material = bool(source_docs)
+            for row in source_docs:
+                doc_key = str(row.get("document_key") or "")
+                if not doc_key:
+                    continue
+                doc_format = str(row.get("format") or "").strip().lower()
+                if not doc_format:
+                    doc_format = str(
+                        self._emulator._source_material_format_heuristic(  # noqa: SLF001
+                            str(row.get("sample_chunk") or "")
+                        )
+                    ).strip().lower()
+                if not doc_format:
+                    doc_format = "generic"
+                source_doc_formats[doc_key] = doc_format
+            if category_scope in {"source", "source-material"}:
+                source_scope = True
+            elif category_scope.startswith("source:"):
+                source_scope = True
+                source_scope_key = category_scope.split(":", 1)[1].strip() or None
             for query in queries[:4]:
                 curated_hits.extend(
                     self._emulator.search_curated_memories(
@@ -667,6 +796,28 @@ class ZorkToolAwareLLM:
             key=lambda row: (float(row.get("score", 0.0)), int(row.get("turn_id", 0))),
             reverse=True,
         )[:5]
+        source_hits_flat: list[tuple[str, str, int, str, float]] = []
+        if self._emulator is not None and has_source_material and (source_scope or not category_scope):
+            for query in queries[:4]:
+                source_hits_flat.extend(
+                    self._emulator.search_source_material(
+                        query,
+                        campaign_id,
+                        document_key=source_scope_key,
+                        top_k=10 if source_scope else 6,
+                        before_lines=source_before_lines,
+                        after_lines=source_after_lines,
+                    )
+                )
+        source_hits_unique: list[tuple[str, str, int, str, float]] = []
+        seen_source = set()
+        for row in source_hits_flat:
+            row_key = (str(row[0] or ""), int(row[2] or 0))
+            if row_key in seen_source:
+                continue
+            seen_source.add(row_key)
+            source_hits_unique.append(row)
+        source_hits_unique = source_hits_unique[:12]
 
         lines = ["MEMORY_RECALL (results from memory_search):"]
         for query in queries[:4]:
@@ -690,6 +841,55 @@ class ZorkToolAwareLLM:
                 if len(snippet) > 220:
                     snippet = snippet[:219].rstrip() + "..."
                 lines.append(f"- [term {term}, relevance {float(score):.2f}]: {snippet}")
+        if source_hits_unique:
+            lines.append("Source material matches:")
+            for source_doc_key, source_doc_label, source_chunk_index, source_chunk_text, source_score in source_hits_unique:
+                if float(source_score) < 0.40:
+                    continue
+                source_format = source_doc_formats.get(source_doc_key, "generic")
+                source_text_lines = [
+                    line.strip()
+                    for line in str(source_chunk_text or "").splitlines()
+                    if line.strip()
+                ]
+                source_text = (
+                    "\n    ".join(source_text_lines)
+                    if source_text_lines
+                    else str(source_chunk_text or "").strip()
+                )
+                if len(source_text) > 4000:
+                    source_text = source_text[:4000].rsplit(" ", 1)[0].strip() + "..."
+                lines.append(
+                    "- [source "
+                    f"{source_doc_label} ({source_doc_key}) snippet {int(source_chunk_index)}, "
+                    f"format {source_format}, relevance {float(source_score):.2f}]:\n    {source_text}"
+                )
+        elif has_source_material and source_scope:
+            scope_label = f"source:{source_scope_key}" if source_scope_key else "source"
+            lines.append(f"Source material matches: (none in scope '{scope_label}')")
+        if has_source_material:
+            total_snippets = 0
+            for row in source_docs:
+                try:
+                    total_snippets += int(row.get("chunk_count") or 0)
+                except Exception:
+                    continue
+            lines.append(
+                f"SOURCE_MATERIAL_INDEX: {len(source_docs)} document(s), {total_snippets} total snippet(s)."
+            )
+            for row in source_docs[:5]:
+                row_format = str(row.get("format") or "").strip().lower()
+                if not row_format:
+                    row_format = source_doc_formats.get(
+                        str(row.get("document_key") or ""), "generic"
+                    )
+                lines.append(
+                    "- "
+                    f"key='{row.get('document_key')}' "
+                    f"label='{row.get('document_label')}' "
+                    f"format='{row_format}' "
+                    f"snippets={row.get('chunk_count')}"
+                )
 
         lines.extend(
             [
@@ -707,6 +907,46 @@ class ZorkToolAwareLLM:
                 '  {"tool_call": "sms_schedule", "thread": "contact-slug", "from": "NPC", "to": "Player", "message": "...", "delay_seconds": 120}',
             ]
         )
+        if has_source_material:
+            source_formats = sorted(set(source_doc_formats.values()) or {"generic"})
+            source_formats_set = set(source_formats)
+            has_rulebook = "rulebook" in source_formats_set
+            has_only_generic = source_formats_set == {"generic"}
+            format_descriptions = {
+                "story": "scripted scenes / prose",
+                "rulebook": "line facts (`KEY: value`)",
+                "generic": "notes/dumps (usually not indexed)",
+            }
+            lines.extend(
+                [
+                    "SOURCE_MATERIAL_FORMAT_GUIDE:",
+                    f"- Active formats: {', '.join(source_formats)}",
+                ]
+            )
+            for fmt in source_formats:
+                lines.append(f"- {fmt}: {format_descriptions.get(fmt, fmt)}")
+            lines.extend(
+                [
+                    "To inspect source text:",
+                    '  {"tool_call": "memory_search", "category": "source", "queries": ["keyword"]}',
+                    '  {"tool_call": "memory_search", "category": "source:<document-key>", "queries": ["keyword"]}',
+                ]
+            )
+            if has_only_generic:
+                lines.append(
+                    "- Generic docs are usually summarized in setup prompts; use source search only for "
+                    "exact wording when needed."
+                )
+            if has_rulebook:
+                lines.extend(
+                    [
+                        "- Rulebook docs expose keyed snippets. First pass (no filter) to discover keys:",
+                        '  {"tool_call": "source_browse"}',
+                        '  {"tool_call": "source_browse", "document_key": "document-key"}',
+                        "Then narrow with wildcard keys:",
+                        '  {"tool_call": "source_browse", "wildcard": "keyword*"}',
+                    ]
+                )
         if roster_hints:
             lines.append("MEMORY_RECALL_ROSTER_RECOMMENDATIONS:")
             for hint in roster_hints[:6]:
@@ -759,6 +999,105 @@ class ZorkToolAwareLLM:
             ]
         )
         return "\n".join(lines)
+
+    def _tool_source_browse(self, campaign_id: str, payload: dict[str, Any]) -> str:
+        doc_key_raw = payload.get("document_key") or payload.get("document")
+        document_key = str(doc_key_raw).strip()[:120] if isinstance(doc_key_raw, str) else ""
+        wildcard_raw = payload.get("wildcard")
+        wildcard = (
+            str(wildcard_raw).strip()[:120]
+            if isinstance(wildcard_raw, str)
+            else ""
+        )
+        wildcard_provided = bool(wildcard)
+        wildcard = wildcard or "*"
+        wildcard_meta = f"wildcard={wildcard!r}"
+        if not wildcard_provided:
+            wildcard_meta = "wildcard=(omitted)"
+        limit = 60
+        try:
+            limit = max(1, min(120, int(payload.get("limit") or 60)))
+        except Exception:
+            pass
+
+        rows: list[str] = []
+        if self._emulator is not None:
+            browse = getattr(self._emulator, "browse_source_keys", None)
+            if callable(browse):
+                rows = browse(
+                    campaign_id,
+                    document_key=document_key or None,
+                    wildcard=wildcard,
+                    limit=limit,
+                )
+            else:
+                rows = []
+        else:
+            rows = []
+
+        if rows:
+            return (
+                f"SOURCE_BROWSE_RESULT "
+                f"(document_key={document_key or '*'!r}, "
+                f"{wildcard_meta}, "
+                f"showing {len(rows)}):\n"
+                + "\n".join(str(row) for row in rows)
+            )
+        return (
+            f"SOURCE_BROWSE_RESULT "
+            f"(document_key={document_key or '*'!r}, "
+            f"{wildcard_meta}): no entries found"
+        )
+
+    def _tool_name_generate(self, campaign_id: str, payload: dict[str, Any]) -> str:
+        raw_origins = payload.get("origins") or []
+        if isinstance(raw_origins, str):
+            raw_origins = [raw_origins]
+        origins = [
+            str(o).strip().lower()
+            for o in raw_origins
+            if str(o or "").strip()
+        ][:4]
+        ng_gender = str(payload.get("gender") or "both").strip().lower()
+        ng_count = 5
+        try:
+            ng_count = max(1, min(6, int(payload.get("count") or 5)))
+        except (TypeError, ValueError):
+            pass
+        ng_context = str(payload.get("context") or "").strip()[:300]
+
+        names: list[str] = []
+        if self._emulator is not None:
+            fetch = getattr(self._emulator, "_fetch_random_names", None)
+            if callable(fetch):
+                names = fetch(
+                    origins=origins or None,
+                    gender=ng_gender,
+                    count=ng_count,
+                )
+
+        if names:
+            result = (
+                f"NAME_GENERATE_RESULT "
+                f"(origins={origins or 'any'}, "
+                f"gender={ng_gender}, "
+                f"count={len(names)}):\n"
+                + "\n".join(f"- {n}" for n in names)
+                + "\n\nEvaluate these against your character concept"
+            )
+            if ng_context:
+                result += f" ({ng_context})"
+            result += (
+                ". Pick the best fit, or call name_generate again "
+                "with different origins/gender for more options."
+            )
+            return result
+        return (
+            f"NAME_GENERATE_RESULT "
+            f"(origins={origins or 'any'}): "
+            "no names returned — try broader origins "
+            "or fewer filters."
+        )
 
     def _tool_memory_turn(self, campaign_id: str, payload: dict[str, Any]) -> str:
         turn_id_raw = payload.get("turn_id")
@@ -1262,6 +1601,10 @@ class ZorkToolAwareLLM:
             return self._tool_memory_search(campaign_id, payload)
         if name == "memory_terms":
             return self._tool_memory_terms(campaign_id, payload)
+        if name == "source_browse":
+            return self._tool_source_browse(campaign_id, payload)
+        if name == "name_generate":
+            return self._tool_name_generate(campaign_id, payload)
         if name == "memory_turn":
             return self._tool_memory_turn(campaign_id, payload)
         if name == "memory_store":
@@ -1304,11 +1647,14 @@ class ZorkToolAwareLLM:
 
         tool_history = ""
         used_tool_names: set[str] = set()
+        seen_tool_signatures: set[str] = set()
         emulator = self._emulator
         if emulator is None:
             return None
+        memory_lookup_enabled = "memory_lookup_enabled: true" in user_prompt.lower()
         if (
             not emulator._is_tool_call(payload)  # noqa: SLF001
+            and memory_lookup_enabled
             and self._should_force_auto_memory_search(action_text)
         ):
             forced_queries = self._derive_auto_memory_queries(
@@ -1347,6 +1693,50 @@ class ZorkToolAwareLLM:
             tool_name = str(payload.get("tool_call") or "").strip().lower()
             if tool_name:
                 used_tool_names.add(tool_name)
+            if not memory_lookup_enabled and tool_name.startswith("memory_"):
+                tool_history += (
+                    "\n\nMEMORY_TOOLS_DISABLED: Long-term memory lookup is disabled for this turn "
+                    "(early campaign context still fits prompt budget). "
+                    "Do NOT call memory_* tools; continue with direct context or non-memory tools."
+                )
+                augmented_prompt = (
+                    f"{user_prompt}\n"
+                    f"{tool_history}\n\n"
+                    "Return ONLY the final turn JSON object."
+                )
+                nxt = await self._completion.complete(
+                    system_prompt,
+                    augmented_prompt,
+                    temperature=max(0.1, self._temperature - 0.2),
+                    max_tokens=self._max_tokens,
+                )
+                payload = self._parse_model_payload(nxt)
+                if payload is None:
+                    return None
+                continue
+            tool_signature = self._tool_call_signature(payload)
+            if tool_signature and tool_signature in seen_tool_signatures:
+                tool_history += (
+                    "\n\nTOOL_DEDUP_RESULT: duplicate tool_call payload already executed this turn; skipped. "
+                    "Do NOT repeat identical tool calls. Use a distinct tool/payload or return final JSON (no tool_call)."
+                )
+                augmented_prompt = (
+                    f"{user_prompt}\n"
+                    f"{tool_history}\n\n"
+                    "Return ONLY the final turn JSON object."
+                )
+                nxt = await self._completion.complete(
+                    system_prompt,
+                    augmented_prompt,
+                    temperature=max(0.1, self._temperature - 0.2),
+                    max_tokens=self._max_tokens,
+                )
+                payload = self._parse_model_payload(nxt)
+                if payload is None:
+                    return None
+                continue
+            if tool_signature:
+                seen_tool_signatures.add(tool_signature)
             tool_result = self._execute_tool_call(
                 campaign_id,
                 payload,
@@ -1377,6 +1767,7 @@ class ZorkToolAwareLLM:
                 f"{tool_history}\n\n"
                 "OUTPUT_VALIDATION_FAILED: previous response was too empty.\n"
                 "Return ONLY final JSON (no tool_call) with:\n"
+                "- reasoning string grounded in evidence/context used\n"
                 "- narration containing one concrete scene development\n"
                 "- state_update object with game_time advanced\n"
                 "- summary_update with durable consequence when applicable.\n"
@@ -1405,7 +1796,7 @@ class ZorkToolAwareLLM:
                 f"{tool_history}\n\n"
                 "OUTPUT_VALIDATION_FAILED: Do not invent explicit HH:MM clock timestamps unless asked.\n"
                 "Use canonical CURRENT_GAME_TIME or omit exact times.\n"
-                "Return ONLY final JSON (no tool_call).\n"
+                "Return ONLY final JSON (no tool_call) with reasoning.\n"
             )
             clock_retry = await self._completion.complete(
                 system_prompt,
@@ -1491,6 +1882,17 @@ class ZorkToolAwareLLM:
 
 
 class TextGameEngineGateway(EngineGateway):
+    @staticmethod
+    def _parse_json_object(text: str, env_name: str) -> dict[str, Any]:
+        raw = str(text or "").strip() or "{}"
+        try:
+            parsed = json.loads(raw)
+        except Exception as exc:
+            raise ValueError(f"{env_name} must contain valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError(f"{env_name} must decode to a JSON object")
+        return parsed
+
     def __init__(self, settings: Settings):
         self._settings = settings
         self._completion_mode = (settings.tge_completion_mode or "deterministic").strip().lower()
@@ -1502,13 +1904,31 @@ class TextGameEngineGateway(EngineGateway):
         def _uow_factory():
             return SQLAlchemyUnitOfWork(self._session_factory)
 
-        completion_port: OpenAICompatibleCompletionPort | None = None
+        completion_port: CompletionPortProtocol | None = None
         if self._completion_mode == "openai":
             completion_port = OpenAICompatibleCompletionPort(
                 base_url=settings.tge_llm_base_url,
                 api_key=settings.tge_llm_api_key,
                 model=settings.tge_llm_model,
                 timeout_seconds=settings.tge_llm_timeout_seconds,
+            )
+            llm = ZorkToolAwareLLM(
+                session_factory=self._session_factory,
+                completion_port=completion_port,
+                temperature=settings.tge_llm_temperature,
+                max_tokens=settings.tge_llm_max_tokens,
+            )
+        elif self._completion_mode == "ollama":
+            ollama_options = self._parse_json_object(
+                settings.tge_ollama_options_json,
+                "TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON",
+            )
+            completion_port = OllamaCompletionPort(
+                base_url=settings.tge_llm_base_url,
+                model=settings.tge_llm_model,
+                timeout_seconds=settings.tge_llm_timeout_seconds,
+                keep_alive=settings.tge_ollama_keep_alive,
+                options=ollama_options,
             )
             llm = ZorkToolAwareLLM(
                 session_factory=self._session_factory,
@@ -1550,7 +1970,7 @@ class TextGameEngineGateway(EngineGateway):
             database_ok = False
             database_detail = f"{exc.__class__.__name__}: {exc}"
 
-        llm_configured = self._completion_mode == "openai" and self._completion_port is not None
+        llm_configured = self._completion_mode in {"openai", "ollama"} and self._completion_port is not None
         llm_probe_attempted = bool(probe_llm and llm_configured)
         llm_ok: bool | None = None
         if llm_configured:

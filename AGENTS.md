@@ -55,6 +55,12 @@ Operating contract for agents and contributors working in this repository.
   - `Last verified against code/tests: <date>`
 - Never treat generated docs as authoritative for behavior.
 - Do not store speculative design notes in root or beside source files.
+- Source-material authoring rules for `!zork source-material` live in the sibling
+  engine repo at `../text-game-engine/docs/source-material.md`. If web UI behavior
+  or prompts depend on source-material formats, keep that document in sync.
+- Model backend integration details for `tge` mode should stay aligned with the
+  sibling engine repo backend surface. When updating completion modes such as
+  native Ollama, keep `docs/backends.md` here and the engine repo backend docs in sync.
 
 ## Preventing Doc Drift
 - Any behavior change must update:
@@ -83,4 +89,3 @@ Operating contract for agents and contributors working in this repository.
 - Duplicating engine business logic in the web UI.
 - Unbounded internal design docs that drift from implementation.
 - Merging features that bypass Jest flow coverage.
-

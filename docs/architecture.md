@@ -14,6 +14,7 @@ Expose `text-game-engine` features through a local/remote web UI without duplica
 - `tge`: `text-game-engine` backend using `ZorkEmulator` + SQLAlchemy persistence.
   - `TEXT_GAME_WEBUI_TGE_COMPLETION_MODE=deterministic`: local deterministic turn resolver.
   - `TEXT_GAME_WEBUI_TGE_COMPLETION_MODE=openai`: OpenAI-compatible `/chat/completions` + tool-call loop.
+  - `TEXT_GAME_WEBUI_TGE_COMPLETION_MODE=ollama`: native Ollama backend + tool-call loop via `text-game-engine`.
   - runtime checks via `GET /api/runtime/checks` include DB connectivity and optional LLM probe (`TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_LLM`), with request-level override using `probe_llm=true`.
 
 Mode is selected by `TEXT_GAME_WEBUI_GATEWAY_BACKEND`.

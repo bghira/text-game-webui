@@ -18,6 +18,7 @@ export type RuntimeInfo = {
   tge_completion_mode: string | null;
   tge_llm_model: string | null;
   tge_llm_base_url: string | null;
+  tge_ollama_keep_alive?: string | null;
   tge_runtime_probe_llm_default?: boolean | null;
   health_ok: boolean;
 };
