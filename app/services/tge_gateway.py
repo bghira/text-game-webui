@@ -605,6 +605,10 @@ class ZorkToolAwareLLM:
         if not isinstance(player_state_update, dict):
             player_state_update = {}
 
+        turn_visibility = payload.get("turn_visibility")
+        if not isinstance(turn_visibility, dict):
+            turn_visibility = None
+
         state_update, player_state_update = emulator._split_room_state(state_update, player_state_update)  # noqa: SLF001
 
         summary_update = payload.get("summary_update")
@@ -675,13 +679,20 @@ class ZorkToolAwareLLM:
             summary_update=summary_update,
             xp_awarded=xp_awarded,
             player_state_update=player_state_update,
+            turn_visibility=turn_visibility,
             scene_image_prompt=scene_image_prompt,
             timer_instruction=timer_instruction,
             character_updates=character_updates,
             give_item=give_item,
         )
 
-    def _tool_memory_search(self, campaign_id: str, payload: dict[str, Any]) -> str:
+    def _tool_memory_search(
+        self,
+        campaign_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+    ) -> str:
         queries_raw = payload.get("queries")
         category_raw = payload.get("category")
 
@@ -695,6 +706,21 @@ class ZorkToolAwareLLM:
 
         category = category_raw.strip() if isinstance(category_raw, str) and category_raw.strip() else None
         category_scope = " ".join((category or "").lower().split())
+        interaction_participant_slug: str | None = None
+        awareness_npc_slug: str | None = None
+        visibility_scope_filter: str | None = None
+        structured_turn_scope = False
+        if category_scope in {"interaction", "interactions"}:
+            structured_turn_scope = True
+        elif category_scope.startswith("interaction:") and self._emulator is not None:
+            structured_turn_scope = True
+            interaction_participant_slug = self._emulator._player_slug_key(category_scope.split(":", 1)[1])  # noqa: SLF001
+        elif category_scope.startswith("awareness:"):
+            structured_turn_scope = True
+            awareness_npc_slug = category_scope.split(":", 1)[1].strip() or None
+        elif category_scope.startswith("visibility:"):
+            structured_turn_scope = True
+            visibility_scope_filter = category_scope.split(":", 1)[1].strip().lower() or None
         if not queries:
             return "MEMORY_RECALL: No queries provided."
         try:
@@ -767,6 +793,20 @@ class ZorkToolAwareLLM:
                 .limit(500)
                 .all()
             )
+            actor_row = None
+            if actor_id:
+                actor_row = (
+                    session.query(Player)
+                    .filter(Player.campaign_id == campaign_id)
+                    .filter(Player.actor_id == actor_id)
+                    .first()
+                )
+        actor_slug = None
+        actor_location_key = ""
+        if actor_row is not None and self._emulator is not None:
+            actor_state = self._parse_json(actor_row.state_json, {})
+            actor_slug = self._emulator._player_visibility_slug(actor_id)  # noqa: SLF001
+            actor_location_key = self._emulator._room_key_from_player_state(actor_state)  # noqa: SLF001
 
         for query in queries[:4]:
             q = query.lower().strip()
@@ -775,6 +815,32 @@ class ZorkToolAwareLLM:
                 content = str(turn.content or "")
                 if not content:
                     continue
+                meta = self._parse_json(turn.meta_json, {})
+                visibility = meta.get("visibility") if isinstance(meta, dict) else None
+                if actor_id and self._emulator is not None:
+                    if not self._emulator._turn_visible_to_viewer(turn, actor_id, actor_slug or "", actor_location_key.lower()):  # noqa: SLF001
+                        continue
+                if structured_turn_scope:
+                    actor_player_slug = str(meta.get("actor_player_slug") or "").strip()
+                    if interaction_participant_slug:
+                        visible_player_slugs = visibility.get("visible_player_slugs") if isinstance(visibility, dict) else []
+                        visible_slug_set = {
+                            self._emulator._player_slug_key(item)  # noqa: SLF001
+                            for item in (visible_player_slugs if isinstance(visible_player_slugs, list) else [])
+                            if self._emulator is not None
+                        }
+                        if actor_player_slug != interaction_participant_slug and interaction_participant_slug not in visible_slug_set:
+                            continue
+                    if awareness_npc_slug:
+                        aware_npc_slugs = visibility.get("aware_npc_slugs") if isinstance(visibility, dict) else []
+                        if awareness_npc_slug not in {
+                            str(item or "").strip() for item in (aware_npc_slugs if isinstance(aware_npc_slugs, list) else [])
+                        }:
+                            continue
+                    if visibility_scope_filter in {"public", "private", "limited", "local"}:
+                        row_scope = str((visibility or {}).get("scope") or "public").strip().lower()
+                        if row_scope != visibility_scope_filter:
+                            continue
                 hay = content.lower()
                 score = 0.0
                 if q and q in hay:
@@ -789,6 +855,9 @@ class ZorkToolAwareLLM:
                         "turn_id": int(turn.id),
                         "score": score,
                         "content": content,
+                        "visibility_scope": str((visibility or {}).get("scope") or "public"),
+                        "actor_player_slug": str(meta.get("actor_player_slug") or ""),
+                        "location_key": str(meta.get("location_key") or ""),
                     }
 
         ordered_narrator = sorted(
@@ -829,7 +898,12 @@ class ZorkToolAwareLLM:
                 if len(snippet) > 280:
                     snippet = snippet[:279].rstrip() + "..."
                 lines.append(
-                    f"- [narrator turn {hit['turn_id']}, relevance {float(hit['score']):.2f}]: {snippet}"
+                    "- [narrator turn "
+                    f"{hit['turn_id']}, relevance {float(hit['score']):.2f}"
+                    f"{', actor ' + str(hit.get('actor_player_slug')) if hit.get('actor_player_slug') else ''}"
+                    f"{', visibility ' + str(hit.get('visibility_scope')) if str(hit.get('visibility_scope') or 'public') != 'public' else ''}"
+                    f"{', location ' + str(hit.get('location_key')) if hit.get('location_key') else ''}"
+                    f"]: {snippet}"
                 )
         else:
             lines.append("- (no narrator turn matches)")
@@ -900,6 +974,13 @@ class ZorkToolAwareLLM:
                 '  {"tool_call": "memory_terms", "wildcard": "char:*"}',
                 "- To search inside one curated category after term discovery:",
                 '  {"tool_call": "memory_search", "category": "char:character-slug", "queries": ["keyword1", "keyword2"]}',
+                "- To search narrator memories for interactions involving a player slug:",
+                '  {"tool_call": "memory_search", "category": "interaction:player-slug", "queries": ["argument", "deal", "kiss"]}',
+                "- To search for turns noticed by a specific NPC slug:",
+                '  {"tool_call": "memory_search", "category": "awareness:npc-slug", "queries": ["overheard", "promise", "secret"]}',
+                "- To restrict narrator-memory recall by visibility scope:",
+                '  {"tool_call": "memory_search", "category": "visibility:private", "queries": ["secret meeting"]}',
+                '  {"tool_call": "memory_search", "category": "visibility:local", "queries": ["bar argument"]}',
                 "- To inspect off-scene SMS communications:",
                 '  {"tool_call": "sms_list", "wildcard": "*"}',
                 '  {"tool_call": "sms_read", "thread": "contact-slug", "limit": 20}',
@@ -1099,7 +1180,13 @@ class ZorkToolAwareLLM:
             "or fewer filters."
         )
 
-    def _tool_memory_turn(self, campaign_id: str, payload: dict[str, Any]) -> str:
+    def _tool_memory_turn(
+        self,
+        campaign_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_id: str | None = None,
+    ) -> str:
         turn_id_raw = payload.get("turn_id")
         try:
             turn_id = int(turn_id_raw)
@@ -1113,8 +1200,22 @@ class ZorkToolAwareLLM:
                 .filter(Turn.id == turn_id)
                 .first()
             )
+            actor_row = None
+            if actor_id:
+                actor_row = (
+                    session.query(Player)
+                    .filter(Player.campaign_id == campaign_id)
+                    .filter(Player.actor_id == actor_id)
+                    .first()
+                )
         if turn is None:
             return f"MEMORY_TURN: no turn found for turn_id={turn_id}"
+        if actor_id and self._emulator is not None:
+            actor_state = self._parse_json(actor_row.state_json, {}) if actor_row is not None else {}
+            actor_slug = self._emulator._player_visibility_slug(actor_id)  # noqa: SLF001
+            actor_location_key = self._emulator._room_key_from_player_state(actor_state)  # noqa: SLF001
+            if not self._emulator._turn_visible_to_viewer(turn, actor_id, actor_slug or "", actor_location_key.lower()):  # noqa: SLF001
+                return "MEMORY_TURN: that turn exists, but it is not visible to this player."
 
         content = str(turn.content or "")
         if len(content) > 12000:
@@ -1598,7 +1699,7 @@ class ZorkToolAwareLLM:
         name = tool.strip().lower()
 
         if name == "memory_search":
-            return self._tool_memory_search(campaign_id, payload)
+            return self._tool_memory_search(campaign_id, payload, actor_id=actor_id)
         if name == "memory_terms":
             return self._tool_memory_terms(campaign_id, payload)
         if name == "source_browse":
@@ -1606,7 +1707,7 @@ class ZorkToolAwareLLM:
         if name == "name_generate":
             return self._tool_name_generate(campaign_id, payload)
         if name == "memory_turn":
-            return self._tool_memory_turn(campaign_id, payload)
+            return self._tool_memory_turn(campaign_id, payload, actor_id=actor_id)
         if name == "memory_store":
             return self._tool_memory_store(campaign_id, payload)
         if name == "sms_list":
@@ -1866,7 +1967,14 @@ class ZorkToolAwareLLM:
             turns.reverse()
 
         try:
-            system_prompt, user_prompt = emulator.build_prompt(campaign, player, context.action, turns)
+            turn_visibility_default = self._session_visibility_default(context.session_id)
+            system_prompt, user_prompt = emulator.build_prompt(
+                campaign,
+                player,
+                context.action,
+                turns,
+                turn_visibility_default=turn_visibility_default,
+            )
             payload = await self._resolve_payload(
                 context.campaign_id,
                 context.actor_id,
@@ -2019,6 +2127,105 @@ class TextGameEngineGateway(EngineGateway):
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
+
+    def _session_visibility_default(self, session_id: str | None) -> str:
+        session_id_text = str(session_id or "").strip()
+        if not session_id_text:
+            return "public"
+        with self._session_factory() as session:
+            row = session.get(GameSession, session_id_text)
+            if row is None:
+                return "public"
+            metadata = self._parse_json(row.metadata_json, {})
+        if not isinstance(metadata, dict):
+            return "public"
+        default_value = str(
+            metadata.get("turn_visibility_default") or metadata.get("scope") or ""
+        ).strip().lower()
+        if default_value == "local":
+            return "local"
+        if default_value == "public":
+            return "public"
+        if default_value in {"private", "limited"}:
+            return "private"
+        return "public"
+
+    def _session_metadata(self, campaign_id: str, session_id: str | None) -> dict[str, Any]:
+        session_id_text = str(session_id or "").strip()
+        if not session_id_text:
+            return {}
+        with self._session_factory() as session:
+            row = session.get(GameSession, session_id_text)
+            if row is None or str(row.campaign_id) != str(campaign_id):
+                raise KeyError(f"Unknown session: {session_id_text}")
+            metadata = self._parse_json(row.metadata_json, {})
+        return metadata if isinstance(metadata, dict) else {}
+
+    def _enforce_session_access(self, campaign_id: str, actor_id: str, session_id: str | None) -> None:
+        metadata = self._session_metadata(campaign_id, session_id)
+        if not metadata:
+            return
+        scope = str(metadata.get("scope") or "").strip().lower()
+        if scope not in {"private", "limited"}:
+            return
+        allowed_actor_ids: list[str] = []
+        owner_actor_id = str(metadata.get("owner_actor_id") or "").strip()
+        if owner_actor_id:
+            allowed_actor_ids.append(owner_actor_id)
+        raw_allowed = metadata.get("allowed_actor_ids")
+        if isinstance(raw_allowed, list):
+            for item in raw_allowed:
+                text = str(item or "").strip()
+                if text and text not in allowed_actor_ids:
+                    allowed_actor_ids.append(text)
+        if allowed_actor_ids and str(actor_id or "").strip() not in allowed_actor_ids:
+            raise ValueError("This private window is not available to the selected actor.")
+
+    def _player_slug_to_actor_ids(self, campaign_id: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        if self._emulator is None:
+            return out
+        with self._session_factory() as session:
+            players = session.query(Player).filter(Player.campaign_id == campaign_id).all()
+        for player in players:
+            state = self._parse_json(player.state_json, {})
+            if not isinstance(state, dict):
+                continue
+            actor_id = str(player.actor_id or "").strip()
+            if not actor_id:
+                continue
+            stable_slug = self._emulator._player_visibility_slug(actor_id)  # noqa: SLF001
+            if stable_slug and stable_slug not in out:
+                out[stable_slug] = actor_id
+            legacy_slug = self._emulator._player_slug_key(state.get("character_name"))  # noqa: SLF001
+            if legacy_slug and legacy_slug not in out:
+                out[legacy_slug] = actor_id
+        return out
+
+    def _resolve_turn_visibility(self, campaign_id: str, raw_visibility: Any) -> dict[str, Any]:
+        visibility = dict(raw_visibility) if isinstance(raw_visibility, dict) else {}
+        scope = str(visibility.get("scope") or "public").strip().lower()
+        if scope not in {"public", "private", "limited", "local"}:
+            scope = "public"
+        resolved_actor_ids: list[str] = []
+        raw_actor_ids = visibility.get("visible_actor_ids")
+        if isinstance(raw_actor_ids, list):
+            for item in raw_actor_ids:
+                text = str(item or "").strip()
+                if text and text not in resolved_actor_ids:
+                    resolved_actor_ids.append(text)
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
+        raw_player_slugs = visibility.get("visible_player_slugs")
+        if isinstance(raw_player_slugs, list):
+            for item in raw_player_slugs:
+                slug = self._canonical_slug(str(item or ""))
+                actor_id = slug_map.get(slug)
+                if actor_id and actor_id not in resolved_actor_ids:
+                    resolved_actor_ids.append(actor_id)
+        visibility["scope"] = scope
+        visibility["visible_actor_ids"] = resolved_actor_ids
+        visibility["location_key"] = str(visibility.get("location_key") or "").strip() or None
+        return visibility
 
     @staticmethod
     def _parse_json(text: str | None, default: Any) -> Any:
@@ -2210,6 +2417,7 @@ class TextGameEngineGateway(EngineGateway):
 
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
         xp_before = 0
+        session_id = str(request.session_id or "").strip() or None
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
@@ -2223,11 +2431,13 @@ class TextGameEngineGateway(EngineGateway):
             if player_before is not None:
                 xp_before = int(player_before.xp or 0)
 
+        self._enforce_session_access(campaign_id, request.actor_id, session_id)
         self._emulator.get_or_create_player(campaign_id, request.actor_id)
         narration = await self._emulator.play_action(
             campaign_id=campaign_id,
             actor_id=request.actor_id,
             action=request.action,
+            session_id=session_id,
             manage_claim=True,
         )
 
@@ -2247,6 +2457,15 @@ class TextGameEngineGateway(EngineGateway):
             campaign_state = self._parse_json(campaign.state_json, {})
             player_state = self._parse_json(player.state_json if player is not None else "{}", {})
             xp_after = int(player.xp or 0) if player is not None else xp_before
+            narrator_turn = (
+                session.query(Turn)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Turn.kind == "narrator")
+                .filter(Turn.actor_id == request.actor_id)
+                .filter(Turn.session_id == session_id if session_id is not None else Turn.session_id.is_(None))
+                .order_by(Turn.id.desc())
+                .first()
+            )
 
         state_update = {}
         if isinstance(campaign_state, dict) and isinstance(campaign_state.get("game_time"), dict):
@@ -2264,13 +2483,22 @@ class TextGameEngineGateway(EngineGateway):
             if lines:
                 summary_update = lines[-1]
 
+        turn_visibility: dict[str, Any] = {}
+        if narrator_turn is not None:
+            turn_meta = self._parse_json(narrator_turn.meta_json, {})
+            if isinstance(turn_meta, dict):
+                turn_visibility = self._resolve_turn_visibility(campaign_id, turn_meta.get("visibility"))
+
         return TurnResult(
+            actor_id=request.actor_id,
+            session_id=session_id,
             narration=str(narration),
             state_update=state_update,
             player_state_update=player_state_update,
             summary_update=summary_update,
             xp_awarded=max(xp_after - xp_before, 0),
             image_prompt=None,
+            turn_visibility=turn_visibility,
         )
 
     async def get_map(self, campaign_id: str, actor_id: str) -> str:
@@ -2369,10 +2597,25 @@ class TextGameEngineGateway(EngineGateway):
             state = self._parse_json(campaign.state_json, {})
             if not isinstance(state, dict):
                 state = {}
+        events = state.get("calendar", [])
+        if not isinstance(events, list):
+            events = []
+        shaped_events: list[dict[str, Any]] = []
+        for raw in events:
+            if isinstance(raw, dict):
+                event = dict(raw)
+                target_players = event.get("target_players")
+                has_targets = isinstance(target_players, list) and any(
+                    str(item or "").strip() for item in target_players
+                )
+                event.setdefault("scope", "targeted" if has_targets else "global")
+                shaped_events.append(event)
+            else:
+                shaped_events.append({"value": raw, "scope": "global"})
 
         return {
             "game_time": state.get("game_time", {}),
-            "events": state.get("calendar", []),
+            "events": shaped_events,
         }
 
     async def get_roster(self, campaign_id: str) -> dict:

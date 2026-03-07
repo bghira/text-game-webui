@@ -240,13 +240,44 @@ class InMemoryEngineGateway:
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
         self._require_campaign(campaign_id)
         player = self._ensure_player(campaign_id, request.actor_id)
+        session_id = str(request.session_id or "").strip() or None
         turn_id = len(self._turns[campaign_id]) + 1
         created_at = datetime.now(UTC)
+        turn_visibility: dict[str, object] = {"scope": "public", "visible_actor_ids": [request.actor_id]}
+        if session_id:
+            session_row = self._sessions[campaign_id].get(session_id)
+            metadata = session_row.get("metadata", {}) if isinstance(session_row, dict) else {}
+            if isinstance(metadata, dict):
+                scope = str(metadata.get("scope") or metadata.get("turn_visibility_default") or "").strip().lower()
+                if scope == "local":
+                    turn_visibility = {
+                        "scope": "local",
+                        "visible_actor_ids": [request.actor_id],
+                    }
+                elif scope in {"private", "limited"}:
+                    visible_actor_ids: list[str] = []
+                    raw_allowed = metadata.get("allowed_actor_ids")
+                    if isinstance(raw_allowed, list):
+                        for item in raw_allowed:
+                            text = str(item or "").strip()
+                            if text and text not in visible_actor_ids:
+                                visible_actor_ids.append(text)
+                    owner_actor_id = str(metadata.get("owner_actor_id") or "").strip()
+                    if owner_actor_id and owner_actor_id not in visible_actor_ids:
+                        visible_actor_ids.insert(0, owner_actor_id)
+                    if request.actor_id not in visible_actor_ids:
+                        visible_actor_ids.insert(0, request.actor_id)
+                    turn_visibility = {
+                        "scope": scope,
+                        "visible_actor_ids": visible_actor_ids,
+                    }
         self._turns[campaign_id].append(
             {
                 "id": turn_id,
                 "actor_id": request.actor_id,
+                "session_id": session_id,
                 "action": request.action,
+                "turn_visibility": turn_visibility,
                 "created_at": created_at.isoformat(),
             }
         )
@@ -283,6 +314,8 @@ class InMemoryEngineGateway:
             player["state"] = player_state
 
         return TurnResult(
+            actor_id=request.actor_id,
+            session_id=session_id,
             narration=f"TURN {turn_id}: {request.actor_id} -> {request.action}",
             player_state_update={
                 "room_title": player_state.get("room_title"),
@@ -298,6 +331,7 @@ class InMemoryEngineGateway:
             summary_update=f"{request.actor_id} performed action: {request.action}",
             xp_awarded=1,
             image_prompt=image_prompt,
+            turn_visibility=turn_visibility,
         )
 
     async def get_map(self, campaign_id: str, actor_id: str) -> str:
@@ -321,11 +355,12 @@ Legend: @ current player
             "game_time": {"day": 1, "hour": 9, "minute": 0},
             "events": [
                 {
-                    "title": "Concierge callback",
-                    "game_day": 1,
-                    "hour": 11,
-                    "minute": 30,
-                    "scope": "local",
+                    "name": "Concierge callback",
+                    "fire_day": 1,
+                    "fire_hour": 11,
+                    "description": "The concierge promised to call back before lunch.",
+                    "scope": "targeted",
+                    "target_players": ["rigby"],
                 }
             ],
         }

@@ -279,6 +279,69 @@ def test_ws_receives_turn_event(client):
         assert message["payload"]["narration"].startswith("TURN 1")
 
 
+def test_private_window_turn_submission_returns_session_visibility(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    session_create = client.post(
+        f"/api/campaigns/{campaign_id}/sessions",
+        json={
+            "surface": "web_private",
+            "surface_key": f"webui:{campaign_id}:private:dale-denton",
+            "enabled": True,
+            "metadata": {
+                "label": "Private room: dale-denton",
+                "scope": "private",
+                "turn_visibility_default": "private",
+                "owner_actor_id": "dale-denton",
+                "allowed_actor_ids": ["dale-denton"],
+            },
+        },
+    )
+    assert session_create.status_code == 200
+    session_row = session_create.json()["session"]
+
+    turn_res = client.post(
+        f"/api/campaigns/{campaign_id}/turns",
+        json={"actor_id": "dale-denton", "action": "whisper to Monet", "session_id": session_row["id"]},
+    )
+    assert turn_res.status_code == 200
+    turn = turn_res.json()
+    assert turn["session_id"] == session_row["id"]
+    assert turn["actor_id"] == "dale-denton"
+    assert turn["turn_visibility"]["scope"] == "private"
+
+
+def test_shared_window_turn_submission_returns_local_visibility(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    session_create = client.post(
+        f"/api/campaigns/{campaign_id}/sessions",
+        json={
+            "surface": "web_shared",
+            "surface_key": f"webui:{campaign_id}:shared",
+            "enabled": True,
+            "metadata": {
+                "label": "Shared web room",
+                "scope": "local",
+                "turn_visibility_default": "local",
+            },
+        },
+    )
+    assert session_create.status_code == 200
+    session_row = session_create.json()["session"]
+
+    turn_res = client.post(
+        f"/api/campaigns/{campaign_id}/turns",
+        json={"actor_id": "dale-denton", "action": "look around", "session_id": session_row["id"]},
+    )
+    assert turn_res.status_code == 200
+    turn = turn_res.json()
+    assert turn["session_id"] == session_row["id"]
+    assert turn["turn_visibility"]["scope"] == "local"
+
+
 def test_ws_receives_session_event(client):
     campaign = _create_campaign(client)
     campaign_id = campaign["id"]
