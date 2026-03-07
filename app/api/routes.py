@@ -184,15 +184,37 @@ async def submit_turn(
         result = await gateway.submit_turn(campaign_id, payload)
     except KeyError as err:
         _not_found(err)
-    await request.app.state.realtime.publish(campaign_id, {"type": "turn", "payload": result.model_dump()})
+    except ValueError as err:
+        _bad_request(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn",
+            "session_id": result.session_id,
+            "actor_id": result.actor_id,
+            "payload": result.model_dump(),
+        },
+    )
     if result.image_prompt:
         await request.app.state.realtime.publish(
             campaign_id,
-            {"type": "media", "payload": {"image_prompt": result.image_prompt, "actor_id": payload.actor_id}},
+            {
+                "type": "media",
+                "session_id": result.session_id,
+                "actor_id": result.actor_id,
+                "payload": {
+                    "image_prompt": result.image_prompt,
+                    "actor_id": payload.actor_id,
+                    "session_id": result.session_id,
+                },
+            },
         )
     try:
         timers = await gateway.get_timers(campaign_id)
-        await request.app.state.realtime.publish(campaign_id, {"type": "timers", "payload": timers})
+        await request.app.state.realtime.publish(
+            campaign_id,
+            {"type": "timers", "session_id": result.session_id, "actor_id": result.actor_id, "payload": timers},
+        )
     except KeyError:
         pass
     return result.model_dump()

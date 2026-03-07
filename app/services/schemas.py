@@ -15,6 +15,7 @@ class CampaignSummary(BaseModel):
 class TurnRequest(BaseModel):
     actor_id: str
     action: str
+    session_id: str | None = None
 
 
 class SessionCreateRequest(BaseModel):
@@ -51,12 +52,15 @@ class RosterRemoveRequest(BaseModel):
 
 
 class TurnResult(BaseModel):
+    actor_id: str | None = None
+    session_id: str | None = None
     narration: str
     state_update: dict = Field(default_factory=dict)
     player_state_update: dict = Field(default_factory=dict)
     summary_update: str | None = None
     xp_awarded: int = 0
     image_prompt: str | None = None
+    turn_visibility: dict = Field(default_factory=dict)
 
 
 class MemorySearchRequest(BaseModel):

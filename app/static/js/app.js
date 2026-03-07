@@ -21,10 +21,19 @@
     return "[No narration returned.]";
   }
 
+  function canonicalKey(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
   window.textGameApp = function textGameApp() {
     return {
       campaigns: [],
       selectedCampaignId: null,
+      selectedSessionId: "",
       inspectorTab: "map",
       statusMessage: "Ready.",
       errorMessage: "",
@@ -32,6 +41,7 @@
       socket: null,
       socketReconnectTimer: null,
       turnStream: [],
+      sessionsList: [],
 
       runtimeInfo: {
         gateway_backend: "unknown",
@@ -71,6 +81,7 @@
       turnForm: {
         actor_id: "",
         action: "",
+        session_id: "",
       },
       memory: {
         search: "",
@@ -100,6 +111,8 @@
         update_session_id: "",
         update_enabled: true,
         update_metadata_json: "",
+        quick_private_target: "",
+        quick_private_kind: "solo",
       },
       mediaActions: {
         actor_id: "",
@@ -180,15 +193,111 @@
         }
       },
 
-      pushStream(type, text) {
+      pushStream(type, text, meta) {
         this.turnCounter += 1;
-        this.turnStream.push({ id: this.turnCounter, type, at: nowLabel(), text });
+        this.turnStream.push({
+          id: this.turnCounter,
+          type,
+          at: nowLabel(),
+          text,
+          meta: meta && typeof meta === "object" ? meta : {},
+        });
         this.$nextTick(() => {
           const stream = document.getElementById("turn-stream");
           if (stream) {
             stream.scrollTop = stream.scrollHeight;
           }
         });
+      },
+
+      currentSessionRecord() {
+        if (!this.selectedSessionId) {
+          return null;
+        }
+        return this.sessionsList.find((row) => row.id === this.selectedSessionId) || null;
+      },
+
+      currentSessionLabel() {
+        const row = this.currentSessionRecord();
+        if (!row) {
+          return "No window selected";
+        }
+        const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+        const label = metadata.label || row.surface_key || row.id;
+        const scope = metadata.scope || metadata.turn_visibility_default || row.surface;
+        return `${label} (${scope})`;
+      },
+
+      syncTurnSessionSelection() {
+        this.turnForm.session_id = this.selectedSessionId || "";
+      },
+
+      selectSession(sessionId) {
+        this.selectedSessionId = sessionId || "";
+        this.syncTurnSessionSelection();
+        this.turnStream = [];
+        this.connectSocket();
+        const row = this.currentSessionRecord();
+        if (row) {
+          const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+          this.statusMessage = `Selected window ${metadata.label || row.surface_key || row.id}.`;
+        }
+      },
+
+      handleActorIdentityChange() {
+        this.syncTurnSessionSelection();
+        this.connectSocket();
+      },
+
+      buildSharedSessionPayload() {
+        return {
+          surface: "web_shared",
+          surface_key: `webui:${this.selectedCampaignId}:shared`,
+          enabled: true,
+          metadata: {
+            label: "Shared web room",
+            scope: "local",
+            turn_visibility_default: "local",
+          },
+        };
+      },
+
+      buildPrivateSessionPayload() {
+        const actorId = (this.turnForm.actor_id || "").trim();
+        if (!actorId) {
+          throw new Error("Actor id is required before opening a private window.");
+        }
+        const target = (this.sessions.quick_private_target || "").trim();
+        const kind = String(this.sessions.quick_private_kind || "solo").trim().toLowerCase();
+        const actorKey = canonicalKey(actorId) || actorId;
+        const targetKey = canonicalKey(target);
+        const metadata = {
+          label: "",
+          scope: "private",
+          turn_visibility_default: "private",
+          owner_actor_id: actorId,
+          allowed_actor_ids: [actorId],
+        };
+        let surface_key = `webui:${this.selectedCampaignId}:private:${actorKey}`;
+        if (kind === "actor" && target) {
+          const actorPair = [actorId, target].map((item) => String(item).trim()).filter(Boolean).sort();
+          surface_key = `webui:${this.selectedCampaignId}:direct:${actorPair.map(canonicalKey).join(":")}`;
+          metadata.scope = "limited";
+          metadata.allowed_actor_ids = actorPair;
+          metadata.label = `Direct room: ${actorPair.join(" / ")}`;
+        } else if (kind === "npc" && target) {
+          surface_key = `webui:${this.selectedCampaignId}:npc:${actorKey}:${targetKey || "npc"}`;
+          metadata.npc_slugs = [target];
+          metadata.label = `Private with ${target}`;
+        } else {
+          metadata.label = `Private room: ${actorId}`;
+        }
+        return {
+          surface: kind === "actor" ? "web_direct" : "web_private",
+          surface_key,
+          enabled: true,
+          metadata,
+        };
       },
 
       async loadRuntime() {
@@ -375,6 +484,8 @@
       async selectCampaign(campaignId) {
         this.resetError();
         this.selectedCampaignId = campaignId;
+        this.selectedSessionId = "";
+        this.turnStream = [];
         const selected = this.campaigns.find((row) => row.id === campaignId);
         if (selected && !this.turnForm.actor_id) {
           this.turnForm.actor_id = selected.actor_id;
@@ -386,7 +497,6 @@
           this.rosterActions.slug = this.turnForm.actor_id;
           this.rosterActions.player = true;
         }
-        this.connectSocket();
         await Promise.all([
           this.loadSessions(),
           this.loadMap(),
@@ -415,7 +525,16 @@
         this.diagnostics.ws_state = "connecting";
         this.diagnostics.ws_last_error = null;
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        const socketUrl = `${protocol}://${window.location.host}/ws/campaigns/${campaignId}`;
+        const params = new URLSearchParams();
+        const actorId = (this.turnForm.actor_id || "").trim();
+        if (actorId) {
+          params.set("actor_id", actorId);
+        }
+        if (this.selectedSessionId) {
+          params.set("session_id", this.selectedSessionId);
+        }
+        const suffix = params.toString() ? `?${params.toString()}` : "";
+        const socketUrl = `${protocol}://${window.location.host}/ws/campaigns/${campaignId}${suffix}`;
         this.socket = new WebSocket(socketUrl);
         this.socket.onopen = () => {
           this.diagnostics.ws_state = "connected";
@@ -427,22 +546,22 @@
           this.diagnostics.ws_last_event_at = isoNow();
           const payload = JSON.parse(event.data);
           if (payload.type === "turn" && payload.payload) {
-            this.pushStream("narrator", normalizeTurnNarration(payload.payload));
+            this.pushStream("narrator", normalizeTurnNarration(payload.payload), payload.payload);
             this.loadTimers();
           }
           if (payload.type === "sms" && payload.payload) {
             this.pushStream("sms", formatJson(payload.payload));
           }
           if (payload.type === "session" && payload.payload) {
-            this.pushStream("session", formatJson(payload.payload));
+            this.pushStream("session", formatJson(payload.payload), payload.payload);
             this.loadSessions();
           }
           if (payload.type === "media" && payload.payload) {
-            this.pushStream("media", formatJson(payload.payload));
+            this.pushStream("media", formatJson(payload.payload), payload.payload);
             this.loadMedia();
           }
           if (payload.type === "timers" && payload.payload) {
-            this.pushStream("timers", formatJson(payload.payload));
+            this.pushStream("timers", formatJson(payload.payload), payload.payload);
             this.timersText = formatJson(payload.payload);
           }
           if (payload.type === "roster" && payload.payload) {
@@ -481,18 +600,19 @@
           const payload = {
             actor_id: this.turnForm.actor_id.trim(),
             action: this.turnForm.action.trim(),
+            session_id: this.selectedSessionId || null,
           };
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/turns`, {
             method: "POST",
             body: JSON.stringify(payload),
           });
           const narration = normalizeTurnNarration(body);
-          this.pushStream("narrator", narration);
+          this.pushStream("narrator", narration, body);
           if (body.image_prompt) {
-            this.pushStream("image_prompt", body.image_prompt);
+            this.pushStream("image_prompt", body.image_prompt, body);
           }
           if (body.summary_update) {
-            this.pushStream("summary", body.summary_update);
+            this.pushStream("summary", body.summary_update, body);
           }
           this.turnForm.action = "";
           await Promise.all([
@@ -619,7 +739,34 @@
           return;
         }
         const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`);
+        const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+        this.sessionsList = sessions;
         this.sessionsText = formatJson(body);
+        if (this.selectedSessionId) {
+          const stillExists = sessions.some((row) => row && row.id === this.selectedSessionId);
+          if (!stillExists) {
+            this.selectedSessionId = "";
+            this.syncTurnSessionSelection();
+          }
+        }
+        if (!this.selectedSessionId) {
+          const actorId = (this.turnForm.actor_id || "").trim();
+          let preferred = sessions.find((row) => row.surface === "web_shared");
+          if (!preferred) {
+            preferred = sessions.find((row) => {
+              const metadata = row && row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+              return actorId && row.surface === "web_private" && metadata.owner_actor_id === actorId;
+            });
+          }
+          if (preferred && preferred.id) {
+            this.selectedSessionId = preferred.id;
+            this.syncTurnSessionSelection();
+          }
+        }
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+          return;
+        }
+        this.connectSocket();
       },
 
       async createOrUpdateSession() {
@@ -645,6 +792,49 @@
           this.sessionsText = formatJson(body);
           this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
           await this.loadSessions();
+          if (body.session && body.session.id) {
+            this.selectSession(body.session.id);
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async ensureSharedWindow() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`, {
+            method: "POST",
+            body: JSON.stringify(this.buildSharedSessionPayload()),
+          });
+          this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
+          await this.loadSessions();
+          if (body.session && body.session.id) {
+            this.selectSession(body.session.id);
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async ensurePrivateWindow() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`, {
+            method: "POST",
+            body: JSON.stringify(this.buildPrivateSessionPayload()),
+          });
+          this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
+          await this.loadSessions();
+          if (body.session && body.session.id) {
+            this.selectSession(body.session.id);
+          }
         } catch (error) {
           this.errorMessage = String(error);
         }

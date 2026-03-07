@@ -63,7 +63,7 @@
   <section class="panel center-column">
     <div class="section-head">
       <h2>Turn Stream</h2>
-      <small x-text="selectedCampaignId ? selectedCampaignId : 'No campaign selected'"></small>
+      <small x-text="selectedCampaignId ? `${selectedCampaignId} • ${currentSessionLabel()}` : 'No campaign selected'"></small>
     </div>
 
     <div class="turn-stream" id="turn-stream">
@@ -82,7 +82,16 @@
     <form class="stack" @submit.prevent="submitTurn()">
       <label>
         Actor ID
-        <input x-model="turnForm.actor_id" placeholder="dale-denton" required />
+        <input x-model="turnForm.actor_id" @change="handleActorIdentityChange()" placeholder="dale-denton" required />
+      </label>
+      <label>
+        Active Window
+        <select x-model="selectedSessionId" @change="selectSession(selectedSessionId)">
+          <option value="">No window</option>
+          <template x-for="row in sessionsList" :key="row.id">
+            <option :value="row.id" x-text="(row.metadata && row.metadata.label) || row.surface_key || row.id"></option>
+          </template>
+        </select>
       </label>
       <label>
         Action
@@ -111,6 +120,37 @@
 
     <div x-show="inspectorTab === 'sessions'" class="stack">
       <button type="button" @click="loadSessions()" :disabled="!selectedCampaignId">Refresh Sessions</button>
+
+      <div class="stack compact">
+        <button type="button" @click="ensureSharedWindow()" :disabled="!selectedCampaignId">Open Shared Window</button>
+        <label>
+          Private Target (optional actor id or NPC slug)
+          <input x-model="sessions.quick_private_target" placeholder="monet-trask or actor-2" />
+        </label>
+        <label>
+          Private Kind
+          <select x-model="sessions.quick_private_kind">
+            <option value="solo">Solo Private</option>
+            <option value="npc">NPC Private</option>
+            <option value="actor">Direct Actor Room</option>
+          </select>
+        </label>
+        <button type="button" @click="ensurePrivateWindow()" :disabled="!selectedCampaignId">Open Private Window</button>
+      </div>
+
+      <div class="stack compact">
+        <template x-for="row in sessionsList" :key="row.id">
+          <button
+            type="button"
+            class="campaign-button"
+            :class="{ active: selectedSessionId === row.id }"
+            @click="selectSession(row.id)"
+          >
+            <span x-text="(row.metadata && row.metadata.label) || row.surface_key || row.id"></span>
+            <small x-text="(row.metadata && (row.metadata.scope || row.metadata.turn_visibility_default)) || row.surface"></small>
+          </button>
+        </template>
+      </div>
 
       <form class="stack compact" @submit.prevent="createOrUpdateSession()">
         <label>
