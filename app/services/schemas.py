@@ -63,8 +63,17 @@ class TurnResult(BaseModel):
     xp_awarded: int = 0
     image_prompt: str | None = None
     reasoning: str | None = None
+    dice_result: dict | None = None
     turn_visibility: dict = Field(default_factory=dict)
     notices: list[str] = Field(default_factory=list)
+
+
+class PuzzleAnswerRequest(BaseModel):
+    answer: str
+
+
+class MinigameMoveRequest(BaseModel):
+    move: str
 
 
 class MemorySearchRequest(BaseModel):
@@ -139,3 +148,17 @@ class CampaignRuleUpdate(BaseModel):
     key: str
     value: str
     upsert: bool = False
+
+
+class AttributeSetRequest(BaseModel):
+    actor_id: str
+    attribute: str
+    value: int
+
+
+class LevelUpRequest(BaseModel):
+    actor_id: str
+
+
+class PersonaUpdateRequest(BaseModel):
+    persona: str

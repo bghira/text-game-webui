@@ -202,10 +202,29 @@
       campaignRuleForm: { key: "", value: "", mode: "add" },
       campaignRuleStatus: "",
 
+      /* Puzzle / Minigame interaction */
+      puzzleAnswer: "",
+      puzzleStatus: "",
+      minigameMove: "",
+      minigameBoard: "",
+      minigameStatus: "",
+
       /* Story state (debug) */
       storyState: null,
       rewindTargetTurn: "",
       rewindStatus: "",
+
+      /* Player attributes */
+      playerAttributes: null,
+      attributeForm: { attribute: "", value: 0 },
+
+      /* Turn history */
+      recentTurns: [],
+
+      /* Campaign persona */
+      campaignPersona: "",
+      campaignPersonaSource: "",
+      personaEditText: "",
 
       /* Game time (extracted from turn state_update) */
       gameTime: {},
@@ -229,7 +248,7 @@
           return this.turnStream;
         }
         return this.turnStream.filter(
-          (entry) => entry.type === "narrator" || entry.type === "notice" || entry.type === "image_prompt"
+          (entry) => entry.type === "narrator" || entry.type === "notice" || entry.type === "image_prompt" || entry.type === "dice"
         );
       },
 
@@ -801,6 +820,80 @@
         }
       },
 
+      /* ---- Puzzle interaction ---- */
+      async getPuzzleHint() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/puzzle/hint`);
+          if (result.hint) {
+            this.pushStream("notice", `Hint: ${result.hint}`, { hint: true });
+            this.puzzleStatus = `Hint ${result.hints_used}/${result.hints_total}`;
+          } else {
+            this.puzzleStatus = result.note || "No hints available.";
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async submitPuzzleAnswer() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const answer = (this.puzzleAnswer || "").trim();
+        if (!answer) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/puzzle/answer`, {
+            method: "POST",
+            body: JSON.stringify({ answer }),
+          });
+          if (result.correct) {
+            this.pushStream("notice", `Correct! ${result.feedback}`, { puzzle: true });
+          } else {
+            this.pushStream("notice", `Wrong: ${result.feedback} (${result.attempts}/${result.max_attempts})`, { puzzle: true });
+          }
+          this.puzzleAnswer = "";
+          this.puzzleStatus = result.solved ? "Solved!" : (result.failed ? "Failed." : "");
+          await this.loadStoryState();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- Minigame interaction ---- */
+      async loadMinigameBoard() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/minigame/board`);
+          this.minigameBoard = result.board || "";
+          this.minigameStatus = result.finished ? `Finished (${result.status})` : (result.status || "");
+        } catch (_) { this.minigameBoard = ""; }
+      },
+
+      async submitMinigameMove() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const move = (this.minigameMove || "").trim();
+        if (!move) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/minigame/move`, {
+            method: "POST",
+            body: JSON.stringify({ move }),
+          });
+          if (result.valid) {
+            this.pushStream("notice", result.message, { minigame: true });
+          } else {
+            this.pushStream("notice", `Invalid move: ${result.message}`, { minigame: true });
+          }
+          this.minigameMove = "";
+          this.minigameBoard = result.board || "";
+          this.minigameStatus = result.finished ? `Finished (${result.status})` : (result.status || "");
+          await this.loadStoryState();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
       /* ---- Story state (debug) ---- */
       async loadStoryState() {
         if (!this.selectedCampaignId) return;
@@ -841,9 +934,11 @@
             this.loadRoster(),
             this.loadPlayerState(),
             this.loadPlayerStatistics(),
+            this.loadPlayerAttributes(),
             this.loadMedia(),
             this.loadDebugSnapshot(),
             this.loadCampaignFlags(),
+            this.loadRecentTurns(),
           ]);
         } catch (error) {
           this.errorMessage = String(error);
@@ -895,6 +990,33 @@
         this.selectedCampaignId = campaignId;
         this.selectedSessionId = "";
         this.turnStream = [];
+        /* Reset per-campaign derived state to prevent stale values */
+        this.gameTime = {};
+        this.campaignSummary = "";
+        this.storyState = null;
+        this.playerData = null;
+        this.playerStats = null;
+        this.playerAttributes = null;
+        this.recentTurns = [];
+        this.campaignPersona = "";
+        this.campaignPersonaSource = "";
+        this.personaEditText = "";
+        this.minigameBoard = "";
+        this.minigameStatus = "";
+        this.puzzleStatus = "";
+        this.mapText = "";
+        this.timersText = "";
+        this.calendarText = "";
+        this.rosterText = "";
+        this.playerStateText = "";
+        this.mediaText = "";
+        this.sessionsText = "";
+        this.memoryText = "";
+        this.smsText = "";
+        this.debugText = "";
+        this.sourceMaterials = [];
+        this.campaignRules = [];
+        this.selectedCampaignRule = null;
         const selected = this.campaigns.find((row) => row.id === campaignId);
         if (selected) {
           this.turnForm.actor_id = selected.actor_id;
@@ -912,11 +1034,14 @@
           this.loadRoster(),
           this.loadPlayerState(),
           this.loadPlayerStatistics(),
+          this.loadPlayerAttributes(),
           this.loadMedia(),
           this.loadDebugSnapshot(),
           this.loadCampaignFlags(),
           this.loadSourceMaterials(),
           this.loadCampaignRules(),
+          this.loadRecentTurns(),
+          this.loadCampaignPersona(),
         ]);
         this.statusMessage = `Selected campaign ${campaignId}.`;
       },
@@ -986,6 +1111,12 @@
               }
               if (payload.payload.image_prompt) {
                 this.pushStream("image_prompt", payload.payload.image_prompt, payload.payload);
+              }
+              if (payload.payload.dice_result && payload.payload.dice_result.attribute) {
+                const d = payload.payload.dice_result;
+                const label = d.success ? "SUCCESS" : "FAIL";
+                const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
+                this.pushStream("dice", text, d);
               }
             }
             this.loadTimers();
@@ -1078,6 +1209,12 @@
           if (body.image_prompt) {
             this.pushStream("image_prompt", body.image_prompt, body);
           }
+          if (body.dice_result && body.dice_result.attribute) {
+            const d = body.dice_result;
+            const label = d.success ? "SUCCESS" : "FAIL";
+            const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
+            this.pushStream("dice", text, d);
+          }
           if (body.summary_update) {
             this.pushStream("summary", body.summary_update, body);
             /* Append to running campaign summary */
@@ -1101,8 +1238,10 @@
             this.loadRoster(),
             this.loadPlayerState(),
             this.loadPlayerStatistics(),
+            this.loadPlayerAttributes(),
             this.loadMedia(),
             this.loadDebugSnapshot(),
+            this.loadRecentTurns(),
           ]);
           this.statusMessage = "Turn submitted.";
         } catch (error) {
@@ -1433,6 +1572,112 @@
         } catch (_) { this.playerStats = null; }
       },
 
+      /* ---- Player attributes ---- */
+      async loadPlayerAttributes() {
+        if (!this.selectedCampaignId) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        if (!actor) { this.playerAttributes = null; return; }
+        try {
+          this.playerAttributes = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/player-attributes?actor_id=${encodeURIComponent(actor)}`,
+          );
+        } catch (_) { this.playerAttributes = null; }
+      },
+
+      async setPlayerAttribute() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        const attr = (this.attributeForm.attribute || "").trim();
+        const val = parseInt(this.attributeForm.value, 10);
+        if (!actor || !attr || !Number.isFinite(val)) {
+          this.errorMessage = "Actor, attribute name, and numeric value are required.";
+          return;
+        }
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/player-attributes`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actor, attribute: attr, value: val }),
+          });
+          this.attributeForm.attribute = "";
+          this.attributeForm.value = 0;
+          await this.loadPlayerAttributes();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async levelUpPlayer() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        if (!actor) {
+          this.errorMessage = "Select an actor first.";
+          return;
+        }
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/level-up`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actor }),
+          });
+          if (result.leveled_up) {
+            this.pushStream("notice", `Level up! Now level ${result.new_level}.`, { xp: true });
+          } else {
+            this.statusMessage = result.reason || "Not enough XP to level up.";
+          }
+          await Promise.all([this.loadPlayerAttributes(), this.loadPlayerState(), this.loadPlayerStatistics()]);
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- Recent turns (history) ---- */
+      async loadRecentTurns(limit) {
+        if (!this.selectedCampaignId) return;
+        try {
+          const lim = limit || 30;
+          const data = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=${lim}`,
+          );
+          this.recentTurns = Array.isArray(data.turns) ? data.turns : [];
+        } catch (_) { this.recentTurns = []; }
+      },
+
+      /* ---- Campaign persona ---- */
+      async loadCampaignPersona() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/persona`);
+          this.campaignPersona = data.persona || "";
+          this.campaignPersonaSource = data.source || "default";
+          this.personaEditText = this.campaignPersona;
+        } catch (_) {
+          this.campaignPersona = "";
+          this.campaignPersonaSource = "";
+          this.personaEditText = "";
+        }
+      },
+
+      async setCampaignPersona() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const text = (this.personaEditText || "").trim();
+        if (!text) {
+          this.errorMessage = "Persona text is required.";
+          return;
+        }
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/persona`, {
+            method: "POST",
+            body: JSON.stringify({ persona: text }),
+          });
+          this.statusMessage = "Persona updated.";
+          await this.loadCampaignPersona();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
       async loadMedia() {
         if (!this.selectedCampaignId) {
           return;
@@ -1641,8 +1886,11 @@
           /* Extract campaign summary for display */
           if (typeof body.summary === "string" && body.summary.trim()) {
             this.campaignSummary = body.summary.trim();
+          } else {
+            this.campaignSummary = "";
           }
         } catch (_err) {
+          this.campaignSummary = "";
           /* background refresh — don't surface */
         }
       },

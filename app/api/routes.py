@@ -11,14 +11,19 @@ from pydantic import BaseModel
 
 from app.services.engine_gateway import FEATURES, EngineGateway
 from app.services.schemas import (
+    AttributeSetRequest,
     AvatarActionRequest,
     CampaignRuleUpdate,
     CampaignFlagsUpdate,
     LLMSettingsUpdate,
+    LevelUpRequest,
+    MinigameMoveRequest,
     MemorySearchRequest,
     MemoryStoreRequest,
     MemoryTermsRequest,
     MemoryTurnRequest,
+    PersonaUpdateRequest,
+    PuzzleAnswerRequest,
     RosterRemoveRequest,
     RosterUpsertRequest,
     SessionCreateRequest,
@@ -361,6 +366,118 @@ async def cancel_pending_timer(campaign_id: str, gateway: EngineGateway = Depend
 async def get_player_statistics(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:
         return await gateway.get_player_statistics(campaign_id, actor_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/player-attributes")
+async def get_player_attributes(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_player_attributes(campaign_id, actor_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/player-attributes")
+async def set_player_attribute(
+    campaign_id: str,
+    payload: AttributeSetRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.set_player_attribute(campaign_id, payload.actor_id, payload.attribute, payload.value)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.post("/campaigns/{campaign_id}/level-up")
+async def level_up_player(
+    campaign_id: str,
+    payload: LevelUpRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.level_up_player(campaign_id, payload.actor_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/recent-turns")
+async def get_recent_turns(
+    campaign_id: str,
+    limit: int = 30,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.get_recent_turns(campaign_id, limit=limit)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/persona")
+async def get_campaign_persona(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_campaign_persona(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/persona")
+async def set_campaign_persona(
+    campaign_id: str,
+    payload: PersonaUpdateRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.set_campaign_persona(campaign_id, payload.persona)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.get("/campaigns/{campaign_id}/puzzle/hint")
+async def get_puzzle_hint(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_puzzle_hint(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/puzzle/answer")
+async def submit_puzzle_answer(
+    campaign_id: str,
+    payload: PuzzleAnswerRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.submit_puzzle_answer(campaign_id, payload.answer)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.post("/campaigns/{campaign_id}/minigame/move")
+async def submit_minigame_move(
+    campaign_id: str,
+    payload: MinigameMoveRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.submit_minigame_move(campaign_id, payload.move)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.get("/campaigns/{campaign_id}/minigame/board")
+async def get_minigame_board(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_minigame_board(campaign_id)
     except KeyError as err:
         _not_found(err)
 

@@ -1212,6 +1212,280 @@ details summary {
   font-size: 0.76rem;
 }
 
+/* ---- Player Attributes ---- */
+
+.player-attributes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.attr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.attr-header strong {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6a7a70;
+}
+
+.attr-header small {
+  font-size: 0.74rem;
+  color: #5a7268;
+  font-family: var(--mono);
+}
+
+.attr-grid {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.attr-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.attr-name {
+  width: 100px;
+  font-weight: 500;
+  text-transform: capitalize;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attr-bar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.attr-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.attr-value {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: #5a7268;
+  min-width: 1.5rem;
+  text-align: right;
+}
+
+.attr-set-form {
+  display: flex;
+  gap: 0.35rem;
+  align-items: end;
+  margin-top: 0.3rem;
+}
+
+.attr-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.attr-input-num {
+  max-width: 60px;
+}
+
+.level-up-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.xp-needed {
+  font-size: 0.78rem;
+  color: #5a7268;
+  font-family: var(--mono);
+}
+
+.btn-level-up {
+  background: var(--accent);
+  color: #eff8f4;
+  border-color: #224740;
+  text-align: center;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.75rem;
+}
+
+.btn-level-up:hover:not(:disabled) {
+  background: #346b5e;
+}
+
+/* ---- Campaign Persona ---- */
+
+.campaign-persona {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.campaign-persona h4 {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.persona-text {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--ink);
+  font-style: italic;
+}
+
+.persona-source {
+  font-size: 0.72rem;
+  color: #8a9990;
+}
+
+.persona-edit-details {
+  margin-top: 0.3rem;
+}
+
+.persona-edit-details summary {
+  font-size: 0.82rem;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+/* ---- Turn History ---- */
+
+.turn-history-list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.history-row {
+  background: #f8f6f1;
+  border: 1px solid rgba(200, 190, 176, 0.4);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.65rem;
+}
+
+.history-row.history-kind-narrator {
+  border-left: 3px solid var(--accent);
+}
+
+.history-row.history-kind-player {
+  border-left: 3px solid #5a8acc;
+}
+
+.history-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+
+.history-id {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.history-kind {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6a7a70;
+  font-weight: 600;
+}
+
+.history-actor {
+  font-size: 0.78rem;
+  color: #3a4e46;
+  font-weight: 500;
+}
+
+.history-time {
+  font-size: 0.68rem;
+  color: #8a9990;
+  margin-left: auto;
+}
+
+.history-content {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.history-reasoning {
+  margin-top: 0.2rem;
+}
+
+.history-reasoning summary {
+  font-size: 0.74rem;
+  color: var(--accent);
+  padding: 0.1rem 0;
+}
+
+.history-reasoning p {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #4a5e54;
+  font-style: italic;
+}
+
+/* ---- Dice Result Card ---- */
+
+.dice-result-card {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  flex-wrap: wrap;
+}
+
+.dice-result-card.dice-success {
+  background: linear-gradient(135deg, #e8f5e9 0%, #dcedc8 100%);
+  border: 1px solid #a5d6a7;
+}
+
+.dice-result-card.dice-fail {
+  background: linear-gradient(135deg, #fce4ec 0%, #f8d7da 100%);
+  border: 1px solid #ef9a9a;
+}
+
+.dice-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.dice-text {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  flex: 1;
+}
+
 /* ---- Game Mechanic Cards (Puzzle / Minigame) ---- */
 
 .game-mechanic-card {
@@ -1249,6 +1523,40 @@ details summary {
   border-radius: 4px;
   padding: 0.5rem;
   line-height: 1.3;
+}
+
+.mechanic-controls {
+  margin-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.mechanic-input-row {
+  display: flex;
+  gap: 0.35rem;
+  align-items: end;
+}
+
+.mechanic-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.mechanic-result {
+  margin: 0.3rem 0 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.mechanic-success {
+  color: #2e7d32;
+}
+
+.mechanic-fail {
+  color: var(--error);
 }
 
 /* ---- Responsive ---- */

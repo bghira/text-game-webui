@@ -182,6 +182,13 @@
               </div>
             </div>
           </template>
+          <template x-if="entry.type === 'dice'">
+            <div class="dice-result-card" :class="entry.meta && entry.meta.success ? 'dice-success' : 'dice-fail'">
+              <span class="dice-icon">&#x1f3b2;</span>
+              <span class="dice-text" x-text="entry.text"></span>
+              <small class="turn-time" x-text="entry.at"></small>
+            </div>
+          </template>
           <template x-if="['sms','media','timers','roster','session'].includes(entry.type)">
             <div class="turn-debug-card" x-show="$store.app.debugMode">
               <header>
@@ -224,6 +231,9 @@
         <button type="button" @click="inspectorTab = 'player'" :class="{ active: inspectorTab === 'player' }">Player</button>
         <button type="button" @click="inspectorTab = 'campaign'" :class="{ active: inspectorTab === 'campaign' }">Campaign</button>
         <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'history'" :class="{ active: inspectorTab === 'history' }">History</button>
+        </template>
+        <template x-if="$store.app.debugMode">
           <button type="button" @click="inspectorTab = 'story'" :class="{ active: inspectorTab === 'story' }">Story</button>
         </template>
         <template x-if="$store.app.debugMode">
@@ -264,7 +274,7 @@
             <!-- Avatar + Identity -->
             <div class="player-identity">
               <template x-if="playerData.state && playerData.state.avatar_url">
-                <img :src="playerData.state.avatar_url" alt="avatar" class="player-avatar" />
+                <img :src="playerData.state.avatar_url" :alt="'Avatar of ' + ((playerData.state && playerData.state.character_name) || playerData.actor_id || 'character')" class="player-avatar" />
               </template>
               <div>
                 <strong x-text="(playerData.state && playerData.state.character_name) || playerData.actor_id || 'Unknown'"></strong>
@@ -290,6 +300,40 @@
                 <span class="stat-pill" x-show="typeof playerStats.attention_hours === 'number'">&#x23f1; <span x-text="Number(playerStats.attention_hours).toFixed(1)"></span>h</span>
               </div>
             </template>
+            <!-- Attributes -->
+            <template x-if="playerAttributes && playerAttributes.attributes && Object.keys(playerAttributes.attributes).length > 0">
+              <div class="player-attributes">
+                <div class="attr-header">
+                  <strong>Attributes</strong>
+                  <small x-text="playerAttributes.points_available + ' / ' + playerAttributes.total_points + ' pts available'"></small>
+                </div>
+                <div class="attr-grid">
+                  <template x-for="[name, val] in Object.entries(playerAttributes.attributes)" :key="name">
+                    <div class="attr-row">
+                      <span class="attr-name" x-text="name"></span>
+                      <div class="attr-bar-track">
+                        <div class="attr-bar-fill" :style="'width:' + Math.min(100, (val / (playerAttributes.max_attribute_value || 20)) * 100) + '%'"></div>
+                      </div>
+                      <span class="attr-value" x-text="val"></span>
+                    </div>
+                  </template>
+                </div>
+                <template x-if="playerAttributes.points_available > 0">
+                  <form class="attr-set-form" @submit.prevent="setPlayerAttribute()">
+                    <input x-model="attributeForm.attribute" placeholder="attribute" class="attr-input" />
+                    <input x-model.number="attributeForm.value" type="number" min="0" :max="playerAttributes.max_attribute_value || 20" class="attr-input attr-input-num" />
+                    <button type="submit">Set</button>
+                  </form>
+                </template>
+              </div>
+            </template>
+            <!-- Level Up -->
+            <template x-if="playerAttributes">
+              <div class="level-up-row">
+                <span class="xp-needed" x-text="'Next level: ' + (playerAttributes.xp_needed_for_next || '?') + ' XP'"></span>
+                <button type="button" @click="levelUpPlayer()" :disabled="!playerAttributes || (playerAttributes.xp || 0) < (playerAttributes.xp_needed_for_next || 999999)" class="btn-level-up">Level Up</button>
+              </div>
+            </template>
             <!-- Location -->
             <template x-if="playerData.state && playerData.state.room_description">
               <p class="player-room-desc" x-text="playerData.state.room_description"></p>
@@ -309,7 +353,7 @@
             <template x-if="playerData.state && playerData.state.pending_avatar_url">
               <div class="pending-avatar">
                 <p>Pending Avatar:</p>
-                <img :src="playerData.state.pending_avatar_url" alt="pending" class="player-avatar pending" />
+                <img :src="playerData.state.pending_avatar_url" :alt="'Pending avatar preview for ' + ((playerData.state && playerData.state.character_name) || playerData.actor_id || 'character')" class="player-avatar pending" />
                 <div class="inline-actions">
                   <button type="button" @click="acceptPendingAvatar()">Accept</button>
                   <button type="button" @click="declinePendingAvatar()">Decline</button>
@@ -364,6 +408,30 @@
                   <span x-text="Number(campaignFlags.speed_multiplier || 1).toFixed(1)" style="min-width:2rem; text-align:right;"></span>
                 </div>
               </label>
+            </div>
+
+            <!-- Persona -->
+            <div class="campaign-persona">
+              <h4>Narrator Persona</h4>
+              <template x-if="campaignPersona">
+                <div>
+                  <p class="persona-text" x-text="campaignPersona"></p>
+                  <small class="persona-source" x-text="'Source: ' + (campaignPersonaSource || 'default')"></small>
+                </div>
+              </template>
+              <template x-if="!campaignPersona">
+                <p class="muted">Using default narrator persona.</p>
+              </template>
+              <details class="persona-edit-details">
+                <summary>Edit Persona</summary>
+                <form class="stack compact" @submit.prevent="setCampaignPersona()">
+                  <textarea x-model="personaEditText" rows="3" placeholder="Describe the narrator voice (max 140 chars)" maxlength="140"></textarea>
+                  <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <button type="submit" :disabled="!selectedCampaignId || !personaEditText.trim()">Save Persona</button>
+                    <small x-text="(personaEditText || '').length + '/140'"></small>
+                  </div>
+                </form>
+              </details>
             </div>
 
             <hr />
@@ -457,6 +525,41 @@
         </template>
       </div>
 
+      <!-- Turn History (debug mode) -->
+      <div x-show="inspectorTab === 'history' && $store.app.debugMode" class="stack">
+        <div class="inline-actions">
+          <button type="button" @click="loadRecentTurns(30)" :disabled="!selectedCampaignId">Last 30</button>
+          <button type="button" @click="loadRecentTurns(100)" :disabled="!selectedCampaignId">Last 100</button>
+        </div>
+        <template x-if="recentTurns.length > 0">
+          <div class="turn-history-list">
+            <template x-for="turn in recentTurns" :key="turn.id">
+              <div class="history-row" :class="'history-kind-' + (turn.kind || 'unknown')">
+                <div class="history-header">
+                  <span class="history-id">#<span x-text="turn.id"></span></span>
+                  <span class="history-kind" x-text="turn.kind || '—'"></span>
+                  <span class="history-actor" x-text="turn.actor_id || ''"></span>
+                  <template x-if="turn.meta && turn.meta.game_time && turn.meta.game_time.day">
+                    <small class="turn-game-time" x-text="'Day ' + turn.meta.game_time.day + ' ' + String(turn.meta.game_time.hour||0).padStart(2,'0') + ':' + String(turn.meta.game_time.minute||0).padStart(2,'0')"></small>
+                  </template>
+                  <small class="history-time" x-text="turn.created_at ? new Date(turn.created_at).toLocaleString() : ''"></small>
+                </div>
+                <p class="history-content" x-text="(turn.content || '').substring(0, 300) + ((turn.content || '').length > 300 ? '...' : '')"></p>
+                <template x-if="turn.meta && turn.meta.reasoning">
+                  <details class="history-reasoning">
+                    <summary>Reasoning</summary>
+                    <p x-text="turn.meta.reasoning"></p>
+                  </details>
+                </template>
+              </div>
+            </template>
+          </div>
+        </template>
+        <template x-if="recentTurns.length === 0">
+          <p class="muted">No turns recorded yet.</p>
+        </template>
+      </div>
+
       <!-- Story / Plot State (debug mode) -->
       <div x-show="inspectorTab === 'story' && $store.app.debugMode" class="stack">
         <button type="button" @click="loadStoryState()" :disabled="!selectedCampaignId">Refresh Story State</button>
@@ -500,6 +603,22 @@
                   <p class="mechanic-prompt" x-text="storyState.active_puzzle.question"></p>
                 </template>
                 <p>Attempts: <span x-text="storyState.active_puzzle.attempts || 0"></span> / <span x-text="storyState.active_puzzle.max_attempts || '?'"></span></p>
+                <template x-if="!storyState.active_puzzle.solved && !storyState.active_puzzle.failed">
+                  <div class="mechanic-controls">
+                    <form class="mechanic-input-row" @submit.prevent="submitPuzzleAnswer()">
+                      <input x-model="puzzleAnswer" placeholder="Your answer..." class="mechanic-input" />
+                      <button type="submit">Answer</button>
+                      <button type="button" @click="getPuzzleHint()">Hint</button>
+                    </form>
+                    <small x-show="puzzleStatus" x-text="puzzleStatus"></small>
+                  </div>
+                </template>
+                <template x-if="storyState.active_puzzle.solved">
+                  <p class="mechanic-result mechanic-success">Puzzle solved!</p>
+                </template>
+                <template x-if="storyState.active_puzzle.failed">
+                  <p class="mechanic-result mechanic-fail">Puzzle failed.</p>
+                </template>
                 <details>
                   <summary>Raw State</summary>
                   <pre x-text="JSON.stringify(storyState.active_puzzle, null, 2)"></pre>
@@ -510,12 +629,23 @@
               <div class="game-mechanic-card">
                 <strong>Active Minigame</strong>
                 <p>Type: <span x-text="storyState.active_minigame.game_type || 'unknown'"></span> | Opponent: <span x-text="storyState.active_minigame.opponent_slug || '—'"></span></p>
-                <template x-if="storyState.active_minigame.board">
+                <template x-if="minigameBoard">
+                  <pre class="game-board" x-text="minigameBoard"></pre>
+                </template>
+                <template x-if="!minigameBoard && storyState.active_minigame.board">
                   <pre class="game-board" x-text="storyState.active_minigame.board"></pre>
                 </template>
                 <template x-if="storyState.active_minigame.stakes">
                   <p>Stakes: <span x-text="storyState.active_minigame.stakes"></span></p>
                 </template>
+                <div class="mechanic-controls">
+                  <form class="mechanic-input-row" @submit.prevent="submitMinigameMove()">
+                    <input x-model="minigameMove" placeholder="Your move..." class="mechanic-input" />
+                    <button type="submit">Move</button>
+                    <button type="button" @click="loadMinigameBoard()">Refresh</button>
+                  </form>
+                  <small x-show="minigameStatus" x-text="minigameStatus"></small>
+                </div>
                 <details>
                   <summary>Raw State</summary>
                   <pre x-text="JSON.stringify(storyState.active_minigame, null, 2)"></pre>

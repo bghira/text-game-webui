@@ -37,6 +37,14 @@ FEATURES = [
     "story_state",
     "player_statistics",
     "cancel_timer",
+    "player_attributes",
+    "level_up",
+    "recent_turns",
+    "campaign_persona",
+    "puzzle_hint",
+    "puzzle_answer",
+    "minigame_move",
+    "minigame_board",
 ]
 
 
@@ -126,6 +134,16 @@ class EngineGateway(Protocol):
     async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict: ...
     async def cancel_pending_timer(self, campaign_id: str) -> dict: ...
     async def get_player_statistics(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def get_player_attributes(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def set_player_attribute(self, campaign_id: str, actor_id: str, attribute: str, value: int) -> dict: ...
+    async def level_up_player(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def get_recent_turns(self, campaign_id: str, limit: int = 30) -> dict: ...
+    async def get_campaign_persona(self, campaign_id: str) -> dict: ...
+    async def set_campaign_persona(self, campaign_id: str, persona: str) -> dict: ...
+    async def get_puzzle_hint(self, campaign_id: str) -> dict: ...
+    async def submit_puzzle_answer(self, campaign_id: str, answer: str) -> dict: ...
+    async def submit_minigame_move(self, campaign_id: str, move: str) -> dict: ...
+    async def get_minigame_board(self, campaign_id: str) -> dict: ...
     async def get_story_state(self, campaign_id: str) -> dict: ...
 
 
@@ -934,6 +952,58 @@ Legend: @ current player
             "timers_missed": 0,
             "attention_hours": 0.0,
         }
+
+    async def get_player_attributes(self, campaign_id: str, actor_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        player = self._players[campaign_id].get(actor_id)
+        if player is None:
+            raise KeyError(f"Unknown player in campaign: {actor_id}")
+        level = int(player.get("level", 1))
+        return {
+            "actor_id": actor_id,
+            "level": level,
+            "attributes": {},
+            "total_points": 10 + max(level - 1, 0) * 5,
+            "points_spent": 0,
+            "xp_needed_for_next": 100 + max(level - 1, 0) * 50,
+        }
+
+    async def set_player_attribute(self, campaign_id: str, actor_id: str, attribute: str, value: int) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": False, "note": "InMemory backend — attributes not supported."}
+
+    async def level_up_player(self, campaign_id: str, actor_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": False, "note": "InMemory backend — level up not supported."}
+
+    async def get_recent_turns(self, campaign_id: str, limit: int = 30) -> dict:
+        self._require_campaign(campaign_id)
+        turns = self._turns[campaign_id][-limit:]
+        return {"turns": turns, "count": len(turns)}
+
+    async def get_campaign_persona(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"persona": "A wry narrator in a decaying bureaucratic empire.", "source": "default"}
+
+    async def set_campaign_persona(self, campaign_id: str, persona: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": True, "note": "InMemory backend — persona not persisted."}
+
+    async def get_puzzle_hint(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"hint": None, "note": "No active puzzle."}
+
+    async def submit_puzzle_answer(self, campaign_id: str, answer: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"correct": False, "feedback": "No active puzzle.", "solved": False}
+
+    async def submit_minigame_move(self, campaign_id: str, move: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"valid": False, "message": "No active minigame.", "finished": False}
+
+    async def get_minigame_board(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"board": None, "note": "No active minigame."}
 
     async def get_story_state(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)
