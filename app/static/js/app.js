@@ -21,10 +21,40 @@
     return "[No narration returned.]";
   }
 
+  function normalizeTurnNotices(payload) {
+    if (!payload || !Array.isArray(payload.notices)) {
+      return [];
+    }
+    return payload.notices
+      .map((item) => String(item || "").trim())
+      .filter((item) => item.length > 0);
+  }
+
+  function canonicalKey(value) {
+    return String(value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  /* ---- Alpine Global Store ---- */
+  document.addEventListener("alpine:init", () => {
+    Alpine.store("app", {
+      debugMode: localStorage.getItem("debugMode") === "true",
+      settingsOpen: false,
+      toggleDebugMode() {
+        this.debugMode = !this.debugMode;
+        localStorage.setItem("debugMode", this.debugMode ? "true" : "false");
+      },
+    });
+  });
+
   window.textGameApp = function textGameApp() {
     return {
       campaigns: [],
       selectedCampaignId: null,
+      selectedSessionId: "",
       inspectorTab: "map",
       statusMessage: "Ready.",
       errorMessage: "",
@@ -32,6 +62,24 @@
       socket: null,
       socketReconnectTimer: null,
       turnStream: [],
+      sessionsList: [],
+      submitting: false,
+      _lastSubmitAt: 0,
+
+      /* Settings panel state */
+      ollamaModels: [],
+      settingsForm: {
+        completion_mode: "ollama",
+        base_url: "",
+        model: "",
+        temperature: 0.8,
+        max_tokens: 3200,
+        timeout_seconds: 90,
+        keep_alive: "30m",
+        ollama_options_json: "{}",
+      },
+      settingsSaving: false,
+      settingsStatus: { ok: null, message: "" },
 
       runtimeInfo: {
         gateway_backend: "unknown",
@@ -71,6 +119,7 @@
       turnForm: {
         actor_id: "",
         action: "",
+        session_id: "",
       },
       memory: {
         search: "",
@@ -100,6 +149,8 @@
         update_session_id: "",
         update_enabled: true,
         update_metadata_json: "",
+        quick_private_target: "",
+        quick_private_kind: "solo",
       },
       mediaActions: {
         actor_id: "",
@@ -124,13 +175,154 @@
       smsText: "",
       debugText: "",
       diagnosticsBundleStatus: "",
+      campaignExportStatus: "",
+      campaignExport: {
+        type: "full",
+        raw_format: "jsonl",
+      },
 
       async init() {
         await this.loadRuntime();
         await this.refreshCampaigns();
+        await this.loadSettingsForm();
+        await this.loadOllamaModels();
+        /* watch debug toggle to guard inspector tab */
+        this.$watch("$store.app.debugMode", () => this.ensureValidInspectorTab());
         if (!this.statusMessage.startsWith("Runtime backend:")) {
           this.statusMessage = "Initialized.";
         }
+      },
+
+      /* ---- Turn stream filtering ---- */
+      visibleTurnStream() {
+        if (this.$store.app.debugMode) {
+          return this.turnStream;
+        }
+        return this.turnStream.filter(
+          (entry) => entry.type === "narrator" || entry.type === "notice"
+        );
+      },
+
+      /* Deduplicated actor list for the action bar dropdown */
+      uniqueActors() {
+        const seen = new Set();
+        const result = [];
+        for (const c of this.campaigns) {
+          if (c.actor_id && !seen.has(c.actor_id)) {
+            seen.add(c.actor_id);
+            result.push(c.actor_id);
+          }
+        }
+        return result;
+      },
+
+      /* Guard inspector tab when toggling debug off */
+      ensureValidInspectorTab() {
+        const normalTabs = ["map", "player"];
+        if (!this.$store.app.debugMode && !normalTabs.includes(this.inspectorTab)) {
+          this.inspectorTab = "map";
+        }
+      },
+
+      /* ---- Settings methods ---- */
+      async loadSettingsForm() {
+        try {
+          const data = await this.api("/api/settings");
+          this.settingsForm.completion_mode = data.completion_mode || "ollama";
+          this.settingsForm.base_url = data.base_url || "";
+          this.settingsForm.model = data.model || "";
+          this.settingsForm.temperature = typeof data.temperature === "number" ? data.temperature : 0.8;
+          this.settingsForm.max_tokens = typeof data.max_tokens === "number" ? data.max_tokens : 3200;
+          this.settingsForm.timeout_seconds = typeof data.timeout_seconds === "number" ? data.timeout_seconds : 90;
+          this.settingsForm.keep_alive = data.keep_alive || "30m";
+          this.settingsForm.ollama_options_json = JSON.stringify(data.ollama_options || {}, null, 2);
+        } catch (_err) {
+          /* settings endpoint may not exist for inmemory backend */
+        }
+      },
+
+      async loadOllamaModels() {
+        try {
+          const data = await this.api("/api/ollama/models");
+          if (data.reachable && Array.isArray(data.models)) {
+            this.ollamaModels = data.models;
+            /* ensure current model appears in the list so the dropdown doesn't reset */
+            const currentModel = (this.settingsForm.model || "").trim();
+            if (currentModel && !this.ollamaModels.some((m) => m.name === currentModel)) {
+              this.ollamaModels.unshift({ name: currentModel, size: null, modified_at: null });
+            }
+          } else {
+            this.ollamaModels = [];
+          }
+        } catch (_err) {
+          this.ollamaModels = [];
+        }
+      },
+
+      async testConnection() {
+        this.settingsSaving = true;
+        this.settingsStatus = { ok: null, message: "Testing connection..." };
+        try {
+          const data = await this.api("/api/runtime/checks?probe_llm=true");
+          const llm = data.checks && data.checks.llm;
+          if (llm && llm.ok === true) {
+            this.settingsStatus = { ok: true, message: "Connection OK: " + (llm.detail || "LLM responded.") };
+          } else {
+            this.settingsStatus = { ok: false, message: "Connection failed: " + (llm && llm.detail ? llm.detail : "Unknown error.") };
+          }
+        } catch (err) {
+          this.settingsStatus = { ok: false, message: "Connection test failed: " + String(err) };
+        }
+        this.settingsSaving = false;
+      },
+
+      async applySettings() {
+        this.settingsSaving = true;
+        this.settingsStatus = { ok: null, message: "Applying..." };
+        try {
+          const payload = {
+            completion_mode: this.settingsForm.completion_mode,
+            base_url: this.settingsForm.base_url,
+            model: this.settingsForm.model,
+            temperature: this.settingsForm.temperature,
+            max_tokens: this.settingsForm.max_tokens,
+            timeout_seconds: this.settingsForm.timeout_seconds,
+            keep_alive: this.settingsForm.keep_alive,
+          };
+          const optionsRaw = (this.settingsForm.ollama_options_json || "").trim();
+          if (optionsRaw && optionsRaw !== "{}") {
+            try {
+              payload.ollama_options = JSON.parse(optionsRaw);
+            } catch (_e) {
+              this.settingsStatus = { ok: false, message: "Invalid Ollama Options JSON." };
+              this.settingsSaving = false;
+              return;
+            }
+          }
+          const result = await this.api("/api/settings", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          this.settingsStatus = { ok: true, message: result.note || "Settings applied." };
+          await this.loadSettingsForm();
+          await this.loadRuntime();
+          await this.loadOllamaModels();
+          // Auto-probe after apply
+          try {
+            const probeData = await this.api("/api/runtime/checks?probe_llm=true");
+            const llm = probeData.checks && probeData.checks.llm;
+            if (llm && llm.ok === true) {
+              this.settingsStatus = { ok: true, message: "Applied & verified: LLM responding." };
+            } else if (llm) {
+              this.settingsStatus = { ok: true, message: "Applied, but LLM probe: " + (llm.detail || "no response.") };
+            }
+          } catch (_probeErr) {
+            /* probe failure is non-fatal */
+          }
+        } catch (err) {
+          this.settingsStatus = { ok: false, message: "Failed: " + String(err) };
+        }
+        this.settingsSaving = false;
       },
 
       resetError() {
@@ -180,15 +372,111 @@
         }
       },
 
-      pushStream(type, text) {
+      pushStream(type, text, meta) {
         this.turnCounter += 1;
-        this.turnStream.push({ id: this.turnCounter, type, at: nowLabel(), text });
+        this.turnStream.push({
+          id: this.turnCounter,
+          type,
+          at: nowLabel(),
+          text,
+          meta: meta && typeof meta === "object" ? meta : {},
+        });
         this.$nextTick(() => {
           const stream = document.getElementById("turn-stream");
           if (stream) {
             stream.scrollTop = stream.scrollHeight;
           }
         });
+      },
+
+      currentSessionRecord() {
+        if (!this.selectedSessionId) {
+          return null;
+        }
+        return this.sessionsList.find((row) => row.id === this.selectedSessionId) || null;
+      },
+
+      currentSessionLabel() {
+        const row = this.currentSessionRecord();
+        if (!row) {
+          return "No window selected";
+        }
+        const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+        const label = metadata.label || row.surface_key || row.id;
+        const scope = metadata.scope || metadata.turn_visibility_default || row.surface;
+        return `${label} (${scope})`;
+      },
+
+      syncTurnSessionSelection() {
+        this.turnForm.session_id = this.selectedSessionId || "";
+      },
+
+      selectSession(sessionId) {
+        this.selectedSessionId = sessionId || "";
+        this.syncTurnSessionSelection();
+        this.turnStream = [];
+        this.connectSocket();
+        const row = this.currentSessionRecord();
+        if (row) {
+          const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+          this.statusMessage = `Selected window ${metadata.label || row.surface_key || row.id}.`;
+        }
+      },
+
+      handleActorIdentityChange() {
+        this.syncTurnSessionSelection();
+        this.connectSocket();
+      },
+
+      buildSharedSessionPayload() {
+        return {
+          surface: "web_shared",
+          surface_key: `webui:${this.selectedCampaignId}:shared`,
+          enabled: true,
+          metadata: {
+            label: "Shared web room",
+            scope: "local",
+            turn_visibility_default: "local",
+          },
+        };
+      },
+
+      buildPrivateSessionPayload() {
+        const actorId = (this.turnForm.actor_id || "").trim();
+        if (!actorId) {
+          throw new Error("Actor id is required before opening a private window.");
+        }
+        const target = (this.sessions.quick_private_target || "").trim();
+        const kind = String(this.sessions.quick_private_kind || "solo").trim().toLowerCase();
+        const actorKey = canonicalKey(actorId) || actorId;
+        const targetKey = canonicalKey(target);
+        const metadata = {
+          label: "",
+          scope: "private",
+          turn_visibility_default: "private",
+          owner_actor_id: actorId,
+          allowed_actor_ids: [actorId],
+        };
+        let surface_key = `webui:${this.selectedCampaignId}:private:${actorKey}`;
+        if (kind === "actor" && target) {
+          const actorPair = [actorId, target].map((item) => String(item).trim()).filter(Boolean).sort();
+          surface_key = `webui:${this.selectedCampaignId}:direct:${actorPair.map(canonicalKey).join(":")}`;
+          metadata.scope = "limited";
+          metadata.allowed_actor_ids = actorPair;
+          metadata.label = `Direct room: ${actorPair.join(" / ")}`;
+        } else if (kind === "npc" && target) {
+          surface_key = `webui:${this.selectedCampaignId}:npc:${actorKey}:${targetKey || "npc"}`;
+          metadata.npc_slugs = [target];
+          metadata.label = `Private with ${target}`;
+        } else {
+          metadata.label = `Private room: ${actorId}`;
+        }
+        return {
+          surface: kind === "actor" ? "web_direct" : "web_private",
+          surface_key,
+          enabled: true,
+          metadata,
+        };
       },
 
       async loadRuntime() {
@@ -338,6 +626,42 @@
         }
       },
 
+      async exportCampaignBundle() {
+        this.resetError();
+        this.campaignExportStatus = "";
+        if (!this.selectedCampaignId) {
+          this.errorMessage = "Select a campaign first.";
+          return;
+        }
+        try {
+          const params = new URLSearchParams();
+          params.set("export_type", this.campaignExport.type || "full");
+          params.set("raw_format", this.campaignExport.raw_format || "jsonl");
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/export?${params.toString()}`);
+          const files = Array.isArray(body.files) ? body.files : [];
+          if (!files.length) {
+            this.campaignExportStatus = `No export files returned at ${nowLabel()}.`;
+            return;
+          }
+          for (const row of files) {
+            const filename = String((row && row.filename) || "campaign-export.txt").trim() || "campaign-export.txt";
+            const content = String((row && row.content) || "");
+            const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+            const href = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = href;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(href);
+          }
+          this.campaignExportStatus = `Downloaded ${files.length} export file(s) at ${nowLabel()}.`;
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
       async refreshCampaigns() {
         this.resetError();
         try {
@@ -366,6 +690,12 @@
           this.campaignForm.name = "";
           await this.refreshCampaigns();
           await this.selectCampaign(campaign.id);
+          // Auto-open shared window and focus action input
+          await this.ensureSharedWindow();
+          this.$nextTick(() => {
+            const input = document.getElementById("action-input");
+            if (input) input.focus();
+          });
           this.statusMessage = `Created campaign ${campaign.name}.`;
         } catch (error) {
           this.errorMessage = String(error);
@@ -375,18 +705,17 @@
       async selectCampaign(campaignId) {
         this.resetError();
         this.selectedCampaignId = campaignId;
+        this.selectedSessionId = "";
+        this.turnStream = [];
         const selected = this.campaigns.find((row) => row.id === campaignId);
-        if (selected && !this.turnForm.actor_id) {
+        if (selected) {
           this.turnForm.actor_id = selected.actor_id;
         }
-        if (!this.mediaActions.actor_id && this.turnForm.actor_id) {
-          this.mediaActions.actor_id = this.turnForm.actor_id;
-        }
-        if (!this.rosterActions.slug && this.turnForm.actor_id) {
-          this.rosterActions.slug = this.turnForm.actor_id;
+        if (this.turnForm.actor_id) {
+          this.mediaActions.actor_id = this.mediaActions.actor_id || this.turnForm.actor_id;
+          this.rosterActions.slug = this.rosterActions.slug || this.turnForm.actor_id;
           this.rosterActions.player = true;
         }
-        this.connectSocket();
         await Promise.all([
           this.loadSessions(),
           this.loadMap(),
@@ -409,13 +738,23 @@
           this.socketReconnectTimer = null;
         }
         if (this.socket) {
+          this.socket._deliberateClose = true;
           this.socket.close();
         }
         const campaignId = this.selectedCampaignId;
         this.diagnostics.ws_state = "connecting";
         this.diagnostics.ws_last_error = null;
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        const socketUrl = `${protocol}://${window.location.host}/ws/campaigns/${campaignId}`;
+        const params = new URLSearchParams();
+        const actorId = (this.turnForm.actor_id || "").trim();
+        if (actorId) {
+          params.set("actor_id", actorId);
+        }
+        if (this.selectedSessionId) {
+          params.set("session_id", this.selectedSessionId);
+        }
+        const suffix = params.toString() ? `?${params.toString()}` : "";
+        const socketUrl = `${protocol}://${window.location.host}/ws/campaigns/${campaignId}${suffix}`;
         this.socket = new WebSocket(socketUrl);
         this.socket.onopen = () => {
           this.diagnostics.ws_state = "connected";
@@ -425,24 +764,38 @@
         };
         this.socket.onmessage = (event) => {
           this.diagnostics.ws_last_event_at = isoNow();
-          const payload = JSON.parse(event.data);
+          let payload;
+          try {
+            payload = JSON.parse(event.data);
+          } catch (_err) {
+            console.warn("WebSocket: malformed JSON frame ignored", event.data);
+            return;
+          }
           if (payload.type === "turn" && payload.payload) {
-            this.pushStream("narrator", normalizeTurnNarration(payload.payload));
+            /* Suppress echo: if we just submitted a turn, skip the WS echo to avoid duplicates */
+            const isOwnEcho = this._lastSubmitAt && (Date.now() - this._lastSubmitAt) < 3000
+              && payload.actor_id === (this.turnForm.actor_id || "").trim();
+            if (!isOwnEcho) {
+              normalizeTurnNotices(payload.payload).forEach((notice) => {
+                this.pushStream("notice", notice, { notice });
+              });
+              this.pushStream("narrator", normalizeTurnNarration(payload.payload), payload.payload);
+            }
             this.loadTimers();
           }
           if (payload.type === "sms" && payload.payload) {
             this.pushStream("sms", formatJson(payload.payload));
           }
           if (payload.type === "session" && payload.payload) {
-            this.pushStream("session", formatJson(payload.payload));
+            this.pushStream("session", formatJson(payload.payload), payload.payload);
             this.loadSessions();
           }
           if (payload.type === "media" && payload.payload) {
-            this.pushStream("media", formatJson(payload.payload));
+            this.pushStream("media", formatJson(payload.payload), payload.payload);
             this.loadMedia();
           }
           if (payload.type === "timers" && payload.payload) {
-            this.pushStream("timers", formatJson(payload.payload));
+            this.pushStream("timers", formatJson(payload.payload), payload.payload);
             this.timersText = formatJson(payload.payload);
           }
           if (payload.type === "roster" && payload.payload) {
@@ -455,8 +808,11 @@
           this.diagnostics.ws_last_error = "WebSocket transport error.";
           this.errorMessage = "WebSocket error.";
         };
-        this.socket.onclose = () => {
+        this.socket.onclose = (event) => {
           this.diagnostics.ws_state = "disconnected";
+          if (event.target._deliberateClose) {
+            return;
+          }
           if (!this.selectedCampaignId || this.selectedCampaignId !== campaignId) {
             return;
           }
@@ -477,24 +833,37 @@
           this.errorMessage = "Select a campaign first.";
           return;
         }
+        if (!this.turnForm.actor_id || !this.turnForm.actor_id.trim()) {
+          this.errorMessage = "Select an actor first.";
+          return;
+        }
+        if (this.submitting) return;
+        this.submitting = true;
+        this.statusMessage = "Submitting turn...";
         try {
           const payload = {
             actor_id: this.turnForm.actor_id.trim(),
             action: this.turnForm.action.trim(),
+            session_id: this.selectedSessionId || null,
           };
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/turns`, {
             method: "POST",
             body: JSON.stringify(payload),
           });
+          this._lastSubmitAt = Date.now();
+          normalizeTurnNotices(body).forEach((notice) => {
+            this.pushStream("notice", notice, { notice });
+          });
           const narration = normalizeTurnNarration(body);
-          this.pushStream("narrator", narration);
+          this.pushStream("narrator", narration, body);
           if (body.image_prompt) {
-            this.pushStream("image_prompt", body.image_prompt);
+            this.pushStream("image_prompt", body.image_prompt, body);
           }
           if (body.summary_update) {
-            this.pushStream("summary", body.summary_update);
+            this.pushStream("summary", body.summary_update, body);
           }
           this.turnForm.action = "";
+          setTimeout(() => { this._lastSubmitAt = 0; }, 4000);
           await Promise.all([
             this.loadSessions(),
             this.loadMap(),
@@ -508,6 +877,8 @@
           this.statusMessage = "Turn submitted.";
         } catch (error) {
           this.errorMessage = String(error);
+        } finally {
+          this.submitting = false;
         }
       },
 
@@ -515,33 +886,52 @@
         if (!this.selectedCampaignId) {
           return;
         }
-        const actor = this.turnForm.actor_id || "player";
-        const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/map?actor_id=${encodeURIComponent(actor)}`);
-        this.mapText = body.map || "";
+        const actor = (this.turnForm.actor_id || "").trim();
+        if (!actor) {
+          return;
+        }
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/map?actor_id=${encodeURIComponent(actor)}`);
+          this.mapText = body.map || "";
+        } catch (_err) {
+          /* background refresh — don't surface */
+        }
       },
 
       async loadTimers() {
         if (!this.selectedCampaignId) {
           return;
         }
-        const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/timers`);
-        this.timersText = formatJson(body);
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/timers`);
+          this.timersText = formatJson(body);
+        } catch (_err) {
+          /* background refresh */
+        }
       },
 
       async loadCalendar() {
         if (!this.selectedCampaignId) {
           return;
         }
-        const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/calendar`);
-        this.calendarText = formatJson(body);
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/calendar`);
+          this.calendarText = formatJson(body);
+        } catch (_err) {
+          /* background refresh */
+        }
       },
 
       async loadRoster() {
         if (!this.selectedCampaignId) {
           return;
         }
-        const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster`);
-        this.rosterText = formatJson(body);
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster`);
+          this.rosterText = formatJson(body);
+        } catch (_err) {
+          /* background refresh */
+        }
       },
 
       async upsertRosterCharacter() {
@@ -618,8 +1008,40 @@
         if (!this.selectedCampaignId) {
           return;
         }
-        const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`);
+        let body;
+        try {
+          body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`);
+        } catch (_err) {
+          return;
+        }
+        const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+        this.sessionsList = sessions;
         this.sessionsText = formatJson(body);
+        if (this.selectedSessionId) {
+          const stillExists = sessions.some((row) => row && row.id === this.selectedSessionId);
+          if (!stillExists) {
+            this.selectedSessionId = "";
+            this.syncTurnSessionSelection();
+          }
+        }
+        if (!this.selectedSessionId) {
+          const actorId = (this.turnForm.actor_id || "").trim();
+          let preferred = sessions.find((row) => row.surface === "web_shared");
+          if (!preferred) {
+            preferred = sessions.find((row) => {
+              const metadata = row && row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+              return actorId && row.surface === "web_private" && metadata.owner_actor_id === actorId;
+            });
+          }
+          if (preferred && preferred.id) {
+            this.selectedSessionId = preferred.id;
+            this.syncTurnSessionSelection();
+          }
+        }
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+          return;
+        }
+        this.connectSocket();
       },
 
       async createOrUpdateSession() {
@@ -645,6 +1067,49 @@
           this.sessionsText = formatJson(body);
           this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
           await this.loadSessions();
+          if (body.session && body.session.id) {
+            this.selectSession(body.session.id);
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async ensureSharedWindow() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`, {
+            method: "POST",
+            body: JSON.stringify(this.buildSharedSessionPayload()),
+          });
+          this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
+          await this.loadSessions();
+          if (body.session && body.session.id) {
+            this.selectSession(body.session.id);
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async ensurePrivateWindow() {
+        this.resetError();
+        if (!this.selectedCampaignId) {
+          return;
+        }
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sessions`, {
+            method: "POST",
+            body: JSON.stringify(this.buildPrivateSessionPayload()),
+          });
+          this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
+          await this.loadSessions();
+          if (body.session && body.session.id) {
+            this.selectSession(body.session.id);
+          }
         } catch (error) {
           this.errorMessage = String(error);
         }
@@ -908,14 +1373,14 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/debug/snapshot`);
           this.debugText = formatJson(body);
-        } catch (error) {
-          this.errorMessage = String(error);
+        } catch (_err) {
+          /* background refresh — don't surface */
         }
       },
     };
   };
 
   window.TextGameWebUI = {
-    version: "0.2.0",
+    version: "0.3.0",
   };
 })();

@@ -1,6 +1,7 @@
 export type TurnPayload = {
   actor_id: string;
   action: string;
+  session_id?: string | null;
 };
 
 export type DiagnosticsState = {
@@ -57,10 +58,11 @@ export function buildRuntimeChecksPath(probeLlm: boolean): string {
   return probeLlm ? "/api/runtime/checks?probe_llm=true" : "/api/runtime/checks";
 }
 
-export function buildTurnPayload(actorId: string, action: string): TurnPayload {
+export function buildTurnPayload(actorId: string, action: string, sessionId?: string | null): TurnPayload {
   return {
     actor_id: actorId.trim(),
     action: action.trim(),
+    session_id: sessionId ? sessionId.trim() : undefined,
   };
 }
 

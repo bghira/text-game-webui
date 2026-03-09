@@ -1,23 +1,109 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from fastapi import WebSocket
+
+
+@dataclass(frozen=True)
+class RealtimeSubscription:
+    ws: WebSocket
+    actor_id: str | None = None
+    session_id: str | None = None
 
 
 class RealtimeHub:
     def __init__(self) -> None:
-        self._subs: dict[str, set[WebSocket]] = defaultdict(set)
+        self._subs: dict[str, set[RealtimeSubscription]] = defaultdict(set)
 
-    async def connect(self, campaign_id: str, ws: WebSocket) -> None:
+    async def connect(
+        self,
+        campaign_id: str,
+        ws: WebSocket,
+        *,
+        actor_id: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
         await ws.accept()
-        self._subs[campaign_id].add(ws)
+        self._subs[campaign_id].add(
+            RealtimeSubscription(
+                ws=ws,
+                actor_id=str(actor_id or "").strip() or None,
+                session_id=str(session_id or "").strip() or None,
+            )
+        )
 
     def disconnect(self, campaign_id: str, ws: WebSocket) -> None:
-        self._subs[campaign_id].discard(ws)
+        stale = {sub for sub in self._subs[campaign_id] if sub.ws is ws}
+        for sub in stale:
+            self._subs[campaign_id].discard(sub)
+
+    @staticmethod
+    def _session_id_for_event(payload: dict) -> str | None:
+        top_level = str(payload.get("session_id") or "").strip() or None
+        if top_level:
+            return top_level
+        body = payload.get("payload")
+        if isinstance(body, dict):
+            return str(body.get("session_id") or "").strip() or None
+        return None
+
+    @staticmethod
+    def _actor_id_for_event(payload: dict) -> str | None:
+        top_level = str(payload.get("actor_id") or "").strip() or None
+        if top_level:
+            return top_level
+        body = payload.get("payload")
+        if isinstance(body, dict):
+            return str(body.get("actor_id") or "").strip() or None
+        return None
+
+    @staticmethod
+    def _turn_visibility_for_event(payload: dict) -> dict | None:
+        body = payload.get("payload")
+        if not isinstance(body, dict):
+            return None
+        visibility = body.get("turn_visibility")
+        return visibility if isinstance(visibility, dict) else None
+
+    @classmethod
+    def _event_visible_to_subscription(cls, sub: RealtimeSubscription, payload: dict) -> bool:
+        payload_type = str(payload.get("type") or "").strip().lower()
+        event_session_id = cls._session_id_for_event(payload)
+        if sub.session_id:
+            if event_session_id is not None and event_session_id != sub.session_id:
+                return False
+        elif event_session_id is not None and payload_type in {"turn", "media", "timers"}:
+            return False
+
+        if payload_type not in {"turn", "media", "timers"}:
+            return True
+
+        visibility = cls._turn_visibility_for_event(payload)
+        if not isinstance(visibility, dict):
+            return True
+        scope = str(visibility.get("scope") or "public").strip().lower()
+        if scope in {"", "public"}:
+            return True
+        if scope == "local" and sub.session_id and event_session_id and sub.session_id == event_session_id:
+            return True
+        if not sub.actor_id:
+            return False
+        event_actor_id = cls._actor_id_for_event(payload)
+        if event_actor_id and sub.actor_id == event_actor_id:
+            return True
+        raw_actor_ids = visibility.get("visible_actor_ids")
+        if isinstance(raw_actor_ids, list):
+            allowed = {str(item or "").strip() for item in raw_actor_ids if str(item or "").strip()}
+            if sub.actor_id in allowed:
+                return True
+        return False
 
     async def publish(self, campaign_id: str, payload: dict) -> None:
-        for ws in list(self._subs[campaign_id]):
+        for sub in list(self._subs[campaign_id]):
+            if not self._event_visible_to_subscription(sub, payload):
+                continue
             try:
-                await ws.send_json(payload)
+                await sub.ws.send_json(payload)
             except Exception:
-                self._subs[campaign_id].discard(ws)
+                self._subs[campaign_id].discard(sub)

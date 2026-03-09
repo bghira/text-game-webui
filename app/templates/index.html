@@ -1,48 +1,23 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="layout" x-data="textGameApp()" x-init="init()">
-  <aside class="panel left-column">
-    <h2>Runtime</h2>
-    <div class="stack compact runtime-panel">
-      <div class="runtime-actions">
-        <button type="button" @click="loadRuntime()">Refresh Runtime</button>
-        <button type="button" @click="runRuntimeChecks(true)">Run LLM Probe</button>
-      </div>
-      <p><strong>Backend:</strong> <span x-text="runtimeInfo.gateway_backend || 'unknown'"></span></p>
-      <p><strong>Mode:</strong> <span x-text="runtimeInfo.tge_completion_mode || 'n/a'"></span></p>
-      <p><strong>Model:</strong> <span x-text="runtimeInfo.tge_llm_model || 'n/a'"></span></p>
-      <p><strong>Base URL:</strong> <code x-text="runtimeInfo.tge_llm_base_url || 'n/a'"></code></p>
-      <p><strong>Ollama Keep-Alive:</strong> <span x-text="runtimeInfo.tge_ollama_keep_alive || 'n/a'"></span></p>
-      <p><strong>API Health:</strong> <span x-text="runtimeInfo.health_ok ? 'ok' : 'unreachable'"></span></p>
-      <p><strong>DB Check:</strong> <span x-text="runtimeCheckLabel(runtimeChecks.database)"></span></p>
-      <p><strong>Engine Check:</strong> <span x-text="runtimeCheckLabel(runtimeChecks.engine)"></span></p>
-      <p><strong>LLM Check:</strong> <span x-text="runtimeLlmLabel()"></span></p>
-      <p><strong>LLM Probe Default:</strong> <span x-text="runtimeInfo.tge_runtime_probe_llm_default ? 'on' : 'off'"></span></p>
-      <p><strong>Last Check:</strong> <span x-text="runtimeChecksMeta.generated_at || 'never'"></span></p>
-      <p><strong>Probe Used:</strong> <span x-text="runtimeChecksMeta.probe_llm ? 'yes' : 'no'"></span></p>
-      <p><strong>DB Detail:</strong> <span x-text="(runtimeChecks.database && runtimeChecks.database.detail) || 'n/a'"></span></p>
-      <p><strong>LLM Detail:</strong> <span x-text="(runtimeChecks.llm && runtimeChecks.llm.detail) || 'n/a'"></span></p>
-    </div>
 
+  <!-- ====== SIDEBAR ====== -->
+  <aside class="panel sidebar">
     <h2>Campaigns</h2>
-    <form class="stack" @submit.prevent="createCampaign()">
-      <label>
-        Namespace
-        <input x-model="campaignForm.namespace" placeholder="default" />
-      </label>
+    <form class="stack compact" @submit.prevent="createCampaign()">
       <label>
         Campaign Name
         <input x-model="campaignForm.name" placeholder="New Campaign" required />
       </label>
       <label>
-        Lead Actor
+        Your Character
         <input x-model="campaignForm.actor_id" placeholder="dale-denton" required />
       </label>
-      <button type="submit">Create Campaign</button>
+      <button type="submit">+ New Campaign</button>
     </form>
 
-    <div class="stack compact">
-      <button type="button" @click="refreshCampaigns()">Refresh Campaign List</button>
+    <div class="stack compact campaign-list">
       <template x-for="campaign in campaigns" :key="campaign.id">
         <button
           type="button"
@@ -51,300 +26,545 @@
           @click="selectCampaign(campaign.id)"
         >
           <span x-text="campaign.name"></span>
-          <small x-text="campaign.namespace"></small>
+          <small x-text="campaign.actor_id"></small>
         </button>
       </template>
     </div>
 
-    <h2>Available Features</h2>
-    <div hx-get="/partials/feature-list" hx-trigger="load"></div>
+    <h2>Windows</h2>
+    <div class="stack compact">
+      <button type="button" @click="ensureSharedWindow()" :disabled="!selectedCampaignId">Shared Room</button>
+      <div class="private-window-row">
+        <select x-model="sessions.quick_private_kind" class="private-kind-select">
+          <option value="solo">Solo</option>
+          <option value="actor">With Actor</option>
+          <option value="npc">With NPC</option>
+        </select>
+        <input x-model="sessions.quick_private_target" placeholder="target (optional)" class="private-target-input" x-show="sessions.quick_private_kind !== 'solo'" />
+        <button type="button" @click="ensurePrivateWindow()" :disabled="!selectedCampaignId">Private</button>
+      </div>
+    </div>
+
+    <div class="stack compact window-list">
+      <template x-for="row in sessionsList" :key="row.id">
+        <button
+          type="button"
+          class="campaign-button"
+          :class="{ active: selectedSessionId === row.id }"
+          @click="selectSession(row.id)"
+        >
+          <span x-text="(row.metadata && row.metadata.label) || row.surface_key || row.id"></span>
+        </button>
+      </template>
+      <p x-show="sessionsList.length === 0 && selectedCampaignId" class="sidebar-hint">Click "Shared Room" to open a window.</p>
+    </div>
+
+    <h2>Status</h2>
+    <div class="status-dots">
+      <div class="status-dot-row">
+        <span class="dot" :class="runtimeInfo.health_ok ? 'dot-ok' : 'dot-err'"></span>
+        <span>API</span>
+        <template x-if="$store.app.debugMode">
+          <small x-text="runtimeInfo.health_ok ? 'healthy' : 'unreachable'"></small>
+        </template>
+      </div>
+      <div class="status-dot-row">
+        <span class="dot" :class="runtimeChecks.database && runtimeChecks.database.ok ? 'dot-ok' : 'dot-err'"></span>
+        <span>DB</span>
+        <template x-if="$store.app.debugMode">
+          <small x-text="runtimeCheckLabel(runtimeChecks.database)"></small>
+        </template>
+      </div>
+      <div class="status-dot-row">
+        <span class="dot" :class="runtimeChecks.llm && runtimeChecks.llm.configured ? 'dot-ok' : 'dot-warn'"></span>
+        <span>LLM</span>
+        <template x-if="$store.app.debugMode">
+          <small x-text="runtimeLlmLabel()"></small>
+        </template>
+      </div>
+    </div>
+
+    <template x-if="$store.app.debugMode">
+      <div class="stack compact runtime-detail">
+        <p><strong>Backend:</strong> <span x-text="runtimeInfo.gateway_backend || 'unknown'"></span></p>
+        <p><strong>Mode:</strong> <span x-text="runtimeInfo.tge_completion_mode || 'n/a'"></span></p>
+        <p><strong>Model:</strong> <span x-text="runtimeInfo.tge_llm_model || 'n/a'"></span></p>
+        <p><strong>Base URL:</strong> <code x-text="runtimeInfo.tge_llm_base_url || 'n/a'"></code></p>
+        <div class="runtime-actions">
+          <button type="button" @click="loadRuntime()">Refresh Runtime</button>
+          <button type="button" @click="runRuntimeChecks(true)">Run LLM Probe</button>
+        </div>
+      </div>
+    </template>
   </aside>
 
-  <section class="panel center-column">
+  <!-- ====== MAIN COLUMN ====== -->
+  <section class="panel main-column">
+
+    <!-- Welcome card (first-time UX) -->
+    <template x-if="campaigns.length === 0 && !selectedCampaignId">
+      <div class="welcome-card">
+        <h2>Create your first campaign</h2>
+        <p>Enter a campaign name and your character name in the sidebar, then click "+ New Campaign" to begin.</p>
+      </div>
+    </template>
+
+    <!-- Turn Stream -->
     <div class="section-head">
       <h2>Turn Stream</h2>
-      <small x-text="selectedCampaignId ? selectedCampaignId : 'No campaign selected'"></small>
+      <small x-text="selectedCampaignId ? `${selectedCampaignId} • ${currentSessionLabel()}` : 'No campaign selected'"></small>
     </div>
 
     <div class="turn-stream" id="turn-stream">
-      <template x-for="entry in turnStream" :key="entry.id">
-        <article class="turn-entry">
-          <header>
-            <strong x-text="entry.type"></strong>
-            <small x-text="entry.at"></small>
-          </header>
-          <pre x-text="entry.text"></pre>
+      <template x-for="entry in visibleTurnStream()" :key="entry.id">
+        <article class="turn-entry" :class="'turn-type-' + entry.type">
+          <template x-if="entry.type === 'narrator'">
+            <div class="turn-narrator">
+              <p class="narrator-text" x-text="entry.text"></p>
+              <small class="turn-time" x-text="entry.at"></small>
+            </div>
+          </template>
+          <template x-if="entry.type === 'notice'">
+            <div class="turn-notice">
+              <span class="notice-label">Notice</span>
+              <span x-text="entry.text"></span>
+              <small class="turn-time" x-text="entry.at"></small>
+            </div>
+          </template>
+          <template x-if="entry.type === 'summary'">
+            <div class="turn-debug-card" x-show="$store.app.debugMode">
+              <header>
+                <strong>SUMMARY</strong>
+                <small x-text="entry.at"></small>
+              </header>
+              <pre x-text="entry.text"></pre>
+            </div>
+          </template>
+          <template x-if="entry.type === 'image_prompt'">
+            <div class="turn-debug-card" x-show="$store.app.debugMode">
+              <header>
+                <strong>IMAGE PROMPT</strong>
+                <small x-text="entry.at"></small>
+              </header>
+              <pre x-text="entry.text"></pre>
+            </div>
+          </template>
+          <template x-if="['sms','media','timers','roster','session'].includes(entry.type)">
+            <div class="turn-debug-card" x-show="$store.app.debugMode">
+              <header>
+                <strong x-text="entry.type.toUpperCase()"></strong>
+                <small x-text="entry.at"></small>
+              </header>
+              <pre x-text="entry.text"></pre>
+            </div>
+          </template>
         </article>
       </template>
       <p x-show="turnStream.length === 0" class="empty">No turns yet.</p>
     </div>
 
-    <form class="stack" @submit.prevent="submitTurn()">
-      <label>
-        Actor ID
-        <input x-model="turnForm.actor_id" placeholder="dale-denton" required />
-      </label>
-      <label>
-        Action
-        <input x-model="turnForm.action" placeholder="look" required />
-      </label>
-      <button type="submit" :disabled="!selectedCampaignId">Submit Turn</button>
+    <!-- Action Bar (horizontal) -->
+    <form class="action-bar" @submit.prevent="submitTurn()">
+      <select x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
+        <template x-for="actor in uniqueActors()" :key="actor">
+          <option :value="actor" x-text="actor"></option>
+        </template>
+      </select>
+      <span class="action-prompt">&gt;</span>
+      <input
+        x-model="turnForm.action"
+        placeholder="What do you do?"
+        class="action-input"
+        required
+        id="action-input"
+      />
+      <button type="submit" :disabled="!selectedCampaignId || submitting" class="action-submit" :class="{ 'action-thinking': submitting }" x-text="submitting ? 'Thinking...' : 'Submit'"></button>
     </form>
 
     <p class="status" x-text="statusMessage"></p>
-    <p class="error" x-show="errorMessage" x-text="errorMessage"></p>
-  </section>
+    <p class="error" x-show="errorMessage" x-text="errorMessage" @click="errorMessage = ''" title="Click to dismiss"></p>
 
-  <section class="panel right-column">
-    <div class="tab-row">
-      <button type="button" @click="inspectorTab = 'sessions'" :class="{ active: inspectorTab === 'sessions' }">Sessions</button>
-      <button type="button" @click="inspectorTab = 'map'" :class="{ active: inspectorTab === 'map' }">Map</button>
-      <button type="button" @click="inspectorTab = 'timers'" :class="{ active: inspectorTab === 'timers' }">Timers</button>
-      <button type="button" @click="inspectorTab = 'calendar'" :class="{ active: inspectorTab === 'calendar' }">Calendar</button>
-      <button type="button" @click="inspectorTab = 'roster'" :class="{ active: inspectorTab === 'roster' }">Roster</button>
-      <button type="button" @click="inspectorTab = 'player'" :class="{ active: inspectorTab === 'player' }">Player</button>
-      <button type="button" @click="inspectorTab = 'media'" :class="{ active: inspectorTab === 'media' }">Media</button>
-      <button type="button" @click="inspectorTab = 'memory'" :class="{ active: inspectorTab === 'memory' }">Memory</button>
-      <button type="button" @click="inspectorTab = 'sms'" :class="{ active: inspectorTab === 'sms' }">SMS</button>
-      <button type="button" @click="inspectorTab = 'debug'" :class="{ active: inspectorTab === 'debug' }">Debug</button>
-    </div>
-
-    <div x-show="inspectorTab === 'sessions'" class="stack">
-      <button type="button" @click="loadSessions()" :disabled="!selectedCampaignId">Refresh Sessions</button>
-
-      <form class="stack compact" @submit.prevent="createOrUpdateSession()">
-        <label>
-          Surface
-          <input x-model="sessions.surface" placeholder="discord_thread" />
-        </label>
-        <label>
-          Surface Key
-          <input x-model="sessions.surface_key" placeholder="discord:guild:thread" />
-        </label>
-        <label>
-          Guild ID (optional)
-          <input x-model="sessions.surface_guild_id" placeholder="guild id" />
-        </label>
-        <label>
-          Channel ID (optional)
-          <input x-model="sessions.surface_channel_id" placeholder="channel id" />
-        </label>
-        <label>
-          Thread ID (optional)
-          <input x-model="sessions.surface_thread_id" placeholder="thread id" />
-        </label>
-        <label>
-          Enabled
-          <input x-model="sessions.enabled" type="checkbox" />
-        </label>
-        <label>
-          Metadata JSON
-          <textarea x-model="sessions.metadata_json" rows="2" placeholder="{}"></textarea>
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Create/Update Session</button>
-      </form>
-
-      <form class="stack compact" @submit.prevent="updateSession()">
-        <label>
-          Session ID
-          <input x-model="sessions.update_session_id" placeholder="session id" />
-        </label>
-        <label>
-          Enabled
-          <input x-model="sessions.update_enabled" type="checkbox" />
-        </label>
-        <label>
-          Metadata JSON (optional)
-          <textarea x-model="sessions.update_metadata_json" rows="2" placeholder='{"active_campaign_id":"..."}'></textarea>
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Patch Session</button>
-      </form>
-
-      <pre x-text="sessionsText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'map'" class="stack">
-      <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
-      <pre x-text="mapText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'timers'" class="stack">
-      <button type="button" @click="loadTimers()" :disabled="!selectedCampaignId">Refresh Timers</button>
-      <pre x-text="timersText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'calendar'" class="stack">
-      <button type="button" @click="loadCalendar()" :disabled="!selectedCampaignId">Refresh Calendar</button>
-      <pre x-text="calendarText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'roster'" class="stack">
-      <button type="button" @click="loadRoster()" :disabled="!selectedCampaignId">Refresh Roster</button>
-
-      <form class="stack compact" @submit.prevent="upsertRosterCharacter()">
-        <label>
-          Slug
-          <input x-model="rosterActions.slug" placeholder="arsipea-denton" />
-        </label>
-        <label>
-          Name (optional)
-          <input x-model="rosterActions.name" placeholder="Arsipea Denton" />
-        </label>
-        <label>
-          Location (optional)
-          <input x-model="rosterActions.location" placeholder="visitor-room-b" />
-        </label>
-        <label>
-          Status (optional)
-          <input x-model="rosterActions.status" placeholder="active" />
-        </label>
-        <label>
-          Player Character
-          <input x-model="rosterActions.player" type="checkbox" />
-        </label>
-        <label>
-          Extra Fields JSON
-          <textarea x-model="rosterActions.fields_json" rows="2" placeholder="{}"></textarea>
-        </label>
-        <div class="inline-actions">
-          <button type="submit" :disabled="!selectedCampaignId">Upsert Character</button>
-          <button type="button" @click="removeRosterCharacter()" :disabled="!selectedCampaignId">Remove Character</button>
-        </div>
-      </form>
-
-      <pre x-text="rosterText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'player'" class="stack">
-      <button type="button" @click="loadPlayerState()" :disabled="!selectedCampaignId">Refresh Player State</button>
-      <pre x-text="playerStateText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'media'" class="stack">
-      <button type="button" @click="loadMedia()" :disabled="!selectedCampaignId">Refresh Media</button>
-      <form class="stack compact" @submit.prevent="acceptPendingAvatar()">
-        <label>
-          Actor ID
-          <input x-model="mediaActions.actor_id" placeholder="dale-denton" />
-        </label>
-        <div class="inline-actions">
-          <button type="submit" :disabled="!selectedCampaignId">Accept Pending Avatar</button>
-          <button type="button" @click="declinePendingAvatar()" :disabled="!selectedCampaignId">Decline Pending Avatar</button>
-        </div>
-      </form>
-      <pre x-text="mediaText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'memory'" class="stack">
-      <form class="stack compact" @submit.prevent="searchMemory()">
-        <label>
-          Search
-          <input x-model="memory.search" placeholder="Belmond room" />
-        </label>
-        <label>
-          Category (optional)
-          <input x-model="memory.category" placeholder="char:elizabeth" />
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Run memory_search</button>
-      </form>
-
-      <form class="stack compact" @submit.prevent="listMemoryTerms()">
-        <label>
-          Wildcard
-          <input x-model="memory.wildcard" placeholder="char:*" />
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Run memory_terms</button>
-      </form>
-
-      <form class="stack compact" @submit.prevent="readMemoryTurn()">
-        <label>
-          Turn ID
-          <input x-model="memory.turnId" type="number" min="1" placeholder="1234" />
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Run memory_turn</button>
-      </form>
-
-      <form class="stack compact" @submit.prevent="storeMemory()">
-        <label>
-          Store Category
-          <input x-model="memory.storeCategory" placeholder="char:dale-denton" />
-        </label>
-        <label>
-          Store Term
-          <input x-model="memory.storeTerm" placeholder="arrest" />
-        </label>
-        <label>
-          Memory
-          <textarea x-model="memory.storeText" rows="3" placeholder="Short memory payload"></textarea>
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Run memory_store</button>
-      </form>
-
-      <pre x-text="memoryText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'sms'" class="stack">
-      <form class="stack compact" @submit.prevent="listSmsThreads()">
-        <label>
-          Wildcard
-          <input x-model="sms.wildcard" placeholder="*" />
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Run sms_list</button>
-      </form>
-
-      <form class="stack compact" @submit.prevent="readSmsThread()">
-        <label>
-          Thread
-          <input x-model="sms.thread" placeholder="saul" />
-        </label>
-        <label>
-          Limit
-          <input x-model.number="sms.limit" type="number" min="1" />
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Run sms_read</button>
-      </form>
-
-      <form class="stack compact" @submit.prevent="writeSms()">
-        <label>
-          Thread
-          <input x-model="sms.thread" placeholder="saul" />
-        </label>
-        <label>
-          Sender
-          <input x-model="sms.sender" placeholder="dale-denton" />
-        </label>
-        <label>
-          Recipient
-          <input x-model="sms.recipient" placeholder="saul-silver" />
-        </label>
-        <label>
-          Message
-          <textarea x-model="sms.message" rows="3" placeholder="Need pickup now."></textarea>
-        </label>
-        <button type="submit" :disabled="!selectedCampaignId">Run sms_write</button>
-      </form>
-
-      <pre x-text="smsText"></pre>
-    </div>
-
-    <div x-show="inspectorTab === 'debug'" class="stack">
-      <section class="stack compact diagnostics-panel">
-        <h2>Connection Diagnostics</h2>
-        <p><strong>WebSocket state:</strong> <span x-text="diagnostics.ws_state"></span></p>
-        <p><strong>WebSocket last event:</strong> <span x-text="diagnostics.ws_last_event_at || 'never'"></span></p>
-        <p><strong>WebSocket reconnects:</strong> <span x-text="diagnostics.ws_reconnect_attempts"></span></p>
-        <p><strong>WebSocket last error:</strong> <span x-text="diagnostics.ws_last_error || 'none'"></span></p>
-        <p><strong>API last success:</strong> <span x-text="diagnostics.api_last_success_at || 'never'"></span></p>
-        <p><strong>API last error:</strong> <span x-text="diagnostics.api_last_error_at || 'never'"></span></p>
-        <p><strong>API error message:</strong> <span x-text="diagnostics.api_last_error_message || 'none'"></span></p>
-      </section>
-      <div class="debug-actions">
-        <button type="button" @click="copyDiagnosticsBundle()">Copy Diagnostics Bundle</button>
-        <small x-text="diagnosticsBundleStatus || 'No diagnostics export yet.'"></small>
+    <!-- Inspector Panel -->
+    <div class="inspector-panel">
+      <div class="tab-row">
+        <button type="button" @click="inspectorTab = 'map'" :class="{ active: inspectorTab === 'map' }">Map</button>
+        <button type="button" @click="inspectorTab = 'player'" :class="{ active: inspectorTab === 'player' }">Player</button>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'sessions'" :class="{ active: inspectorTab === 'sessions' }">Sessions</button>
+        </template>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'timers'" :class="{ active: inspectorTab === 'timers' }">Timers</button>
+        </template>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'calendar'" :class="{ active: inspectorTab === 'calendar' }">Calendar</button>
+        </template>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'roster'" :class="{ active: inspectorTab === 'roster' }">Roster</button>
+        </template>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'media'" :class="{ active: inspectorTab === 'media' }">Media</button>
+        </template>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'memory'" :class="{ active: inspectorTab === 'memory' }">Memory</button>
+        </template>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'sms'" :class="{ active: inspectorTab === 'sms' }">SMS</button>
+        </template>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'debug'" :class="{ active: inspectorTab === 'debug' }">Debug</button>
+        </template>
       </div>
-      <button type="button" @click="loadDebugSnapshot()" :disabled="!selectedCampaignId">Refresh Debug Snapshot</button>
-      <pre x-text="debugText"></pre>
+
+      <div x-show="inspectorTab === 'map'" class="stack">
+        <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
+        <pre x-text="mapText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'player'" class="stack">
+        <button type="button" @click="loadPlayerState()" :disabled="!selectedCampaignId">Refresh Player State</button>
+        <pre x-text="playerStateText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'sessions' && $store.app.debugMode" class="stack">
+        <button type="button" @click="loadSessions()" :disabled="!selectedCampaignId">Refresh Sessions</button>
+
+        <form class="stack compact" @submit.prevent="createOrUpdateSession()">
+          <label>
+            Surface
+            <input x-model="sessions.surface" placeholder="discord_thread" />
+          </label>
+          <label>
+            Surface Key
+            <input x-model="sessions.surface_key" placeholder="discord:guild:thread" />
+          </label>
+          <label>
+            Guild ID (optional)
+            <input x-model="sessions.surface_guild_id" placeholder="guild id" />
+          </label>
+          <label>
+            Channel ID (optional)
+            <input x-model="sessions.surface_channel_id" placeholder="channel id" />
+          </label>
+          <label>
+            Thread ID (optional)
+            <input x-model="sessions.surface_thread_id" placeholder="thread id" />
+          </label>
+          <label>
+            Enabled
+            <input x-model="sessions.enabled" type="checkbox" />
+          </label>
+          <label>
+            Metadata JSON
+            <textarea x-model="sessions.metadata_json" rows="2" placeholder="{}"></textarea>
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Create/Update Session</button>
+        </form>
+
+        <form class="stack compact" @submit.prevent="updateSession()">
+          <label>
+            Session ID
+            <input x-model="sessions.update_session_id" placeholder="session id" />
+          </label>
+          <label>
+            Enabled
+            <input x-model="sessions.update_enabled" type="checkbox" />
+          </label>
+          <label>
+            Metadata JSON (optional)
+            <textarea x-model="sessions.update_metadata_json" rows="2" placeholder='{"active_campaign_id":"..."}'></textarea>
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Patch Session</button>
+        </form>
+
+        <pre x-text="sessionsText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'timers' && $store.app.debugMode" class="stack">
+        <button type="button" @click="loadTimers()" :disabled="!selectedCampaignId">Refresh Timers</button>
+        <pre x-text="timersText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'calendar' && $store.app.debugMode" class="stack">
+        <button type="button" @click="loadCalendar()" :disabled="!selectedCampaignId">Refresh Calendar</button>
+        <pre x-text="calendarText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'roster' && $store.app.debugMode" class="stack">
+        <button type="button" @click="loadRoster()" :disabled="!selectedCampaignId">Refresh Roster</button>
+
+        <form class="stack compact" @submit.prevent="upsertRosterCharacter()">
+          <label>
+            Slug
+            <input x-model="rosterActions.slug" placeholder="arsipea-denton" />
+          </label>
+          <label>
+            Name (optional)
+            <input x-model="rosterActions.name" placeholder="Arsipea Denton" />
+          </label>
+          <label>
+            Location (optional)
+            <input x-model="rosterActions.location" placeholder="visitor-room-b" />
+          </label>
+          <label>
+            Status (optional)
+            <input x-model="rosterActions.status" placeholder="active" />
+          </label>
+          <label>
+            Player Character
+            <input x-model="rosterActions.player" type="checkbox" />
+          </label>
+          <label>
+            Extra Fields JSON
+            <textarea x-model="rosterActions.fields_json" rows="2" placeholder="{}"></textarea>
+          </label>
+          <div class="inline-actions">
+            <button type="submit" :disabled="!selectedCampaignId">Upsert Character</button>
+            <button type="button" @click="removeRosterCharacter()" :disabled="!selectedCampaignId">Remove Character</button>
+          </div>
+        </form>
+
+        <pre x-text="rosterText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'media' && $store.app.debugMode" class="stack">
+        <button type="button" @click="loadMedia()" :disabled="!selectedCampaignId">Refresh Media</button>
+        <form class="stack compact" @submit.prevent="acceptPendingAvatar()">
+          <label>
+            Actor ID
+            <input x-model="mediaActions.actor_id" placeholder="dale-denton" />
+          </label>
+          <div class="inline-actions">
+            <button type="submit" :disabled="!selectedCampaignId">Accept Pending Avatar</button>
+            <button type="button" @click="declinePendingAvatar()" :disabled="!selectedCampaignId">Decline Pending Avatar</button>
+          </div>
+        </form>
+        <pre x-text="mediaText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'memory' && $store.app.debugMode" class="stack">
+        <form class="stack compact" @submit.prevent="searchMemory()">
+          <label>
+            Search
+            <input x-model="memory.search" placeholder="Belmond room" />
+          </label>
+          <label>
+            Category (optional)
+            <input x-model="memory.category" placeholder="char:elizabeth" />
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Run memory_search</button>
+        </form>
+
+        <form class="stack compact" @submit.prevent="listMemoryTerms()">
+          <label>
+            Wildcard
+            <input x-model="memory.wildcard" placeholder="char:*" />
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Run memory_terms</button>
+        </form>
+
+        <form class="stack compact" @submit.prevent="readMemoryTurn()">
+          <label>
+            Turn ID
+            <input x-model="memory.turnId" type="number" min="1" placeholder="1234" />
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Run memory_turn</button>
+        </form>
+
+        <form class="stack compact" @submit.prevent="storeMemory()">
+          <label>
+            Store Category
+            <input x-model="memory.storeCategory" placeholder="char:dale-denton" />
+          </label>
+          <label>
+            Store Term
+            <input x-model="memory.storeTerm" placeholder="arrest" />
+          </label>
+          <label>
+            Memory
+            <textarea x-model="memory.storeText" rows="3" placeholder="Short memory payload"></textarea>
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Run memory_store</button>
+        </form>
+
+        <pre x-text="memoryText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'sms' && $store.app.debugMode" class="stack">
+        <form class="stack compact" @submit.prevent="listSmsThreads()">
+          <label>
+            Wildcard
+            <input x-model="sms.wildcard" placeholder="*" />
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Run sms_list</button>
+        </form>
+
+        <form class="stack compact" @submit.prevent="readSmsThread()">
+          <label>
+            Thread
+            <input x-model="sms.thread" placeholder="saul" />
+          </label>
+          <label>
+            Limit
+            <input x-model.number="sms.limit" type="number" min="1" />
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Run sms_read</button>
+        </form>
+
+        <form class="stack compact" @submit.prevent="writeSms()">
+          <label>
+            Thread
+            <input x-model="sms.thread" placeholder="saul" />
+          </label>
+          <label>
+            Sender
+            <input x-model="sms.sender" placeholder="dale-denton" />
+          </label>
+          <label>
+            Recipient
+            <input x-model="sms.recipient" placeholder="saul-silver" />
+          </label>
+          <label>
+            Message
+            <textarea x-model="sms.message" rows="3" placeholder="Need pickup now."></textarea>
+          </label>
+          <button type="submit" :disabled="!selectedCampaignId">Run sms_write</button>
+        </form>
+
+        <pre x-text="smsText"></pre>
+      </div>
+
+      <div x-show="inspectorTab === 'debug' && $store.app.debugMode" class="stack">
+        <section class="stack compact diagnostics-panel">
+          <h2>Connection Diagnostics</h2>
+          <p><strong>WebSocket state:</strong> <span x-text="diagnostics.ws_state"></span></p>
+          <p><strong>WebSocket last event:</strong> <span x-text="diagnostics.ws_last_event_at || 'never'"></span></p>
+          <p><strong>WebSocket reconnects:</strong> <span x-text="diagnostics.ws_reconnect_attempts"></span></p>
+          <p><strong>WebSocket last error:</strong> <span x-text="diagnostics.ws_last_error || 'none'"></span></p>
+          <p><strong>API last success:</strong> <span x-text="diagnostics.api_last_success_at || 'never'"></span></p>
+          <p><strong>API last error:</strong> <span x-text="diagnostics.api_last_error_at || 'never'"></span></p>
+          <p><strong>API error message:</strong> <span x-text="diagnostics.api_last_error_message || 'none'"></span></p>
+        </section>
+        <div class="debug-actions">
+          <button type="button" @click="copyDiagnosticsBundle()">Copy Diagnostics Bundle</button>
+          <small x-text="diagnosticsBundleStatus || 'No diagnostics export yet.'"></small>
+        </div>
+        <div class="debug-actions">
+          <label>
+            Export Type
+            <select x-model="campaignExport.type">
+              <option value="full">full</option>
+              <option value="raw">raw</option>
+            </select>
+          </label>
+          <label>
+            Raw Format
+            <select x-model="campaignExport.raw_format">
+              <option value="jsonl">jsonl</option>
+              <option value="json">json</option>
+              <option value="markdown">markdown</option>
+              <option value="script">script</option>
+              <option value="loglines">loglines</option>
+            </select>
+          </label>
+          <button type="button" @click="exportCampaignBundle()" :disabled="!selectedCampaignId">Download Campaign Export</button>
+          <small x-text="campaignExportStatus || 'No campaign export yet.'"></small>
+        </div>
+        <button type="button" @click="loadDebugSnapshot()" :disabled="!selectedCampaignId">Refresh Debug Snapshot</button>
+        <pre x-text="debugText"></pre>
+      </div>
     </div>
   </section>
+
+  <!-- ====== SETTINGS DRAWER ====== -->
+  <div class="settings-overlay" x-show="$store.app.settingsOpen" @click.self="$store.app.settingsOpen = false" @keydown.escape.window="$store.app.settingsOpen = false" x-cloak x-transition.opacity>
+    <aside class="settings-drawer">
+      <div class="drawer-header">
+        <h2>LLM Settings</h2>
+        <button type="button" class="drawer-close" @click="$store.app.settingsOpen = false">&times;</button>
+      </div>
+
+      <div class="stack">
+        <template x-if="runtimeInfo.gateway_backend && runtimeInfo.gateway_backend !== 'tge'">
+          <p class="settings-note" style="margin-top:0">Backend is <strong x-text="runtimeInfo.gateway_backend"></strong>. LLM settings only apply to the tge backend.</p>
+        </template>
+
+        <div class="settings-group">
+          <p class="settings-group-title">Connection</p>
+          <div class="stack compact">
+            <label>
+              Model
+              <select x-model="settingsForm.model" x-show="ollamaModels.length > 0">
+                <template x-for="m in ollamaModels" :key="m.name">
+                  <option :value="m.name" x-text="m.name"></option>
+                </template>
+              </select>
+              <input x-model="settingsForm.model" placeholder="model name" x-show="ollamaModels.length === 0" />
+            </label>
+
+            <label>
+              Base URL
+              <input x-model="settingsForm.base_url" placeholder="http://127.0.0.1:11434" @change="loadOllamaModels()" />
+            </label>
+
+            <label>
+              Completion Mode
+              <select x-model="settingsForm.completion_mode" @change="loadOllamaModels()">
+                <option value="ollama">Ollama</option>
+                <option value="openai">OpenAI Compatible</option>
+                <option value="deterministic">Deterministic (no LLM)</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <p class="settings-group-title">Generation</p>
+          <div class="stack compact">
+            <label>
+              Temperature: <strong x-text="Number(settingsForm.temperature).toFixed(2)"></strong>
+              <input type="range" min="0" max="2" step="0.05" x-model.number="settingsForm.temperature" />
+            </label>
+
+            <label>
+              Max Tokens
+              <input type="number" x-model.number="settingsForm.max_tokens" min="64" max="65536" />
+            </label>
+
+            <label>
+              Timeout (seconds)
+              <input type="number" x-model.number="settingsForm.timeout_seconds" min="1" max="600" />
+            </label>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <p class="settings-group-title">Ollama</p>
+          <div class="stack compact">
+            <label>
+              Keep-Alive
+              <input x-model="settingsForm.keep_alive" placeholder="30m" />
+            </label>
+
+            <details>
+              <summary>Advanced Options</summary>
+              <label>
+                Options JSON
+                <textarea x-model="settingsForm.ollama_options_json" rows="3" placeholder="{}"></textarea>
+              </label>
+            </details>
+          </div>
+        </div>
+
+        <div class="drawer-actions">
+          <button type="button" @click="testConnection()" :disabled="settingsSaving">Test Connection</button>
+          <button type="button" @click="applySettings()" :disabled="settingsSaving" class="btn-primary">Apply Changes</button>
+        </div>
+
+        <p class="settings-note">Settings apply until server restart.</p>
+        <p class="settings-status" :class="settingsStatus.ok === false ? 'error' : 'status'" x-show="settingsStatus.message" x-text="settingsStatus.message"></p>
+      </div>
+    </aside>
+  </div>
+
 </section>
 {% endblock %}

@@ -13,7 +13,7 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_ATTENTION_WINDOW_SECONDS", "600"))
     )
 
-    gateway_backend: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "inmemory"))
+    gateway_backend: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "tge"))
     tge_database_url: str = Field(
         default_factory=lambda: os.getenv(
             "TEXT_GAME_WEBUI_TGE_DATABASE_URL",

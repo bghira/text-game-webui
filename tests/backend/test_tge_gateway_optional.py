@@ -42,8 +42,29 @@ def test_tge_gateway_smoke(tmp_path):
         patched = await gateway.update_session(campaign.id, session_row["id"], enabled=False, metadata={"note": "off"})
         assert patched["enabled"] is False
 
+        private_session = await gateway.create_or_update_session(
+            campaign.id,
+            surface="web_private",
+            surface_key=f"webui:{campaign.id}:private:actor-1",
+            enabled=True,
+            metadata={
+                "label": "Private room: actor-1",
+                "scope": "private",
+                "turn_visibility_default": "private",
+                "owner_actor_id": "actor-1",
+                "allowed_actor_ids": ["actor-1"],
+            },
+        )
+        assert private_session["surface"] == "web_private"
+
         result = await gateway.submit_turn(campaign.id, TurnRequest(actor_id="actor-1", action="look"))
         assert result.narration
+        private_result = await gateway.submit_turn(
+            campaign.id,
+            TurnRequest(actor_id="actor-1", action="whisper to Monet", session_id=private_session["id"]),
+        )
+        assert private_result.session_id == private_session["id"]
+        assert private_result.turn_visibility["scope"] == "private"
 
         timers = await gateway.get_timers(campaign.id)
         assert "timers" in timers
