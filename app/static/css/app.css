@@ -414,6 +414,229 @@ button:disabled {
   font-size: 0.82rem;
 }
 
+/* Game time widget in sidebar */
+.game-time-widget {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+  margin-top: 0.5rem;
+}
+.game-time-label {
+  font-weight: 500;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+.game-time-clock {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  opacity: 0.6;
+}
+
+/* Campaign flags panel */
+.campaign-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.campaign-flags h4,
+.source-material h4 {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.flag-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.flag-toggle input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+.flag-toggle small {
+  opacity: 0.5;
+  font-size: 0.76rem;
+}
+
+/* Source material panel */
+.source-docs-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0;
+  font-size: 0.82rem;
+}
+.source-docs-list li {
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.source-docs-list li:last-child {
+  border-bottom: none;
+}
+.source-upload-details {
+  margin-top: 0.5rem;
+}
+.source-upload-details summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--accent);
+}
+.source-upload-details textarea {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  resize: vertical;
+}
+
+/* ---- Player Card ---- */
+
+.player-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.player-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.player-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--line);
+  flex-shrink: 0;
+}
+
+.player-avatar.pending {
+  border-style: dashed;
+  border-color: var(--accent);
+  opacity: 0.75;
+}
+
+.player-identity strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.player-location {
+  display: block;
+  font-size: 0.8rem;
+  color: #5a7268;
+  margin-top: 0.15rem;
+}
+
+.xp-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.82rem;
+}
+
+.xp-level {
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.xp-bar-track {
+  flex: 1;
+  height: 7px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.xp-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.xp-value {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: #5a7268;
+  white-space: nowrap;
+}
+
+.player-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.stat-pill {
+  font-size: 0.74rem;
+  background: var(--accent-soft);
+  color: #3a5e4c;
+  border-radius: 10px;
+  padding: 0.15rem 0.55rem;
+  white-space: nowrap;
+}
+
+.player-room-desc {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: #3a4e46;
+  font-style: italic;
+}
+
+.player-inventory {
+  font-size: 0.84rem;
+}
+
+.player-inventory strong {
+  display: block;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6a7a70;
+  margin-bottom: 0.25rem;
+}
+
+.player-inventory ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  list-style: disc;
+}
+
+.player-inventory li {
+  margin-bottom: 0.15rem;
+  line-height: 1.4;
+}
+
+.pending-avatar {
+  background: #f5f2ec;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem;
+  font-size: 0.84rem;
+}
+
+.pending-avatar p {
+  margin: 0 0 0.4rem;
+  font-weight: 500;
+  color: #3a4e46;
+}
+
+.muted {
+  color: #7a8a80;
+  font-size: 0.84rem;
+  font-style: italic;
+  margin: 0;
+}
+
 /* ---- Main column ---- */
 
 .main-column {
@@ -434,6 +657,35 @@ button:disabled {
   font-family: var(--mono);
   font-size: 0.74rem;
   color: #5a7268;
+}
+
+/* ---- Campaign Summary Bar ---- */
+
+.campaign-summary-bar {
+  margin-bottom: 0.6rem;
+}
+
+.campaign-summary-bar details {
+  background: linear-gradient(135deg, var(--accent-soft) 0%, #e8f0ec 100%);
+  border: 1px solid #b5ccc3;
+  border-radius: var(--radius-sm);
+  padding: 0.55rem 0.75rem;
+}
+
+.campaign-summary-bar summary {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
+
+.campaign-summary-bar p {
+  margin: 0.45rem 0 0;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: #3a4e46;
+  white-space: pre-line;
 }
 
 /* ---- Turn Stream ---- */
@@ -485,12 +737,24 @@ button:disabled {
   color: var(--ink);
 }
 
+.turn-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 0.7rem;
+  margin-top: 0.3rem;
+}
+
+.turn-game-time {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--accent);
+  opacity: 0.7;
+}
+
 .turn-time {
-  display: block;
-  text-align: right;
   color: #8a9990;
   font-size: 0.7rem;
-  margin-top: 0.3rem;
 }
 
 /* Notice card */
@@ -513,6 +777,40 @@ button:disabled {
   letter-spacing: 0.03em;
   color: var(--accent);
   flex-shrink: 0;
+}
+
+/* Reasoning card (debug only) */
+.turn-reasoning .reasoning-text {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #4a5e54;
+  font-style: italic;
+}
+
+/* Scene prompt card (non-debug) */
+.scene-prompt-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  background: linear-gradient(135deg, #f0ebe0 0%, #e8e3d8 100%);
+  border: 1px solid #d4cfc4;
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.7rem;
+  margin: 0.15rem 0;
+}
+
+.scene-prompt-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.scene-prompt-text {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #5a6b62;
+  font-style: italic;
 }
 
 /* Debug cards (summary, image_prompt, system events) */
@@ -912,6 +1210,45 @@ details summary {
 .feature-list code {
   font-family: var(--mono);
   font-size: 0.76rem;
+}
+
+/* ---- Game Mechanic Cards (Puzzle / Minigame) ---- */
+
+.game-mechanic-card {
+  background: #fdf8ee;
+  border: 1px solid #d8ceb8;
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.85rem;
+}
+
+.game-mechanic-card strong {
+  display: block;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  margin-bottom: 0.35rem;
+}
+
+.game-mechanic-card p {
+  margin: 0.2rem 0;
+  font-size: 0.84rem;
+}
+
+.mechanic-prompt {
+  font-style: italic;
+  color: #3a4e46;
+  line-height: 1.5;
+}
+
+.game-board {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.5rem;
+  line-height: 1.3;
 }
 
 /* ---- Responsive ---- */

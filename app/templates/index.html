@@ -59,6 +59,11 @@
       <p x-show="sessionsList.length === 0 && selectedCampaignId" class="sidebar-hint">Click "Shared Room" to open a window.</p>
     </div>
 
+    <div class="game-time-widget" x-show="gameTime && gameTime.day">
+      <span class="game-time-label" x-text="gameTime.date_label || ('Day ' + (gameTime.day||1) + ', ' + (gameTime.period||''))"></span>
+      <small class="game-time-clock" x-text="String(gameTime.hour||0).padStart(2,'0') + ':' + String(gameTime.minute||0).padStart(2,'0')"></small>
+    </div>
+
     <h2>Status</h2>
     <div class="status-dots">
       <div class="status-dot-row">
@@ -109,6 +114,14 @@
       </div>
     </template>
 
+    <!-- Campaign Summary -->
+    <div class="campaign-summary-bar" x-show="campaignSummary && selectedCampaignId" x-cloak>
+      <details>
+        <summary>Story So Far</summary>
+        <p x-text="campaignSummary"></p>
+      </details>
+    </div>
+
     <!-- Turn Stream -->
     <div class="section-head">
       <h2>Turn Stream</h2>
@@ -121,7 +134,12 @@
           <template x-if="entry.type === 'narrator'">
             <div class="turn-narrator">
               <p class="narrator-text" x-text="entry.text"></p>
-              <small class="turn-time" x-text="entry.at"></small>
+              <span class="turn-footer">
+                <template x-if="entry.meta && entry.meta._game_time && entry.meta._game_time.day">
+                  <small class="turn-game-time" x-text="'Day ' + entry.meta._game_time.day + ', ' + String(entry.meta._game_time.hour||0).padStart(2,'0') + ':' + String(entry.meta._game_time.minute||0).padStart(2,'0')"></small>
+                </template>
+                <small class="turn-time" x-text="entry.at"></small>
+              </span>
             </div>
           </template>
           <template x-if="entry.type === 'notice'">
@@ -140,13 +158,28 @@
               <pre x-text="entry.text"></pre>
             </div>
           </template>
-          <template x-if="entry.type === 'image_prompt'">
-            <div class="turn-debug-card" x-show="$store.app.debugMode">
+          <template x-if="entry.type === 'reasoning'">
+            <div class="turn-debug-card turn-reasoning" x-show="$store.app.debugMode">
               <header>
-                <strong>IMAGE PROMPT</strong>
+                <strong>REASONING</strong>
                 <small x-text="entry.at"></small>
               </header>
-              <pre x-text="entry.text"></pre>
+              <p class="reasoning-text" x-text="entry.text"></p>
+            </div>
+          </template>
+          <template x-if="entry.type === 'image_prompt'">
+            <div>
+              <div class="scene-prompt-card" x-show="!$store.app.debugMode">
+                <span class="scene-prompt-icon">&#x1f3a8;</span>
+                <span class="scene-prompt-text" x-text="entry.text"></span>
+              </div>
+              <div class="turn-debug-card" x-show="$store.app.debugMode">
+                <header>
+                  <strong>IMAGE PROMPT</strong>
+                  <small x-text="entry.at"></small>
+                </header>
+                <pre x-text="entry.text"></pre>
+              </div>
             </div>
           </template>
           <template x-if="['sms','media','timers','roster','session'].includes(entry.type)">
@@ -189,6 +222,10 @@
       <div class="tab-row">
         <button type="button" @click="inspectorTab = 'map'" :class="{ active: inspectorTab === 'map' }">Map</button>
         <button type="button" @click="inspectorTab = 'player'" :class="{ active: inspectorTab === 'player' }">Player</button>
+        <button type="button" @click="inspectorTab = 'campaign'" :class="{ active: inspectorTab === 'campaign' }">Campaign</button>
+        <template x-if="$store.app.debugMode">
+          <button type="button" @click="inspectorTab = 'story'" :class="{ active: inspectorTab === 'story' }">Story</button>
+        </template>
         <template x-if="$store.app.debugMode">
           <button type="button" @click="inspectorTab = 'sessions'" :class="{ active: inspectorTab === 'sessions' }">Sessions</button>
         </template>
@@ -221,8 +258,272 @@
       </div>
 
       <div x-show="inspectorTab === 'player'" class="stack">
-        <button type="button" @click="loadPlayerState()" :disabled="!selectedCampaignId">Refresh Player State</button>
-        <pre x-text="playerStateText"></pre>
+        <button type="button" @click="loadPlayerState()" :disabled="!selectedCampaignId">Refresh</button>
+        <template x-if="playerData">
+          <div class="player-card">
+            <!-- Avatar + Identity -->
+            <div class="player-identity">
+              <template x-if="playerData.state && playerData.state.avatar_url">
+                <img :src="playerData.state.avatar_url" alt="avatar" class="player-avatar" />
+              </template>
+              <div>
+                <strong x-text="(playerData.state && playerData.state.character_name) || playerData.actor_id || 'Unknown'"></strong>
+                <template x-if="playerData.state && playerData.state.room_title">
+                  <span class="player-location" x-text="playerData.state.room_title"></span>
+                </template>
+              </div>
+            </div>
+            <!-- XP Bar -->
+            <div class="xp-row">
+              <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
+              <div class="xp-bar-track">
+                <div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div>
+              </div>
+              <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+            </div>
+            <!-- Statistics -->
+            <template x-if="playerStats">
+              <div class="player-stats-row">
+                <span class="stat-pill" x-show="typeof playerStats.messages_sent === 'number'">&#x1f4ac; <span x-text="playerStats.messages_sent"></span> msgs</span>
+                <span class="stat-pill" x-show="typeof playerStats.timers_averted === 'number'">&#x2705; <span x-text="playerStats.timers_averted"></span> averted</span>
+                <span class="stat-pill" x-show="typeof playerStats.timers_missed === 'number'">&#x274c; <span x-text="playerStats.timers_missed"></span> missed</span>
+                <span class="stat-pill" x-show="typeof playerStats.attention_hours === 'number'">&#x23f1; <span x-text="Number(playerStats.attention_hours).toFixed(1)"></span>h</span>
+              </div>
+            </template>
+            <!-- Location -->
+            <template x-if="playerData.state && playerData.state.room_description">
+              <p class="player-room-desc" x-text="playerData.state.room_description"></p>
+            </template>
+            <!-- Inventory -->
+            <template x-if="playerData.inventory && playerData.inventory.length > 0">
+              <div class="player-inventory">
+                <strong>Inventory</strong>
+                <ul>
+                  <template x-for="item in playerData.inventory" :key="item">
+                    <li x-text="typeof item === 'string' ? item : (item.name || item.item || JSON.stringify(item))"></li>
+                  </template>
+                </ul>
+              </div>
+            </template>
+            <!-- Pending Avatar -->
+            <template x-if="playerData.state && playerData.state.pending_avatar_url">
+              <div class="pending-avatar">
+                <p>Pending Avatar:</p>
+                <img :src="playerData.state.pending_avatar_url" alt="pending" class="player-avatar pending" />
+                <div class="inline-actions">
+                  <button type="button" @click="acceptPendingAvatar()">Accept</button>
+                  <button type="button" @click="declinePendingAvatar()">Decline</button>
+                </div>
+              </div>
+            </template>
+            <!-- Raw state (debug) -->
+            <template x-if="$store.app.debugMode">
+              <details>
+                <summary>Raw State</summary>
+                <pre x-text="playerStateText"></pre>
+              </details>
+            </template>
+          </div>
+        </template>
+        <template x-if="!playerData">
+          <p class="muted">Select a campaign and actor to view player state.</p>
+        </template>
+      </div>
+
+      <!-- Campaign Flags & Source Material -->
+      <div x-show="inspectorTab === 'campaign'" class="stack">
+        <template x-if="inspectorTab === 'campaign'">
+          <div class="stack">
+            <div class="campaign-flags" x-init="loadCampaignFlags()">
+              <h4>Campaign Flags</h4>
+              <label class="flag-toggle">
+                <input type="checkbox" :checked="campaignFlags.guardrails" @change="setCampaignFlag('guardrails', $event.target.checked)" :disabled="!selectedCampaignId" />
+                <span>Guardrails <small>(content safety)</small></span>
+              </label>
+              <label class="flag-toggle">
+                <input type="checkbox" :checked="campaignFlags.on_rails" @change="setCampaignFlag('on_rails', $event.target.checked)" :disabled="!selectedCampaignId" />
+                <span>On Rails <small>(story outline progression)</small></span>
+              </label>
+              <label class="flag-toggle">
+                <input type="checkbox" :checked="campaignFlags.timed_events" @change="setCampaignFlag('timed_events', $event.target.checked)" :disabled="!selectedCampaignId" />
+                <span>Timed Events</span>
+              </label>
+              <label>
+                Difficulty
+                <select :value="campaignFlags.difficulty" @change="setCampaignFlag('difficulty', $event.target.value)" :disabled="!selectedCampaignId">
+                  <option value="easy">Easy</option>
+                  <option value="normal">Normal</option>
+                  <option value="hard">Hard</option>
+                  <option value="brutal">Brutal</option>
+                </select>
+              </label>
+              <label>
+                Speed Multiplier
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                  <input type="range" min="0.1" max="5" step="0.1" :value="campaignFlags.speed_multiplier" @change="setCampaignFlag('speed_multiplier', parseFloat($event.target.value))" :disabled="!selectedCampaignId" style="flex:1" />
+                  <span x-text="Number(campaignFlags.speed_multiplier || 1).toFixed(1)" style="min-width:2rem; text-align:right;"></span>
+                </div>
+              </label>
+            </div>
+
+            <hr />
+
+            <div class="source-material">
+              <h4>Source Material</h4>
+              <button type="button" @click="loadSourceMaterials()" :disabled="!selectedCampaignId">Refresh</button>
+              <template x-if="sourceMaterials.length > 0">
+                <ul class="source-docs-list">
+                  <template x-for="doc in sourceMaterials" :key="doc.document_key">
+                    <li>
+                      <strong x-text="doc.document_label || doc.document_key"></strong>
+                      <span x-text="'(' + (doc.format || 'generic') + ', ' + (doc.chunk_count || 0) + ' chunks)'"></span>
+                    </li>
+                  </template>
+                </ul>
+              </template>
+              <template x-if="sourceMaterials.length === 0">
+                <p class="muted">No source materials uploaded.</p>
+              </template>
+              <details class="source-upload-details">
+                <summary>Upload Source Material</summary>
+                <form class="stack compact" @submit.prevent="ingestSourceMaterial()">
+                  <label>
+                    Label (optional)
+                    <input x-model="sourceUpload.label" placeholder="My Rulebook" />
+                  </label>
+                  <label>
+                    Format
+                    <select x-model="sourceUpload.format">
+                      <option value="">Auto-detect</option>
+                      <option value="story">Story / Prose</option>
+                      <option value="rulebook">Rulebook</option>
+                      <option value="generic">Generic / Notes</option>
+                    </select>
+                  </label>
+                  <label>
+                    Text Content
+                    <textarea x-model="sourceUpload.text" rows="6" placeholder="Paste source material here..."></textarea>
+                  </label>
+                  <button type="submit" :disabled="!selectedCampaignId || !sourceUpload.text.trim()">Upload</button>
+                  <p x-show="sourceUploadStatus" x-text="sourceUploadStatus" class="muted"></p>
+                </form>
+              </details>
+              <details class="source-upload-details">
+                <summary>Campaign Rules</summary>
+                <div class="stack compact">
+                  <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                    <button type="button" @click="loadCampaignRules()" :disabled="!selectedCampaignId">Refresh</button>
+                    <input x-model="campaignRuleLookupKey" placeholder="Rule key" />
+                    <button type="button" @click="loadCampaignRules(campaignRuleLookupKey.trim())" :disabled="!selectedCampaignId || !campaignRuleLookupKey.trim()">Load Rule</button>
+                  </div>
+                  <template x-if="campaignRules.length > 0">
+                    <ul class="source-docs-list">
+                      <template x-for="rule in campaignRules" :key="rule.key">
+                        <li>
+                          <button type="button" @click="loadCampaignRules(rule.key)" x-text="rule.key"></button>
+                        </li>
+                      </template>
+                    </ul>
+                  </template>
+                  <template x-if="campaignRules.length === 0">
+                    <p class="muted">No campaign rules stored.</p>
+                  </template>
+                  <template x-if="selectedCampaignRule">
+                    <pre x-text="selectedCampaignRule.key + ': ' + selectedCampaignRule.value"></pre>
+                  </template>
+                  <form class="stack compact" @submit.prevent="saveCampaignRule()">
+                    <label>
+                      Key
+                      <input x-model="campaignRuleForm.key" placeholder="CAMPAIGN-RULE" />
+                    </label>
+                    <label>
+                      Rule
+                      <textarea x-model="campaignRuleForm.value" rows="4" placeholder="Rule text..."></textarea>
+                    </label>
+                    <label>
+                      Mode
+                      <select x-model="campaignRuleForm.mode">
+                        <option value="add">Add Only</option>
+                        <option value="upsert">Upsert</option>
+                      </select>
+                    </label>
+                    <button type="submit" :disabled="!selectedCampaignId || !campaignRuleForm.key.trim() || !campaignRuleForm.value.trim()">Save Rule</button>
+                    <p x-show="campaignRuleStatus" x-text="campaignRuleStatus" class="muted"></p>
+                  </form>
+                </div>
+              </details>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Story / Plot State (debug mode) -->
+      <div x-show="inspectorTab === 'story' && $store.app.debugMode" class="stack">
+        <button type="button" @click="loadStoryState()" :disabled="!selectedCampaignId">Refresh Story State</button>
+        <template x-if="storyState">
+          <div class="stack">
+            <template x-if="storyState.story_outline">
+              <details open>
+                <summary>Story Outline</summary>
+                <pre x-text="JSON.stringify(storyState.story_outline, null, 2)"></pre>
+              </details>
+            </template>
+            <template x-if="!storyState.story_outline">
+              <p class="muted">No story outline defined (free-roam mode).</p>
+            </template>
+            <template x-if="storyState.current_chapter">
+              <p>Current chapter: <strong x-text="storyState.current_chapter"></strong>, scene: <strong x-text="storyState.current_scene || '—'"></strong></p>
+            </template>
+            <template x-if="Object.keys(storyState.plot_threads || {}).length > 0">
+              <details>
+                <summary>Plot Threads (<span x-text="Object.keys(storyState.plot_threads).length"></span>)</summary>
+                <pre x-text="JSON.stringify(storyState.plot_threads, null, 2)"></pre>
+              </details>
+            </template>
+            <template x-if="Object.keys(storyState.consequences || {}).length > 0">
+              <details>
+                <summary>Consequences (<span x-text="Object.keys(storyState.consequences).length"></span>)</summary>
+                <pre x-text="JSON.stringify(storyState.consequences, null, 2)"></pre>
+              </details>
+            </template>
+            <template x-if="Object.keys(storyState.chapter_plan || {}).length > 0">
+              <details>
+                <summary>Chapter Plan (<span x-text="Object.keys(storyState.chapter_plan).length"></span>)</summary>
+                <pre x-text="JSON.stringify(storyState.chapter_plan, null, 2)"></pre>
+              </details>
+            </template>
+            <template x-if="storyState.active_puzzle">
+              <div class="game-mechanic-card">
+                <strong>Active Puzzle</strong>
+                <p>Type: <span x-text="storyState.active_puzzle.puzzle_type || 'unknown'"></span> | Difficulty: <span x-text="storyState.active_puzzle.difficulty || '—'"></span></p>
+                <template x-if="storyState.active_puzzle.question">
+                  <p class="mechanic-prompt" x-text="storyState.active_puzzle.question"></p>
+                </template>
+                <p>Attempts: <span x-text="storyState.active_puzzle.attempts || 0"></span> / <span x-text="storyState.active_puzzle.max_attempts || '?'"></span></p>
+                <details>
+                  <summary>Raw State</summary>
+                  <pre x-text="JSON.stringify(storyState.active_puzzle, null, 2)"></pre>
+                </details>
+              </div>
+            </template>
+            <template x-if="storyState.active_minigame">
+              <div class="game-mechanic-card">
+                <strong>Active Minigame</strong>
+                <p>Type: <span x-text="storyState.active_minigame.game_type || 'unknown'"></span> | Opponent: <span x-text="storyState.active_minigame.opponent_slug || '—'"></span></p>
+                <template x-if="storyState.active_minigame.board">
+                  <pre class="game-board" x-text="storyState.active_minigame.board"></pre>
+                </template>
+                <template x-if="storyState.active_minigame.stakes">
+                  <p>Stakes: <span x-text="storyState.active_minigame.stakes"></span></p>
+                </template>
+                <details>
+                  <summary>Raw State</summary>
+                  <pre x-text="JSON.stringify(storyState.active_minigame, null, 2)"></pre>
+                </details>
+              </div>
+            </template>
+          </div>
+        </template>
       </div>
 
       <div x-show="inspectorTab === 'sessions' && $store.app.debugMode" class="stack">
@@ -280,7 +581,10 @@
       </div>
 
       <div x-show="inspectorTab === 'timers' && $store.app.debugMode" class="stack">
-        <button type="button" @click="loadTimers()" :disabled="!selectedCampaignId">Refresh Timers</button>
+        <div class="inline-actions">
+          <button type="button" @click="loadTimers()" :disabled="!selectedCampaignId">Refresh Timers</button>
+          <button type="button" @click="cancelPendingTimer()" :disabled="!selectedCampaignId">Cancel Pending Timer</button>
+        </div>
         <pre x-text="timersText"></pre>
       </div>
 
@@ -469,6 +773,17 @@
           <button type="button" @click="exportCampaignBundle()" :disabled="!selectedCampaignId">Download Campaign Export</button>
           <small x-text="campaignExportStatus || 'No campaign export yet.'"></small>
         </div>
+        <section class="stack compact diagnostics-panel">
+          <h2>Rewind</h2>
+          <form class="stack compact" @submit.prevent="rewindToTurn()">
+            <label>
+              Target Turn ID
+              <input x-model="rewindTargetTurn" type="number" min="1" placeholder="Turn # to rewind to" />
+            </label>
+            <button type="submit" :disabled="!selectedCampaignId || !rewindTargetTurn">Rewind</button>
+            <small x-show="rewindStatus" x-text="rewindStatus"></small>
+          </form>
+        </section>
         <button type="button" @click="loadDebugSnapshot()" :disabled="!selectedCampaignId">Refresh Debug Snapshot</button>
         <pre x-text="debugText"></pre>
       </div>

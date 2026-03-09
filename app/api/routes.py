@@ -12,6 +12,8 @@ from pydantic import BaseModel
 from app.services.engine_gateway import FEATURES, EngineGateway
 from app.services.schemas import (
     AvatarActionRequest,
+    CampaignRuleUpdate,
+    CampaignFlagsUpdate,
     LLMSettingsUpdate,
     MemorySearchRequest,
     MemoryStoreRequest,
@@ -24,6 +26,7 @@ from app.services.schemas import (
     SmsListRequest,
     SmsReadRequest,
     SmsWriteRequest,
+    SourceMaterialIngest,
     TurnRequest,
 )
 
@@ -253,6 +256,121 @@ async def campaign_export(
         _not_found(err)
     except ValueError as err:
         _bad_request(err)
+
+
+@router.get("/campaigns/{campaign_id}/flags")
+async def get_campaign_flags(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_campaign_flags(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/flags")
+async def update_campaign_flags(
+    campaign_id: str,
+    payload: CampaignFlagsUpdate,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.update_campaign_flags(
+            campaign_id,
+            guardrails=payload.guardrails,
+            on_rails=payload.on_rails,
+            timed_events=payload.timed_events,
+            difficulty=payload.difficulty,
+            speed_multiplier=payload.speed_multiplier,
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.get("/campaigns/{campaign_id}/source-materials")
+async def get_source_materials(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_source_materials(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/source-materials")
+async def ingest_source_material(
+    campaign_id: str,
+    payload: SourceMaterialIngest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.ingest_source_material(campaign_id, payload)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.get("/campaigns/{campaign_id}/campaign-rules")
+async def get_campaign_rules(
+    campaign_id: str,
+    key: str | None = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.get_campaign_rules(campaign_id, key=key)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/campaign-rules")
+async def update_campaign_rule(
+    campaign_id: str,
+    payload: CampaignRuleUpdate,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.update_campaign_rule(campaign_id, payload)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.post("/campaigns/{campaign_id}/rewind")
+async def rewind_to_turn(
+    campaign_id: str,
+    target_turn_id: int,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.rewind_to_turn(campaign_id, target_turn_id)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.post("/campaigns/{campaign_id}/timers/cancel")
+async def cancel_pending_timer(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.cancel_pending_timer(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/player-statistics")
+async def get_player_statistics(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_player_statistics(campaign_id, actor_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/story")
+async def get_story_state(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_story_state(campaign_id)
+    except KeyError as err:
+        _not_found(err)
 
 
 @router.get("/campaigns/{campaign_id}/map")

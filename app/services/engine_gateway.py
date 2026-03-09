@@ -7,7 +7,7 @@ import json
 from typing import Protocol
 from uuid import uuid4
 
-from .schemas import CampaignSummary, MemoryStoreRequest, SmsMessage, TurnRequest, TurnResult
+from .schemas import CampaignRuleUpdate, CampaignSummary, MemoryStoreRequest, SourceMaterialIngest, SmsMessage, TurnRequest, TurnResult
 
 
 FEATURES = [
@@ -30,6 +30,13 @@ FEATURES = [
     "sms_write",
     "debug_snapshot",
     "realtime",
+    "campaign_flags",
+    "source_material",
+    "campaign_rules",
+    "rewind",
+    "story_state",
+    "player_statistics",
+    "cancel_timer",
 ]
 
 
@@ -101,6 +108,25 @@ class EngineGateway(Protocol):
     async def sms_read(self, campaign_id: str, thread: str, limit: int) -> dict: ...
     async def sms_write(self, campaign_id: str, thread: str, sender: str, recipient: str, message: str) -> dict: ...
     async def debug_snapshot(self, campaign_id: str) -> dict: ...
+    async def get_campaign_flags(self, campaign_id: str) -> dict: ...
+    async def update_campaign_flags(
+        self,
+        campaign_id: str,
+        *,
+        guardrails: bool | None = None,
+        on_rails: bool | None = None,
+        timed_events: bool | None = None,
+        difficulty: str | None = None,
+        speed_multiplier: float | None = None,
+    ) -> dict: ...
+    async def get_source_materials(self, campaign_id: str) -> dict: ...
+    async def ingest_source_material(self, campaign_id: str, payload: SourceMaterialIngest) -> dict: ...
+    async def get_campaign_rules(self, campaign_id: str, key: str | None = None) -> dict: ...
+    async def update_campaign_rule(self, campaign_id: str, payload: CampaignRuleUpdate) -> dict: ...
+    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict: ...
+    async def cancel_pending_timer(self, campaign_id: str) -> dict: ...
+    async def get_player_statistics(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def get_story_state(self, campaign_id: str) -> dict: ...
 
 
 class InMemoryEngineGateway:
@@ -116,6 +142,7 @@ class InMemoryEngineGateway:
         self._players: dict[str, dict[str, dict]] = defaultdict(dict)
         self._roster_npcs: dict[str, dict[str, dict]] = defaultdict(dict)
         self._media: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
+        self._campaign_rules: dict[str, dict[str, str]] = defaultdict(dict)
 
     def _require_campaign(self, campaign_id: str) -> CampaignSummary:
         if campaign_id not in self._campaigns:
@@ -814,4 +841,107 @@ Legend: @ current player
                 thread: [msg.model_dump() for msg in rows[-20:]]
                 for thread, rows in self._sms[campaign_id].items()
             },
+        }
+
+    async def get_campaign_flags(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {
+            "guardrails": True,
+            "on_rails": False,
+            "timed_events": False,
+            "difficulty": "normal",
+            "speed_multiplier": 1.0,
+        }
+
+    async def update_campaign_flags(
+        self,
+        campaign_id: str,
+        *,
+        guardrails: bool | None = None,
+        on_rails: bool | None = None,
+        timed_events: bool | None = None,
+        difficulty: str | None = None,
+        speed_multiplier: float | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": True, "note": "InMemory backend — flags not persisted."}
+
+    async def get_source_materials(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"documents": []}
+
+    async def ingest_source_material(self, campaign_id: str, payload: SourceMaterialIngest) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": True, "note": "InMemory backend — source material not persisted."}
+
+    async def get_campaign_rules(self, campaign_id: str, key: str | None = None) -> dict:
+        self._require_campaign(campaign_id)
+        rules = self._campaign_rules[campaign_id]
+        if key:
+            value = rules.get(key)
+            return {
+                "document_key": "campaign-rulebook",
+                "rule": None if value is None else {"key": key, "value": value},
+            }
+        return {
+            "document_key": "campaign-rulebook",
+            "rules": [{"key": name, "value": value} for name, value in sorted(rules.items())],
+        }
+
+    async def update_campaign_rule(self, campaign_id: str, payload: CampaignRuleUpdate) -> dict:
+        self._require_campaign(campaign_id)
+        key = str(payload.key or "").strip()
+        value = " ".join(str(payload.value or "").strip().split())
+        if not key or not value:
+            raise ValueError("Campaign rule key and value are required.")
+        rules = self._campaign_rules[campaign_id]
+        old_value = rules.get(key)
+        if old_value is not None and not payload.upsert:
+            return {
+                "ok": False,
+                "reason": "exists",
+                "key": key,
+                "old_value": old_value,
+                "new_value": value,
+            }
+        rules[key] = value
+        return {
+            "ok": True,
+            "key": key,
+            "old_value": old_value or "",
+            "new_value": value,
+            "created": old_value is None,
+            "replaced": old_value is not None,
+        }
+
+    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": False, "note": "InMemory backend — rewind not supported."}
+
+    async def cancel_pending_timer(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": False, "note": "InMemory backend — no pending timers."}
+
+    async def get_player_statistics(self, campaign_id: str, actor_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        player = self._players[campaign_id].get(actor_id)
+        if player is None:
+            raise KeyError(f"Unknown player in campaign: {actor_id}")
+        return {
+            "actor_id": actor_id,
+            "messages_sent": 0,
+            "timers_averted": 0,
+            "timers_missed": 0,
+            "attention_hours": 0.0,
+        }
+
+    async def get_story_state(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {
+            "story_outline": None,
+            "plot_threads": {},
+            "consequences": {},
+            "chapter_plan": {},
+            "active_puzzle": None,
+            "active_minigame": None,
         }
