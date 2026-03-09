@@ -71,12 +71,12 @@ class RealtimeHub:
         payload_type = str(payload.get("type") or "").strip().lower()
         event_session_id = cls._session_id_for_event(payload)
         if sub.session_id:
-            if event_session_id != sub.session_id:
+            if event_session_id is not None and event_session_id != sub.session_id:
                 return False
         elif event_session_id is not None and payload_type in {"turn", "media", "timers"}:
             return False
 
-        if payload_type != "turn":
+        if payload_type not in {"turn", "media", "timers"}:
             return True
 
         visibility = cls._turn_visibility_for_event(payload)

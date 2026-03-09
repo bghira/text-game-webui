@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import UTC, datetime
+from typing import NoReturn
+from urllib import request as urllib_request
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -8,6 +12,7 @@ from pydantic import BaseModel
 from app.services.engine_gateway import FEATURES, EngineGateway
 from app.services.schemas import (
     AvatarActionRequest,
+    LLMSettingsUpdate,
     MemorySearchRequest,
     MemoryStoreRequest,
     MemoryTermsRequest,
@@ -35,11 +40,11 @@ def get_gateway(request: Request) -> EngineGateway:
     return request.app.state.gateway
 
 
-def _not_found(err: KeyError) -> None:
+def _not_found(err: KeyError) -> NoReturn:
     raise HTTPException(status_code=404, detail=str(err)) from err
 
 
-def _bad_request(err: ValueError) -> None:
+def _bad_request(err: ValueError) -> NoReturn:
     raise HTTPException(status_code=400, detail=str(err)) from err
 
 
@@ -206,6 +211,7 @@ async def submit_turn(
                     "image_prompt": result.image_prompt,
                     "actor_id": payload.actor_id,
                     "session_id": result.session_id,
+                    "turn_visibility": result.turn_visibility,
                 },
             },
         )
@@ -213,11 +219,40 @@ async def submit_turn(
         timers = await gateway.get_timers(campaign_id)
         await request.app.state.realtime.publish(
             campaign_id,
-            {"type": "timers", "session_id": result.session_id, "actor_id": result.actor_id, "payload": timers},
+            {
+                "type": "timers",
+                "session_id": result.session_id,
+                "actor_id": result.actor_id,
+                "payload": {
+                    **timers,
+                    "turn_visibility": result.turn_visibility,
+                    "actor_id": result.actor_id,
+                    "session_id": result.session_id,
+                },
+            },
         )
     except KeyError:
         pass
     return result.model_dump()
+
+
+@router.get("/campaigns/{campaign_id}/export")
+async def campaign_export(
+    campaign_id: str,
+    export_type: str = "full",
+    raw_format: str = "jsonl",
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.campaign_export(
+            campaign_id,
+            export_type=export_type,
+            raw_format=raw_format,
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
 
 
 @router.get("/campaigns/{campaign_id}/map")
@@ -428,3 +463,87 @@ async def debug_snapshot(campaign_id: str, gateway: EngineGateway = Depends(get_
         return await gateway.debug_snapshot(campaign_id)
     except KeyError as err:
         _not_found(err)
+
+
+@router.get("/settings")
+async def get_settings(request: Request) -> dict:
+    settings = request.app.state.settings
+    try:
+        ollama_options = json.loads(settings.tge_ollama_options_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        ollama_options = {}
+    return {
+        "completion_mode": settings.tge_completion_mode,
+        "base_url": settings.tge_llm_base_url,
+        "model": settings.tge_llm_model,
+        "temperature": settings.tge_llm_temperature,
+        "max_tokens": settings.tge_llm_max_tokens,
+        "timeout_seconds": settings.tge_llm_timeout_seconds,
+        "keep_alive": settings.tge_ollama_keep_alive,
+        "ollama_options": ollama_options,
+        "gateway_backend": settings.gateway_backend,
+    }
+
+
+@router.post("/settings")
+async def update_settings(
+    payload: LLMSettingsUpdate,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    if request.app.state.gateway_backend != "tge":
+        raise HTTPException(status_code=400, detail="LLM settings only available with tge backend.")
+    from app.services.tge_gateway import TextGameEngineGateway
+
+    if not isinstance(gateway, TextGameEngineGateway):
+        raise HTTPException(status_code=400, detail="Gateway does not support reconfiguration.")
+    raw = payload.model_dump()
+    merged = {}
+    for k, v in raw.items():
+        if v is None:
+            continue
+        # treat empty/whitespace-only strings as "not provided"
+        if isinstance(v, str) and not v.strip():
+            continue
+        merged[k] = v
+    if not merged:
+        raise HTTPException(status_code=400, detail="No settings provided.")
+    try:
+        result = gateway.reconfigure_llm(merged)
+    except ValueError as err:
+        _bad_request(err)
+    return result
+
+
+def _fetch_ollama_models(url: str) -> dict:
+    """Blocking helper — run via asyncio.to_thread to avoid stalling the event loop."""
+    req = urllib_request.Request(url, method="GET")
+    with urllib_request.urlopen(req, timeout=5) as response:  # noqa: S310
+        raw = response.read().decode("utf-8", errors="replace")
+    data = json.loads(raw)
+    models = []
+    for m in data.get("models", []):
+        models.append({
+            "name": m.get("name", ""),
+            "size": m.get("size"),
+            "modified_at": m.get("modified_at"),
+        })
+    return {"models": models, "reachable": True}
+
+
+@router.get("/ollama/models")
+async def list_ollama_models(request: Request) -> dict:
+    settings = request.app.state.settings
+    base_url = settings.tge_llm_base_url.rstrip("/")
+    # Strip known path suffixes so we get the Ollama root.
+    # Users may configure base_url as "http://host:11434/v1" (for openai compat)
+    # or "http://host:11434" (native ollama).  The /api/tags endpoint lives on root.
+    for suffix in ("/v1", "/api"):
+        if base_url.endswith(suffix):
+            base_url = base_url[: -len(suffix)]
+            break
+    url = f"{base_url}/api/tags"
+    try:
+        return await asyncio.to_thread(_fetch_ollama_models, url)
+    except Exception:
+        return {"models": [], "reachable": False}

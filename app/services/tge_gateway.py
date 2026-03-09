@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 from typing import Any, Protocol
@@ -18,6 +19,10 @@ try:
     from text_game_engine.core.engine import GameEngine
     from text_game_engine.core.types import GiveItemInstruction, LLMTurnOutput, TimerInstruction
     from text_game_engine import build_text_completion_port
+    from text_game_engine.tool_aware_llm import (
+        DeterministicLLM as EngineDeterministicLLM,
+        ToolAwareZorkLLM as EngineToolAwareLLM,
+    )
     from text_game_engine.persistence.sqlalchemy import (
         SQLAlchemyUnitOfWork,
         build_engine,
@@ -1967,7 +1972,10 @@ class ZorkToolAwareLLM:
             turns.reverse()
 
         try:
-            turn_visibility_default = self._session_visibility_default(context.session_id)
+            turn_visibility_default = self._session_visibility_default(
+                context.session_id,
+                campaign_id=context.campaign_id,
+            )
             system_prompt, user_prompt = emulator.build_prompt(
                 campaign,
                 player,
@@ -2020,11 +2028,12 @@ class TextGameEngineGateway(EngineGateway):
                 model=settings.tge_llm_model,
                 timeout_seconds=settings.tge_llm_timeout_seconds,
             )
-            llm = ZorkToolAwareLLM(
+            llm = EngineToolAwareLLM(
                 session_factory=self._session_factory,
                 completion_port=completion_port,
                 temperature=settings.tge_llm_temperature,
                 max_tokens=settings.tge_llm_max_tokens,
+                turn_visibility_default_resolver=self._session_visibility_default,
             )
         elif self._completion_mode == "ollama":
             ollama_options = self._parse_json_object(
@@ -2038,20 +2047,22 @@ class TextGameEngineGateway(EngineGateway):
                 keep_alive=settings.tge_ollama_keep_alive,
                 options=ollama_options,
             )
-            llm = ZorkToolAwareLLM(
+            llm = EngineToolAwareLLM(
                 session_factory=self._session_factory,
                 completion_port=completion_port,
                 temperature=settings.tge_llm_temperature,
                 max_tokens=settings.tge_llm_max_tokens,
+                turn_visibility_default_resolver=self._session_visibility_default,
             )
         elif self._completion_mode == "deterministic":
-            llm = DeterministicLLM()
+            llm = EngineDeterministicLLM()
         else:
             raise ValueError(f"Unsupported tge completion mode: {self._completion_mode}")
 
-        game_engine = GameEngine(uow_factory=_uow_factory, llm=llm)
+        self._game_engine = GameEngine(uow_factory=_uow_factory, llm=llm)
+        self._uow_factory = _uow_factory
         self._emulator = ZorkEmulator(
-            game_engine=game_engine,
+            game_engine=self._game_engine,
             session_factory=self._session_factory,
             completion_port=completion_port,
             map_completion_port=completion_port,
@@ -2060,13 +2071,109 @@ class TextGameEngineGateway(EngineGateway):
             media_port=None,
         )
         self._completion_port = completion_port
+        self._llm = llm
+        self._reconfigure_lock = threading.Lock()
         self._probe_timeout_seconds = max(int(settings.tge_runtime_probe_timeout_seconds or 8), 1)
-        if isinstance(llm, ZorkToolAwareLLM):
+        if isinstance(llm, EngineToolAwareLLM):
             llm.bind_emulator(self._emulator)
 
     @property
     def completion_mode(self) -> str:
         return self._completion_mode
+
+    @staticmethod
+    def _pick(merged: dict[str, Any], key: str, fallback: Any) -> Any:
+        val = merged.get(key)
+        return val if val is not None else fallback
+
+    def reconfigure_llm(self, merged: dict[str, Any]) -> dict[str, str]:
+        with self._reconfigure_lock:
+            mode = str(self._pick(merged, "completion_mode", self._completion_mode)).strip().lower()
+            base_url = str(self._pick(merged, "base_url", self._settings.tge_llm_base_url)).strip()
+            api_key = str(self._pick(merged, "api_key", self._settings.tge_llm_api_key)).strip()
+            model = str(self._pick(merged, "model", self._settings.tge_llm_model)).strip()
+            temperature = float(self._pick(merged, "temperature", self._settings.tge_llm_temperature))
+            max_tokens = int(self._pick(merged, "max_tokens", self._settings.tge_llm_max_tokens))
+            timeout_seconds = int(self._pick(merged, "timeout_seconds", self._settings.tge_llm_timeout_seconds))
+            keep_alive = str(self._pick(merged, "keep_alive", self._settings.tge_ollama_keep_alive)).strip()
+            ollama_options = merged.get("ollama_options")
+            if ollama_options is None:
+                ollama_options = self._parse_json_object(
+                    self._settings.tge_ollama_options_json,
+                    "ollama_options",
+                )
+
+            # -- build new completion port --
+            new_port: CompletionPortProtocol | None = None
+            if mode == "ollama":
+                new_port = OllamaCompletionPort(
+                    base_url=base_url,
+                    model=model,
+                    timeout_seconds=timeout_seconds,
+                    keep_alive=keep_alive,
+                    options=ollama_options if isinstance(ollama_options, dict) else {},
+                )
+            elif mode == "openai":
+                new_port = OpenAICompatibleCompletionPort(
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    timeout_seconds=timeout_seconds,
+                )
+            elif mode == "deterministic":
+                new_port = None
+            else:
+                raise ValueError(f"Unsupported completion mode: {mode}")
+
+            # -- swap or rebuild the LLM instance --
+            need_new_llm = False
+            if mode == "deterministic" and not isinstance(self._llm, DeterministicLLM):
+                need_new_llm = True
+            elif mode != "deterministic" and not isinstance(self._llm, EngineToolAwareLLM):
+                need_new_llm = True
+
+            if need_new_llm:
+                if mode == "deterministic":
+                    new_llm = EngineDeterministicLLM()
+                else:
+                    new_llm = EngineToolAwareLLM(
+                        session_factory=self._session_factory,
+                        completion_port=new_port,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        turn_visibility_default_resolver=self._session_visibility_default,
+                    )
+                    new_llm.bind_emulator(self._emulator)
+                self._llm = new_llm
+                self._game_engine._llm = new_llm
+            elif isinstance(self._llm, EngineToolAwareLLM):
+                self._llm._completion = new_port
+                self._llm._temperature = temperature
+                self._llm._max_tokens = max_tokens
+
+            self._emulator._completion_port = new_port
+            self._emulator._map_completion_port = new_port
+            self._completion_port = new_port
+            self._completion_mode = mode
+
+            self._settings.tge_completion_mode = mode
+            self._settings.tge_llm_base_url = base_url
+            self._settings.tge_llm_api_key = api_key
+            self._settings.tge_llm_model = model
+            self._settings.tge_llm_temperature = temperature
+            self._settings.tge_llm_max_tokens = max_tokens
+            self._settings.tge_llm_timeout_seconds = timeout_seconds
+            self._settings.tge_ollama_keep_alive = keep_alive
+            if isinstance(ollama_options, dict):
+                self._settings.tge_ollama_options_json = json.dumps(ollama_options)
+
+            return {
+                "status": "ok",
+                "completion_mode": mode,
+                "model": model,
+                "base_url": base_url,
+                "note": "Settings apply until server restart.",
+            }
 
     async def runtime_checks(self, probe_llm: bool = False) -> dict:
         database_ok = True
@@ -2128,15 +2235,26 @@ class TextGameEngineGateway(EngineGateway):
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 
-    def _session_visibility_default(self, session_id: str | None) -> str:
+    def _session_visibility_default(
+        self,
+        session_id: str | None,
+        *,
+        campaign_id: str | None = None,
+    ) -> str:
         session_id_text = str(session_id or "").strip()
         if not session_id_text:
             return "public"
-        with self._session_factory() as session:
-            row = session.get(GameSession, session_id_text)
-            if row is None:
+        if campaign_id is not None:
+            try:
+                metadata = self._session_metadata(campaign_id, session_id_text)
+            except KeyError:
                 return "public"
-            metadata = self._parse_json(row.metadata_json, {})
+        else:
+            with self._session_factory() as session:
+                row = session.get(GameSession, session_id_text)
+                if row is None:
+                    return "public"
+                metadata = self._parse_json(row.metadata_json, {})
         if not isinstance(metadata, dict):
             return "public"
         default_value = str(
@@ -2160,6 +2278,19 @@ class TextGameEngineGateway(EngineGateway):
                 raise KeyError(f"Unknown session: {session_id_text}")
             metadata = self._parse_json(row.metadata_json, {})
         return metadata if isinstance(metadata, dict) else {}
+
+    async def validate_realtime_subscription(
+        self,
+        campaign_id: str,
+        *,
+        actor_id: str | None,
+        session_id: str | None,
+    ) -> None:
+        session_id_text = str(session_id or "").strip() or None
+        if not session_id_text:
+            return
+        actor_id_text = str(actor_id or "").strip() or None
+        self._enforce_session_access(campaign_id, actor_id_text or "", session_id_text)
 
     def _enforce_session_access(self, campaign_id: str, actor_id: str, session_id: str | None) -> None:
         metadata = self._session_metadata(campaign_id, session_id)
@@ -2214,9 +2345,9 @@ class TextGameEngineGateway(EngineGateway):
                 text = str(item or "").strip()
                 if text and text not in resolved_actor_ids:
                     resolved_actor_ids.append(text)
-        slug_map = self._player_slug_to_actor_ids(campaign_id)
         raw_player_slugs = visibility.get("visible_player_slugs")
-        if isinstance(raw_player_slugs, list):
+        if isinstance(raw_player_slugs, list) and raw_player_slugs:
+            slug_map = self._player_slug_to_actor_ids(campaign_id)
             for item in raw_player_slugs:
                 slug = self._canonical_slug(str(item or ""))
                 actor_id = slug_map.get(slug)
@@ -2440,6 +2571,11 @@ class TextGameEngineGateway(EngineGateway):
             session_id=session_id,
             manage_claim=True,
         )
+        notices = self._emulator.pop_turn_ephemeral_notices(
+            campaign_id,
+            request.actor_id,
+            session_id,
+        )
 
         if narration is None:
             narration = "The world shifts, but nothing clear emerges."
@@ -2499,7 +2635,35 @@ class TextGameEngineGateway(EngineGateway):
             xp_awarded=max(xp_after - xp_before, 0),
             image_prompt=None,
             turn_visibility=turn_visibility,
+            notices=notices,
         )
+
+    async def campaign_export(
+        self,
+        campaign_id: str,
+        *,
+        export_type: str = "full",
+        raw_format: str = "jsonl",
+    ) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        files = await self._emulator.campaign_export(
+            campaign_id,
+            export_type=export_type,
+            raw_format=raw_format,
+        )
+        return {
+            "campaign_id": campaign_id,
+            "campaign_name": campaign.name,
+            "export_type": str(export_type or "full").strip().lower() or "full",
+            "raw_format": str(raw_format or "jsonl").strip().lower() or "jsonl",
+            "files": [
+                {"filename": filename, "content": content}
+                for filename, content in files.items()
+            ],
+        }
 
     async def get_map(self, campaign_id: str, actor_id: str) -> str:
         with self._session_factory() as session:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -61,6 +63,7 @@ class TurnResult(BaseModel):
     xp_awarded: int = 0
     image_prompt: str | None = None
     turn_visibility: dict = Field(default_factory=dict)
+    notices: list[str] = Field(default_factory=list)
 
 
 class MemorySearchRequest(BaseModel):
@@ -103,3 +106,15 @@ class SmsMessage(BaseModel):
     recipient: str
     message: str
     created_at: datetime
+
+
+class LLMSettingsUpdate(BaseModel):
+    completion_mode: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    timeout_seconds: int | None = None
+    keep_alive: str | None = None
+    ollama_options: dict[str, Any] | None = None

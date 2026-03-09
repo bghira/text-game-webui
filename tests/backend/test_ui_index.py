@@ -6,13 +6,10 @@ def test_index_renders(client):
     assert "Turn Stream" in text
     assert "Sessions" in text
     assert "Timers" in text
-    assert "Runtime" in text
     assert "Player" in text
     assert "Media" in text
     assert "Accept Pending Avatar" in text
-    assert "DB Check:" in text
-    assert "LLM Check:" in text
     assert "Run LLM Probe" in text
     assert "Connection Diagnostics" in text
     assert "Copy Diagnostics Bundle" in text
-    assert "Available Features" in text
+    assert "LLM Settings" in text

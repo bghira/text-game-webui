@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import UTC, datetime
 from fnmatch import fnmatch
+import json
 from typing import Protocol
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ FEATURES = [
     "campaigns",
     "sessions",
     "turns",
+    "campaign_export",
     "timers",
     "map",
     "calendar",
@@ -55,8 +57,22 @@ class EngineGateway(Protocol):
         enabled: bool | None = None,
         metadata: dict | None = None,
     ) -> dict: ...
+    async def validate_realtime_subscription(
+        self,
+        campaign_id: str,
+        *,
+        actor_id: str | None,
+        session_id: str | None,
+    ) -> None: ...
     async def runtime_checks(self, probe_llm: bool = False) -> dict: ...
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
+    async def campaign_export(
+        self,
+        campaign_id: str,
+        *,
+        export_type: str = "full",
+        raw_format: str = "jsonl",
+    ) -> dict: ...
     async def get_map(self, campaign_id: str, actor_id: str) -> str: ...
     async def get_timers(self, campaign_id: str) -> dict: ...
     async def get_calendar(self, campaign_id: str) -> dict: ...
@@ -207,6 +223,42 @@ class InMemoryEngineGateway:
         row["updated_at"] = datetime.now(UTC).isoformat()
         return self._session_row(campaign_id, row)
 
+    async def validate_realtime_subscription(
+        self,
+        campaign_id: str,
+        *,
+        actor_id: str | None,
+        session_id: str | None,
+    ) -> None:
+        self._require_campaign(campaign_id)
+        session_id_text = str(session_id or "").strip() or None
+        if not session_id_text:
+            return
+        row = self._sessions[campaign_id].get(session_id_text)
+        if row is None:
+            raise KeyError(f"Unknown session: {session_id_text}")
+        metadata = row.get("metadata", {}) if isinstance(row, dict) else {}
+        if not isinstance(metadata, dict):
+            return
+        scope = str(metadata.get("scope") or "").strip().lower()
+        if scope not in {"private", "limited"}:
+            return
+        actor_id_text = str(actor_id or "").strip()
+        if not actor_id_text:
+            raise ValueError("Actor id is required for private or limited realtime subscriptions.")
+        allowed_actor_ids: list[str] = []
+        owner_actor_id = str(metadata.get("owner_actor_id") or "").strip()
+        if owner_actor_id:
+            allowed_actor_ids.append(owner_actor_id)
+        raw_allowed = metadata.get("allowed_actor_ids")
+        if isinstance(raw_allowed, list):
+            for item in raw_allowed:
+                text = str(item or "").strip()
+                if text and text not in allowed_actor_ids:
+                    allowed_actor_ids.append(text)
+        if allowed_actor_ids and actor_id_text not in allowed_actor_ids:
+            raise ValueError("This private window is not available to the selected actor.")
+
     def _ensure_player(self, campaign_id: str, actor_id: str) -> dict:
         existing = self._players[campaign_id].get(actor_id)
         if existing is not None:
@@ -246,6 +298,8 @@ class InMemoryEngineGateway:
         turn_visibility: dict[str, object] = {"scope": "public", "visible_actor_ids": [request.actor_id]}
         if session_id:
             session_row = self._sessions[campaign_id].get(session_id)
+            if session_row is None:
+                raise KeyError(f"Unknown session: {session_id}")
             metadata = session_row.get("metadata", {}) if isinstance(session_row, dict) else {}
             if isinstance(metadata, dict):
                 scope = str(metadata.get("scope") or metadata.get("turn_visibility_default") or "").strip().lower()
@@ -332,7 +386,117 @@ class InMemoryEngineGateway:
             xp_awarded=1,
             image_prompt=image_prompt,
             turn_visibility=turn_visibility,
+            notices=[],
         )
+
+    async def campaign_export(
+        self,
+        campaign_id: str,
+        *,
+        export_type: str = "full",
+        raw_format: str = "jsonl",
+    ) -> dict:
+        campaign = self._require_campaign(campaign_id)
+        export_type_clean = str(export_type or "full").strip().lower()
+        if export_type_clean not in {"full", "raw"}:
+            export_type_clean = "full"
+        raw_format_clean = str(raw_format or "jsonl").strip().lower()
+        if raw_format_clean not in {"script", "markdown", "json", "jsonl", "loglines"}:
+            raw_format_clean = "jsonl"
+        files: list[dict[str, str]] = []
+        if export_type_clean == "raw":
+            filename = {
+                "json": "campaign-raw.json",
+                "markdown": "campaign-raw-markdown.md",
+                "script": "campaign-raw-script.txt",
+                "loglines": "campaign-raw-loglines.txt",
+            }.get(raw_format_clean, "campaign-raw.jsonl")
+            if raw_format_clean == "json":
+                content = json.dumps(
+                    {
+                        "campaign": campaign.model_dump(mode="json"),
+                        "turns": self._turns[campaign_id],
+                        "players": self._players[campaign_id],
+                        "sessions": list(self._sessions[campaign_id].values()),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            elif raw_format_clean == "jsonl":
+                rows = [
+                    json.dumps(
+                        {"type": "campaign", **campaign.model_dump(mode="json")},
+                        ensure_ascii=False,
+                    )
+                ]
+                rows.extend(
+                    json.dumps({"type": "turn", **row}, ensure_ascii=False)
+                    for row in self._turns[campaign_id]
+                )
+                content = "\n".join(rows)
+            elif raw_format_clean == "markdown":
+                lines = [f"# Campaign Raw Export: {campaign.name}", "", "## Turns", ""]
+                for row in self._turns[campaign_id]:
+                    lines.extend(
+                        [
+                            f"### Turn {row.get('id')}",
+                            "",
+                            "```json",
+                            json.dumps(row, indent=2, ensure_ascii=False),
+                            "```",
+                            "",
+                        ]
+                    )
+                content = "\n".join(lines).strip()
+            elif raw_format_clean == "script":
+                lines = [f"CAMPAIGN\t{campaign.name}"]
+                for row in self._turns[campaign_id]:
+                    lines.extend(
+                        [
+                            f"TURN\t{row.get('id')}",
+                            f"\tACTOR\t{row.get('actor_id')}",
+                            f"\tACTION\t{row.get('action')}",
+                            f"\tNARRATION\t{row.get('narration')}",
+                            "",
+                        ]
+                    )
+                content = "\n".join(lines).strip()
+            else:
+                lines = [f"[CAMPAIGN EXPORT] campaign={campaign.id} name={campaign.name!r}"]
+                for row in self._turns[campaign_id]:
+                    lines.append(
+                        f"[TURN #{row.get('id')}] PLAYER {row.get('actor_id')}: {row.get('action')}"
+                    )
+                    lines.append(
+                        f"[TURN #{row.get('id')}] NARRATOR: {row.get('narration')}"
+                    )
+                content = "\n".join(lines).strip()
+            files.append({"filename": filename, "content": content})
+        else:
+            summary_lines = [f"Campaign: {campaign.name}", "", "Turns:"]
+            for row in self._turns[campaign_id]:
+                summary_lines.append(
+                    f"- Turn {row.get('id')}: {row.get('actor_id')} -> {row.get('action')}"
+                )
+            files.extend(
+                [
+                    {
+                        "filename": "campaign-rulebook.txt",
+                        "content": "\n".join(summary_lines).strip(),
+                    },
+                    {
+                        "filename": "campaign-story-prompt.txt",
+                        "content": "\n".join(summary_lines).strip(),
+                    },
+                ]
+            )
+        return {
+            "campaign_id": campaign_id,
+            "campaign_name": campaign.name,
+            "export_type": export_type_clean,
+            "raw_format": raw_format_clean,
+            "files": files,
+        }
 
     async def get_map(self, campaign_id: str, actor_id: str) -> str:
         _ = actor_id
