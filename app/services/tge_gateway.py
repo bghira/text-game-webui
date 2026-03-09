@@ -2620,10 +2620,39 @@ class TextGameEngineGateway(EngineGateway):
                 summary_update = lines[-1]
 
         turn_visibility: dict[str, Any] = {}
+        reasoning: str | None = None
         if narrator_turn is not None:
             turn_meta = self._parse_json(narrator_turn.meta_json, {})
             if isinstance(turn_meta, dict):
                 turn_visibility = self._resolve_turn_visibility(campaign_id, turn_meta.get("visibility"))
+                raw_reasoning = turn_meta.get("reasoning")
+                if isinstance(raw_reasoning, str) and raw_reasoning.strip():
+                    reasoning = raw_reasoning.strip()
+
+        # Extract latest scene image prompt from outbox (if generated this turn)
+        image_prompt: str | None = None
+        if narrator_turn is not None:
+            with self._session_factory() as session:
+                latest_scene = (
+                    session.query(OutboxEvent)
+                    .filter(OutboxEvent.campaign_id == campaign_id)
+                    .filter(OutboxEvent.event_type == "scene_image_requested")
+                    .order_by(OutboxEvent.created_at.desc())
+                    .first()
+                )
+                if latest_scene is not None:
+                    scene_payload = self._parse_json(latest_scene.payload_json, {})
+                    if isinstance(scene_payload, dict) and scene_payload.get("turn_id") == narrator_turn.id:
+                        raw_prompt = scene_payload.get("scene_image_prompt")
+                        if isinstance(raw_prompt, str) and raw_prompt.strip():
+                            image_prompt = raw_prompt.strip()
+
+        # Extract dice check result from campaign state
+        dice_result: dict | None = None
+        if isinstance(campaign_state, dict):
+            raw_dice = campaign_state.get("_last_dice_check")
+            if isinstance(raw_dice, dict) and raw_dice.get("attribute"):
+                dice_result = raw_dice
 
         return TurnResult(
             actor_id=request.actor_id,
@@ -2633,7 +2662,9 @@ class TextGameEngineGateway(EngineGateway):
             player_state_update=player_state_update,
             summary_update=summary_update,
             xp_awarded=max(xp_after - xp_before, 0),
-            image_prompt=None,
+            image_prompt=image_prompt,
+            reasoning=reasoning,
+            dice_result=dice_result,
             turn_visibility=turn_visibility,
             notices=notices,
         )
@@ -3415,4 +3446,413 @@ class TextGameEngineGateway(EngineGateway):
             "players": player_rows,
             "turns": turn_rows,
             "timers": timer_rows,
+        }
+
+    async def get_campaign_flags(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        emulator = self._emulator
+        return {
+            "guardrails": emulator.is_guardrails_enabled(campaign),
+            "on_rails": emulator.is_on_rails(campaign),
+            "timed_events": emulator.is_timed_events_enabled(campaign),
+            "difficulty": emulator.get_difficulty(campaign),
+            "speed_multiplier": emulator.get_speed_multiplier(campaign),
+        }
+
+    async def update_campaign_flags(
+        self,
+        campaign_id: str,
+        *,
+        guardrails: bool | None = None,
+        on_rails: bool | None = None,
+        timed_events: bool | None = None,
+        difficulty: str | None = None,
+        speed_multiplier: float | None = None,
+    ) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        emulator = self._emulator
+        changed: list[str] = []
+        if guardrails is not None:
+            emulator.set_guardrails_enabled(campaign, guardrails)
+            changed.append("guardrails")
+        if on_rails is not None:
+            emulator.set_on_rails(campaign, on_rails)
+            changed.append("on_rails")
+        if timed_events is not None:
+            emulator.set_timed_events_enabled(campaign, timed_events)
+            changed.append("timed_events")
+        if difficulty is not None:
+            emulator.set_difficulty(campaign, difficulty)
+            changed.append("difficulty")
+        if speed_multiplier is not None:
+            emulator.set_speed_multiplier(campaign, max(0.1, min(10.0, speed_multiplier)))
+            changed.append("speed_multiplier")
+        return {"ok": True, "changed": changed}
+
+    async def get_source_materials(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        docs = self._emulator.list_source_material_documents(campaign_id, limit=20)
+        return {"documents": docs}
+
+    async def ingest_source_material(self, campaign_id: str, payload) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        result = self._emulator.ingest_source_material_text(
+            campaign_id,
+            text=payload.text,
+            document_label=payload.document_label,
+            format=payload.format,
+        )
+        return result if isinstance(result, dict) else {"ok": True}
+
+    async def get_campaign_rules(self, campaign_id: str, key: str | None = None) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        if key:
+            return {
+                "document_key": self._emulator.AUTO_RULEBOOK_DOCUMENT_LABEL,
+                "rule": self._emulator.get_campaign_rule(campaign_id, key),
+            }
+        return {
+            "document_key": self._emulator.AUTO_RULEBOOK_DOCUMENT_LABEL,
+            "rules": self._emulator.list_campaign_rules(campaign_id),
+        }
+
+    async def update_campaign_rule(self, campaign_id: str, payload) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        result = self._emulator.put_campaign_rule(
+            campaign_id,
+            rule_key=payload.key,
+            rule_text=payload.value,
+            upsert=payload.upsert,
+        )
+        return result if isinstance(result, dict) else {"ok": True}
+
+    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        result = self._game_engine.rewind_to_turn(campaign_id, target_turn_id)
+        ok = result.status == "ok" if hasattr(result, "status") else True
+        return {
+            "ok": ok,
+            "target_turn_id": target_turn_id,
+            "note": str(result),
+            "detail": str(result),
+        }
+
+    async def cancel_pending_timer(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        cancelled = self._emulator.cancel_pending_timer(campaign_id)
+        if cancelled is not None:
+            event = cancelled.get("event", "unknown event")
+            return {"ok": True, "cancelled_event": event}
+        return {"ok": False, "note": "No pending timer to cancel."}
+
+    async def get_player_statistics(self, campaign_id: str, actor_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id}")
+        stats = self._emulator.get_player_statistics(player)
+        stats["actor_id"] = actor_id
+        return stats
+
+    async def get_player_attributes(self, campaign_id: str, actor_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id}")
+        attrs = self._emulator.get_player_attributes(player)
+        level = int(player.level or 1)
+        total = self._emulator.total_points_for_level(level)
+        spent = self._emulator.points_spent(attrs)
+        return {
+            "actor_id": actor_id,
+            "level": level,
+            "xp": int(player.xp or 0),
+            "attributes": attrs,
+            "total_points": total,
+            "points_spent": spent,
+            "points_available": total - spent,
+            "xp_needed_for_next": self._emulator.xp_needed_for_level(level),
+            "max_attribute_value": self._emulator.MAX_ATTRIBUTE_VALUE,
+        }
+
+    async def set_player_attribute(self, campaign_id: str, actor_id: str, attribute: str, value: int) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id}")
+        ok, message = self._emulator.set_attribute(player, attribute, value)
+        return {"ok": ok, "message": message}
+
+    async def level_up_player(self, campaign_id: str, actor_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id}")
+        ok, message = self._emulator.level_up(player)
+        return {"ok": ok, "message": message}
+
+    async def get_recent_turns(self, campaign_id: str, limit: int = 30) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        turns = self._emulator.get_recent_turns(campaign_id, limit=limit)
+        rows = []
+        for turn in turns:
+            meta = self._parse_json(turn.meta_json, {})
+            rows.append({
+                "id": turn.id,
+                "kind": turn.kind,
+                "actor_id": turn.actor_id,
+                "session_id": turn.session_id,
+                "content": turn.content,
+                "meta": meta,
+                "created_at": turn.created_at.isoformat() if turn.created_at else None,
+            })
+        return {"turns": rows, "count": len(rows)}
+
+    async def get_campaign_persona(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+        persona = self._emulator.get_campaign_default_persona(campaign, state)
+        stored = state.get("default_persona")
+        return {
+            "persona": persona,
+            "source": "custom" if isinstance(stored, str) and stored.strip() else "default",
+        }
+
+    async def set_campaign_persona(self, campaign_id: str, persona: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+            state["default_persona"] = persona.strip()[:140]
+            campaign.state_json = json.dumps(state, ensure_ascii=False)
+            session.commit()
+        return {"ok": True, "persona": state["default_persona"]}
+
+    async def get_puzzle_hint(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+        raw = state.get("_active_puzzle")
+        if not isinstance(raw, dict):
+            return {"hint": None, "note": "No active puzzle."}
+
+        try:
+            from text_game_engine.core.puzzles import PuzzleEngine, PuzzleState
+            ps = PuzzleState(**{k: v for k, v in raw.items() if k in PuzzleState.__dataclass_fields__})
+            hint = PuzzleEngine.get_hint(ps)
+            if hint is None:
+                return {"hint": None, "note": "No more hints available.", "hints_used": ps.hints_used}
+            # Persist updated hints_used
+            ps.hints_used += 1
+            from dataclasses import asdict
+            state["_active_puzzle"] = asdict(ps)
+            with self._session_factory() as sess2:
+                c2 = sess2.get(Campaign, campaign_id)
+                if c2 is not None:
+                    c2.state_json = json.dumps(state, ensure_ascii=False)
+                    sess2.commit()
+            return {"hint": hint, "hints_used": ps.hints_used, "hints_total": len(ps.hints)}
+        except Exception as exc:
+            return {"hint": None, "error": str(exc)}
+
+    async def submit_puzzle_answer(self, campaign_id: str, answer: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+        raw = state.get("_active_puzzle")
+        if not isinstance(raw, dict):
+            return {"correct": False, "feedback": "No active puzzle.", "solved": False}
+
+        try:
+            from text_game_engine.core.puzzles import PuzzleEngine, PuzzleState
+            from dataclasses import asdict
+            ps = PuzzleState(**{k: v for k, v in raw.items() if k in PuzzleState.__dataclass_fields__})
+            correct, feedback = PuzzleEngine.validate_answer(ps, answer)
+            result = {
+                "correct": correct,
+                "feedback": feedback,
+                "solved": ps.solved,
+                "failed": ps.failed,
+                "attempts": ps.attempts,
+                "max_attempts": ps.max_attempts,
+            }
+            # Persist updated puzzle state
+            state["_active_puzzle"] = asdict(ps)
+            state["_puzzle_result"] = {
+                "correct": correct,
+                "feedback": feedback,
+                "solved": ps.solved,
+                "failed": ps.failed,
+            }
+            with self._session_factory() as sess2:
+                c2 = sess2.get(Campaign, campaign_id)
+                if c2 is not None:
+                    c2.state_json = json.dumps(state, ensure_ascii=False)
+                    sess2.commit()
+            return result
+        except Exception as exc:
+            return {"correct": False, "feedback": str(exc), "solved": False}
+
+    async def submit_minigame_move(self, campaign_id: str, move: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+        raw = state.get("_active_minigame")
+        if not isinstance(raw, dict):
+            return {"valid": False, "message": "No active minigame.", "finished": False}
+
+        try:
+            from text_game_engine.core.minigames import MinigameEngine, MinigameState
+            from dataclasses import asdict
+            ms = MinigameState(**{k: v for k, v in raw.items() if k in MinigameState.__dataclass_fields__})
+            valid, message = MinigameEngine.player_move(ms, move)
+            finished = MinigameEngine.is_finished(ms)
+            board = MinigameEngine.render_board(ms)
+            result = {
+                "valid": valid,
+                "message": message,
+                "finished": finished,
+                "board": board,
+                "status": ms.status,
+                "turn_count": ms.turn_count,
+            }
+            # Persist updated minigame state
+            state["_active_minigame"] = asdict(ms)
+            state["_minigame_result"] = {
+                "valid": valid,
+                "message": message,
+                "finished": finished,
+                "board": board,
+            }
+            with self._session_factory() as sess2:
+                c2 = sess2.get(Campaign, campaign_id)
+                if c2 is not None:
+                    c2.state_json = json.dumps(state, ensure_ascii=False)
+                    sess2.commit()
+            return result
+        except Exception as exc:
+            return {"valid": False, "message": str(exc), "finished": False}
+
+    async def get_minigame_board(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+        raw = state.get("_active_minigame")
+        if not isinstance(raw, dict):
+            return {"board": None, "note": "No active minigame."}
+
+        try:
+            from text_game_engine.core.minigames import MinigameEngine, MinigameState
+            ms = MinigameState(**{k: v for k, v in raw.items() if k in MinigameState.__dataclass_fields__})
+            board = MinigameEngine.render_board(ms)
+            return {
+                "board": board,
+                "game_type": ms.game_type,
+                "status": ms.status,
+                "turn_count": ms.turn_count,
+                "finished": MinigameEngine.is_finished(ms),
+            }
+        except Exception as exc:
+            return {"board": None, "error": str(exc)}
+
+    async def get_story_state(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+        return {
+            "story_outline": state.get("story_outline"),
+            "current_chapter": state.get("current_chapter"),
+            "current_scene": state.get("current_scene"),
+            "plot_threads": state.get("_plot_threads", {}),
+            "consequences": state.get("_consequences", {}),
+            "chapter_plan": state.get("_chapter_plan", {}),
+            "active_puzzle": state.get("_active_puzzle"),
+            "active_minigame": state.get("_active_minigame"),
         }

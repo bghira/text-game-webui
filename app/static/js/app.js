@@ -169,6 +169,8 @@
       calendarText: "",
       rosterText: "",
       playerStateText: "",
+      playerData: null,
+      playerStats: null,
       mediaText: "",
       sessionsText: "",
       memoryText: "",
@@ -180,6 +182,53 @@
         type: "full",
         raw_format: "jsonl",
       },
+
+      /* Campaign flags */
+      campaignFlags: {
+        guardrails: true,
+        on_rails: false,
+        timed_events: false,
+        difficulty: "normal",
+        speed_multiplier: 1.0,
+      },
+
+      /* Source material */
+      sourceMaterials: [],
+      sourceUpload: { label: "", format: "", text: "" },
+      sourceUploadStatus: "",
+      campaignRules: [],
+      selectedCampaignRule: null,
+      campaignRuleLookupKey: "",
+      campaignRuleForm: { key: "", value: "", mode: "add" },
+      campaignRuleStatus: "",
+
+      /* Puzzle / Minigame interaction */
+      puzzleAnswer: "",
+      puzzleStatus: "",
+      minigameMove: "",
+      minigameBoard: "",
+      minigameStatus: "",
+
+      /* Story state (debug) */
+      storyState: null,
+      rewindTargetTurn: "",
+      rewindStatus: "",
+
+      /* Player attributes */
+      playerAttributes: null,
+      attributeForm: { attribute: "", value: 0 },
+
+      /* Turn history */
+      recentTurns: [],
+
+      /* Campaign persona */
+      campaignPersona: "",
+      campaignPersonaSource: "",
+      personaEditText: "",
+
+      /* Game time (extracted from turn state_update) */
+      gameTime: {},
+      campaignSummary: "",
 
       async init() {
         await this.loadRuntime();
@@ -199,7 +248,7 @@
           return this.turnStream;
         }
         return this.turnStream.filter(
-          (entry) => entry.type === "narrator" || entry.type === "notice"
+          (entry) => entry.type === "narrator" || entry.type === "notice" || entry.type === "image_prompt" || entry.type === "dice"
         );
       },
 
@@ -218,7 +267,7 @@
 
       /* Guard inspector tab when toggling debug off */
       ensureValidInspectorTab() {
-        const normalTabs = ["map", "player"];
+        const normalTabs = ["map", "player", "campaign"];
         if (!this.$store.app.debugMode && !normalTabs.includes(this.inspectorTab)) {
           this.inspectorTab = "map";
         }
@@ -662,6 +711,240 @@
         }
       },
 
+      /* ---- Campaign flags ---- */
+      async loadCampaignFlags() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/flags`);
+          this.campaignFlags.guardrails = !!data.guardrails;
+          this.campaignFlags.on_rails = !!data.on_rails;
+          this.campaignFlags.timed_events = !!data.timed_events;
+          this.campaignFlags.difficulty = data.difficulty || "normal";
+          this.campaignFlags.speed_multiplier = typeof data.speed_multiplier === "number" ? data.speed_multiplier : 1.0;
+        } catch (_) { /* non-critical */ }
+      },
+
+      async setCampaignFlag(key, value) {
+        if (!this.selectedCampaignId) return;
+        try {
+          const payload = {};
+          payload[key] = value;
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/flags`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          await this.loadCampaignFlags();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- Source material ---- */
+      async loadSourceMaterials() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/source-materials`);
+          this.sourceMaterials = Array.isArray(data.documents) ? data.documents : [];
+        } catch (_) { /* non-critical */ }
+      },
+
+      async loadCampaignRules(key = "") {
+        if (!this.selectedCampaignId) return;
+        try {
+          const query = key ? `?key=${encodeURIComponent(key)}` : "";
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/campaign-rules${query}`);
+          if (key) {
+            this.selectedCampaignRule = data.rule || null;
+          } else {
+            this.campaignRules = Array.isArray(data.rules) ? data.rules : [];
+            if (this.selectedCampaignRule && this.selectedCampaignRule.key) {
+              const current = this.campaignRules.find((row) => row.key === this.selectedCampaignRule.key);
+              if (current) this.selectedCampaignRule = current;
+            }
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async ingestSourceMaterial() {
+        if (!this.selectedCampaignId) return;
+        this.sourceUploadStatus = "";
+        const text = (this.sourceUpload.text || "").trim();
+        if (!text) return;
+        try {
+          const payload = { text };
+          if (this.sourceUpload.label.trim()) payload.document_label = this.sourceUpload.label.trim();
+          if (this.sourceUpload.format) payload.format = this.sourceUpload.format;
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/source-materials`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          this.sourceUploadStatus = `Uploaded at ${nowLabel()}.`;
+          this.sourceUpload.text = "";
+          this.sourceUpload.label = "";
+          await this.loadSourceMaterials();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async saveCampaignRule() {
+        if (!this.selectedCampaignId) return;
+        this.campaignRuleStatus = "";
+        const key = (this.campaignRuleForm.key || "").trim();
+        const value = (this.campaignRuleForm.value || "").trim();
+        if (!key || !value) return;
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/campaign-rules`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              key,
+              value,
+              upsert: String(this.campaignRuleForm.mode || "add") === "upsert",
+            }),
+          });
+          if (body && body.ok === false && body.reason === "exists") {
+            this.campaignRuleStatus = `Rule already exists. Old: ${body.old_value}`;
+            return;
+          }
+          this.campaignRuleStatus = body && body.replaced ? `Updated ${key}.` : `Added ${key}.`;
+          this.selectedCampaignRule = { key, value };
+          await this.loadCampaignRules();
+          await this.loadCampaignRules(key);
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- Puzzle interaction ---- */
+      async getPuzzleHint() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/puzzle/hint`);
+          if (result.hint) {
+            this.pushStream("notice", `Hint: ${result.hint}`, { hint: true });
+            this.puzzleStatus = `Hint ${result.hints_used}/${result.hints_total}`;
+          } else {
+            this.puzzleStatus = result.note || "No hints available.";
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async submitPuzzleAnswer() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const answer = (this.puzzleAnswer || "").trim();
+        if (!answer) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/puzzle/answer`, {
+            method: "POST",
+            body: JSON.stringify({ answer }),
+          });
+          if (result.correct) {
+            this.pushStream("notice", `Correct! ${result.feedback}`, { puzzle: true });
+          } else {
+            this.pushStream("notice", `Wrong: ${result.feedback} (${result.attempts}/${result.max_attempts})`, { puzzle: true });
+          }
+          this.puzzleAnswer = "";
+          this.puzzleStatus = result.solved ? "Solved!" : (result.failed ? "Failed." : "");
+          await this.loadStoryState();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- Minigame interaction ---- */
+      async loadMinigameBoard() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/minigame/board`);
+          this.minigameBoard = result.board || "";
+          this.minigameStatus = result.finished ? `Finished (${result.status})` : (result.status || "");
+        } catch (_) { this.minigameBoard = ""; }
+      },
+
+      async submitMinigameMove() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const move = (this.minigameMove || "").trim();
+        if (!move) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/minigame/move`, {
+            method: "POST",
+            body: JSON.stringify({ move }),
+          });
+          if (result.valid) {
+            this.pushStream("notice", result.message, { minigame: true });
+          } else {
+            this.pushStream("notice", `Invalid move: ${result.message}`, { minigame: true });
+          }
+          this.minigameMove = "";
+          this.minigameBoard = result.board || "";
+          this.minigameStatus = result.finished ? `Finished (${result.status})` : (result.status || "");
+          await this.loadStoryState();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- Story state (debug) ---- */
+      async loadStoryState() {
+        if (!this.selectedCampaignId) return;
+        try {
+          this.storyState = await this.api(`/api/campaigns/${this.selectedCampaignId}/story`);
+        } catch (_) { this.storyState = null; }
+      },
+
+      /* ---- Rewind ---- */
+      async rewindToTurn() {
+        this.resetError();
+        this.rewindStatus = "";
+        if (!this.selectedCampaignId) {
+          this.errorMessage = "Select a campaign first.";
+          return;
+        }
+        const turnId = parseInt(this.rewindTargetTurn, 10);
+        if (!Number.isFinite(turnId) || turnId <= 0) {
+          this.errorMessage = "Enter a valid turn ID (positive integer).";
+          return;
+        }
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/rewind?target_turn_id=${turnId}`, {
+            method: "POST",
+          });
+          if (result.ok === false) {
+            this.rewindStatus = result.note || "Rewind not supported.";
+            return;
+          }
+          this.rewindStatus = `Rewound to turn ${turnId} at ${nowLabel()}.`;
+          this.rewindTargetTurn = "";
+          this.pushStream("notice", `Rewound to turn ${turnId}`, { rewind: true });
+          /* Reload all state after rewind */
+          await Promise.all([
+            this.loadMap(),
+            this.loadTimers(),
+            this.loadCalendar(),
+            this.loadRoster(),
+            this.loadPlayerState(),
+            this.loadPlayerStatistics(),
+            this.loadPlayerAttributes(),
+            this.loadMedia(),
+            this.loadDebugSnapshot(),
+            this.loadCampaignFlags(),
+            this.loadRecentTurns(),
+          ]);
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
       async refreshCampaigns() {
         this.resetError();
         try {
@@ -707,6 +990,33 @@
         this.selectedCampaignId = campaignId;
         this.selectedSessionId = "";
         this.turnStream = [];
+        /* Reset per-campaign derived state to prevent stale values */
+        this.gameTime = {};
+        this.campaignSummary = "";
+        this.storyState = null;
+        this.playerData = null;
+        this.playerStats = null;
+        this.playerAttributes = null;
+        this.recentTurns = [];
+        this.campaignPersona = "";
+        this.campaignPersonaSource = "";
+        this.personaEditText = "";
+        this.minigameBoard = "";
+        this.minigameStatus = "";
+        this.puzzleStatus = "";
+        this.mapText = "";
+        this.timersText = "";
+        this.calendarText = "";
+        this.rosterText = "";
+        this.playerStateText = "";
+        this.mediaText = "";
+        this.sessionsText = "";
+        this.memoryText = "";
+        this.smsText = "";
+        this.debugText = "";
+        this.sourceMaterials = [];
+        this.campaignRules = [];
+        this.selectedCampaignRule = null;
         const selected = this.campaigns.find((row) => row.id === campaignId);
         if (selected) {
           this.turnForm.actor_id = selected.actor_id;
@@ -723,8 +1033,15 @@
           this.loadCalendar(),
           this.loadRoster(),
           this.loadPlayerState(),
+          this.loadPlayerStatistics(),
+          this.loadPlayerAttributes(),
           this.loadMedia(),
           this.loadDebugSnapshot(),
+          this.loadCampaignFlags(),
+          this.loadSourceMaterials(),
+          this.loadCampaignRules(),
+          this.loadRecentTurns(),
+          this.loadCampaignPersona(),
         ]);
         this.statusMessage = `Selected campaign ${campaignId}.`;
       },
@@ -779,7 +1096,28 @@
               normalizeTurnNotices(payload.payload).forEach((notice) => {
                 this.pushStream("notice", notice, { notice });
               });
-              this.pushStream("narrator", normalizeTurnNarration(payload.payload), payload.payload);
+              /* XP gain notification from WS */
+              if (typeof payload.payload.xp_awarded === "number" && payload.payload.xp_awarded > 0) {
+                this.pushStream("notice", `+${payload.payload.xp_awarded} XP`, { xp: true });
+              }
+              const wsMeta = { ...payload.payload };
+              if (wsMeta.state_update && wsMeta.state_update.game_time) {
+                wsMeta._game_time = wsMeta.state_update.game_time;
+                this.gameTime = wsMeta.state_update.game_time;
+              }
+              this.pushStream("narrator", normalizeTurnNarration(payload.payload), wsMeta);
+              if (payload.payload.reasoning) {
+                this.pushStream("reasoning", payload.payload.reasoning, payload.payload);
+              }
+              if (payload.payload.image_prompt) {
+                this.pushStream("image_prompt", payload.payload.image_prompt, payload.payload);
+              }
+              if (payload.payload.dice_result && payload.payload.dice_result.attribute) {
+                const d = payload.payload.dice_result;
+                const label = d.success ? "SUCCESS" : "FAIL";
+                const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
+                this.pushStream("dice", text, d);
+              }
             }
             this.loadTimers();
           }
@@ -854,16 +1192,44 @@
           normalizeTurnNotices(body).forEach((notice) => {
             this.pushStream("notice", notice, { notice });
           });
+          /* XP gain notification */
+          if (typeof body.xp_awarded === "number" && body.xp_awarded > 0) {
+            this.pushStream("notice", `+${body.xp_awarded} XP`, { xp: true });
+          }
           const narration = normalizeTurnNarration(body);
-          this.pushStream("narrator", narration, body);
+          const narratorMeta = { ...body };
+          /* Attach game time to narrator meta for display */
+          if (body.state_update && body.state_update.game_time) {
+            narratorMeta._game_time = body.state_update.game_time;
+          }
+          this.pushStream("narrator", narration, narratorMeta);
+          if (body.reasoning) {
+            this.pushStream("reasoning", body.reasoning, body);
+          }
           if (body.image_prompt) {
             this.pushStream("image_prompt", body.image_prompt, body);
           }
+          if (body.dice_result && body.dice_result.attribute) {
+            const d = body.dice_result;
+            const label = d.success ? "SUCCESS" : "FAIL";
+            const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
+            this.pushStream("dice", text, d);
+          }
           if (body.summary_update) {
             this.pushStream("summary", body.summary_update, body);
+            /* Append to running campaign summary */
+            if (this.campaignSummary) {
+              this.campaignSummary += "\n" + body.summary_update;
+            } else {
+              this.campaignSummary = body.summary_update;
+            }
           }
           this.turnForm.action = "";
           setTimeout(() => { this._lastSubmitAt = 0; }, 4000);
+          /* Update game time from turn response */
+          if (body.state_update && body.state_update.game_time) {
+            this.gameTime = body.state_update.game_time;
+          }
           await Promise.all([
             this.loadSessions(),
             this.loadMap(),
@@ -871,8 +1237,11 @@
             this.loadCalendar(),
             this.loadRoster(),
             this.loadPlayerState(),
+            this.loadPlayerStatistics(),
+            this.loadPlayerAttributes(),
             this.loadMedia(),
             this.loadDebugSnapshot(),
+            this.loadRecentTurns(),
           ]);
           this.statusMessage = "Turn submitted.";
         } catch (error) {
@@ -910,6 +1279,24 @@
         }
       },
 
+      async cancelPendingTimer() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/timers/cancel`, {
+            method: "POST",
+          });
+          if (result.ok) {
+            this.pushStream("notice", `Timer cancelled: ${result.cancelled_event || 'unknown'}`, { timer: true });
+            await this.loadTimers();
+          } else {
+            this.statusMessage = result.note || "No pending timer to cancel.";
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
       async loadCalendar() {
         if (!this.selectedCampaignId) {
           return;
@@ -917,6 +1304,9 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/calendar`);
           this.calendarText = formatJson(body);
+          if (body.game_time && typeof body.game_time === "object") {
+            this.gameTime = body.game_time;
+          }
         } catch (_err) {
           /* background refresh */
         }
@@ -1151,6 +1541,7 @@
         }
         const actor = this.turnForm.actor_id || "";
         if (!actor.trim()) {
+          this.playerData = null;
           this.playerStateText = formatJson({ detail: "Set actor id to inspect player state." });
           return;
         }
@@ -1158,13 +1549,132 @@
           const body = await this.api(
             `/api/campaigns/${this.selectedCampaignId}/player-state?actor_id=${encodeURIComponent(actor.trim())}`,
           );
+          this.playerData = body;
           this.playerStateText = formatJson(body);
         } catch (error) {
+          this.playerData = null;
           this.playerStateText = formatJson({
             detail: "Player state unavailable for selected actor.",
             actor_id: actor.trim(),
             error: String(error),
           });
+        }
+      },
+
+      async loadPlayerStatistics() {
+        if (!this.selectedCampaignId) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        if (!actor) { this.playerStats = null; return; }
+        try {
+          this.playerStats = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/player-statistics?actor_id=${encodeURIComponent(actor)}`,
+          );
+        } catch (_) { this.playerStats = null; }
+      },
+
+      /* ---- Player attributes ---- */
+      async loadPlayerAttributes() {
+        if (!this.selectedCampaignId) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        if (!actor) { this.playerAttributes = null; return; }
+        try {
+          this.playerAttributes = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/player-attributes?actor_id=${encodeURIComponent(actor)}`,
+          );
+        } catch (_) { this.playerAttributes = null; }
+      },
+
+      async setPlayerAttribute() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        const attr = (this.attributeForm.attribute || "").trim();
+        const val = parseInt(this.attributeForm.value, 10);
+        if (!actor || !attr || !Number.isFinite(val)) {
+          this.errorMessage = "Actor, attribute name, and numeric value are required.";
+          return;
+        }
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/player-attributes`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actor, attribute: attr, value: val }),
+          });
+          this.attributeForm.attribute = "";
+          this.attributeForm.value = 0;
+          await this.loadPlayerAttributes();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async levelUpPlayer() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        if (!actor) {
+          this.errorMessage = "Select an actor first.";
+          return;
+        }
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/level-up`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actor }),
+          });
+          if (result.leveled_up) {
+            this.pushStream("notice", `Level up! Now level ${result.new_level}.`, { xp: true });
+          } else {
+            this.statusMessage = result.reason || "Not enough XP to level up.";
+          }
+          await Promise.all([this.loadPlayerAttributes(), this.loadPlayerState(), this.loadPlayerStatistics()]);
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- Recent turns (history) ---- */
+      async loadRecentTurns(limit) {
+        if (!this.selectedCampaignId) return;
+        try {
+          const lim = limit || 30;
+          const data = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=${lim}`,
+          );
+          this.recentTurns = Array.isArray(data.turns) ? data.turns : [];
+        } catch (_) { this.recentTurns = []; }
+      },
+
+      /* ---- Campaign persona ---- */
+      async loadCampaignPersona() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/persona`);
+          this.campaignPersona = data.persona || "";
+          this.campaignPersonaSource = data.source || "default";
+          this.personaEditText = this.campaignPersona;
+        } catch (_) {
+          this.campaignPersona = "";
+          this.campaignPersonaSource = "";
+          this.personaEditText = "";
+        }
+      },
+
+      async setCampaignPersona() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const text = (this.personaEditText || "").trim();
+        if (!text) {
+          this.errorMessage = "Persona text is required.";
+          return;
+        }
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/persona`, {
+            method: "POST",
+            body: JSON.stringify({ persona: text }),
+          });
+          this.statusMessage = "Persona updated.";
+          await this.loadCampaignPersona();
+        } catch (error) {
+          this.errorMessage = String(error);
         }
       },
 
@@ -1373,7 +1883,14 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/debug/snapshot`);
           this.debugText = formatJson(body);
+          /* Extract campaign summary for display */
+          if (typeof body.summary === "string" && body.summary.trim()) {
+            this.campaignSummary = body.summary.trim();
+          } else {
+            this.campaignSummary = "";
+          }
         } catch (_err) {
+          this.campaignSummary = "";
           /* background refresh — don't surface */
         }
       },
