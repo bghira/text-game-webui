@@ -266,39 +266,36 @@ async def submit_turn_stream(
 ) -> StreamingResponse:
     from app.services.schemas import TurnResult as TurnResultModel
 
-    async def _sse():
-        final_result = None
-        if not hasattr(gateway, "submit_turn_stream"):
-            # Fallback: non-streaming gateway -> single complete event
-            try:
-                result = await gateway.submit_turn(campaign_id, payload)
-            except KeyError as err:
-                yield f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
-                return
-            except ValueError as err:
-                yield f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
-                return
-            yield f"event: complete\ndata: {json.dumps(result.model_dump())}\n\n"
-            final_result = result
-        else:
-            try:
-                async for event in gateway.submit_turn_stream(campaign_id, payload):
-                    event_type = event.get("event", "message")
-                    data = json.dumps(event.get("data", {}))
-                    yield f"event: {event_type}\ndata: {data}\n\n"
-                    if event_type == "complete":
-                        final_result = TurnResultModel(**event["data"])
-                    elif event_type == "error":
-                        return
-            except KeyError as err:
-                yield f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
-                return
-            except ValueError as err:
-                yield f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
-                return
+    # Collect all events *before* streaming so turn execution and realtime
+    # publishing are not cancelled if the client disconnects mid-stream.
+    collected_events: list[tuple[str, dict]] = []
+    final_result: TurnResultModel | None = None
+    error_event: str | None = None
 
-        if final_result:
-            await _publish_turn_events(request, campaign_id, final_result, gateway)
+    try:
+        async for event in gateway.submit_turn_stream(campaign_id, payload):
+            event_type = event.get("event", "message")
+            event_data = event.get("data", {})
+            collected_events.append((event_type, event_data))
+            if event_type == "complete":
+                final_result = TurnResultModel(**event_data)
+            elif event_type == "error":
+                break
+    except KeyError as err:
+        error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+    except ValueError as err:
+        error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+
+    # Publish realtime events unconditionally — not tied to client connection.
+    if final_result:
+        await _publish_turn_events(request, campaign_id, final_result, gateway)
+
+    async def _sse():
+        if error_event:
+            yield error_event
+            return
+        for event_type, event_data in collected_events:
+            yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
 
     return StreamingResponse(
         _sse(),
@@ -666,10 +663,11 @@ async def ingest_source_material_with_digest(
 async def browse_source_keys(
     campaign_id: str,
     wildcard: str = "*",
+    document_key: str | None = None,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
     try:
-        return await gateway.browse_source_keys(campaign_id, wildcard=wildcard)
+        return await gateway.browse_source_keys(campaign_id, wildcard=wildcard, document_key=document_key)
     except KeyError as err:
         _not_found(err)
 

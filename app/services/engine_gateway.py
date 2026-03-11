@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 import json
+from collections.abc import AsyncIterator
 from typing import Protocol
 from uuid import uuid4
 
@@ -92,6 +93,7 @@ class EngineGateway(Protocol):
     ) -> None: ...
     async def runtime_checks(self, probe_llm: bool = False) -> dict: ...
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
+    def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]: ...
     async def campaign_export(
         self,
         campaign_id: str,
@@ -456,6 +458,18 @@ class InMemoryEngineGateway:
             turn_visibility=turn_visibility,
             notices=[],
         )
+
+    async def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]:
+        """Yield SSE events for a streaming turn. Falls back to single complete event."""
+        yield {"event": "phase", "data": {"phase": "starting"}}
+        yield {"event": "phase", "data": {"phase": "generating"}}
+        result = await self.submit_turn(campaign_id, request)
+        narration = result.narration or ""
+        yield {"event": "phase", "data": {"phase": "narrating"}}
+        chunk_size = 4
+        for i in range(0, len(narration), chunk_size):
+            yield {"event": "token", "data": {"text": narration[i : i + chunk_size]}}
+        yield {"event": "complete", "data": result.model_dump()}
 
     async def campaign_export(
         self,

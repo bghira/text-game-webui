@@ -551,6 +551,10 @@
                     Text Content
                     <textarea x-model="sourceUpload.text" rows="6" placeholder="Paste source material here..."></textarea>
                   </label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" x-model="sourceUpload.replace" />
+                    Replace existing document
+                  </label>
                   <button type="submit" :disabled="!selectedCampaignId || !sourceUpload.text.trim()">Upload</button>
                   <p x-show="sourceUploadStatus" x-text="sourceUploadStatus" class="muted"></p>
                 </form>

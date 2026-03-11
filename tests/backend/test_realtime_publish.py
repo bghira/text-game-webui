@@ -131,3 +131,36 @@ def test_avatar_accept_publishes_media_event(client):
     assert _published_types(publish) == ["media"]
     payload = publish.await_args_list[0].args[1]
     assert payload["payload"]["action"] == "avatar_accept"
+
+
+def test_stream_turn_publishes_realtime_events(client):
+    """POST /turns/stream should still publish turn+timers via realtime."""
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+    publish = AsyncMock()
+    client.app.state.realtime.publish = publish
+
+    res = client.post(
+        f"/api/campaigns/{campaign_id}/turns/stream",
+        json={"actor_id": "dale-denton", "action": "wait"},
+    )
+    assert res.status_code == 200
+
+    # Even though it's streaming, realtime events must be published
+    assert _published_types(publish) == ["turn", "timers"]
+
+
+def test_stream_turn_publishes_media_event_for_look(client):
+    """POST /turns/stream with scene-triggering action publishes turn+media+timers."""
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+    publish = AsyncMock()
+    client.app.state.realtime.publish = publish
+
+    res = client.post(
+        f"/api/campaigns/{campaign_id}/turns/stream",
+        json={"actor_id": "dale-denton", "action": "look around"},
+    )
+    assert res.status_code == 200
+
+    assert _published_types(publish) == ["turn", "media", "timers"]

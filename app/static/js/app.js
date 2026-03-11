@@ -196,7 +196,7 @@
 
       /* Source material */
       sourceMaterials: [],
-      sourceUpload: { label: "", format: "", text: "" },
+      sourceUpload: { label: "", format: "", text: "", replace: true },
       sourceUploadStatus: "",
       campaignRules: [],
       selectedCampaignRule: null,
@@ -815,6 +815,7 @@
           const payload = { text };
           if (this.sourceUpload.label.trim()) payload.document_label = this.sourceUpload.label.trim();
           if (this.sourceUpload.format) payload.format = this.sourceUpload.format;
+          payload.replace_document = this.sourceUpload.replace;
           await this.api(`/api/campaigns/${this.selectedCampaignId}/source-materials`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1071,7 +1072,18 @@
         try {
           await this.api(`/api/campaigns/${this.selectedCampaignId}`, { method: "DELETE" });
           this.statusMessage = "Campaign deleted.";
+          if (this.socket) {
+            this.socket._deliberateClose = true;
+            this.socket.close();
+            this.socket = null;
+          }
+          if (this.socketReconnectTimer) {
+            clearTimeout(this.socketReconnectTimer);
+            this.socketReconnectTimer = null;
+          }
           this.selectedCampaignId = null;
+          this.turnStream = [];
+          this.sessions = [];
           await this.refreshCampaigns();
         } catch (error) { this.errorMessage = String(error); }
       },
@@ -1390,8 +1402,15 @@
                 const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
                 this.pushStream("dice", text, d);
               }
+              if (payload.payload.active_puzzle && payload.payload.active_puzzle.puzzle_type) {
+                this.pushStream("notice", `A puzzle has begun: ${payload.payload.active_puzzle.puzzle_type}`, { puzzle: true });
+              }
+              if (payload.payload.active_minigame && payload.payload.active_minigame.game_type) {
+                this.pushStream("notice", `A minigame challenge: ${payload.payload.active_minigame.game_type}`, { minigame: true });
+              }
             }
             this.loadTimers();
+            this.loadStoryState();
           }
           if (payload.type === "sms" && payload.payload) {
             this.pushStream("sms", formatJson(payload.payload));
@@ -1482,6 +1501,12 @@
             const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
             this.pushStream("dice", text, d);
           }
+          if (data.active_puzzle && data.active_puzzle.puzzle_type) {
+            this.pushStream("notice", `A puzzle has begun: ${data.active_puzzle.puzzle_type}`, { puzzle: true });
+          }
+          if (data.active_minigame && data.active_minigame.game_type) {
+            this.pushStream("notice", `A minigame challenge: ${data.active_minigame.game_type}`, { minigame: true });
+          }
           if (data.summary_update) {
             this.pushStream("summary", data.summary_update, data);
             if (this.campaignSummary) {
@@ -1548,6 +1573,12 @@
               const label = d.success ? "SUCCESS" : "FAIL";
               const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
               this.pushStream("dice", text, d);
+            }
+            if (body.active_puzzle && body.active_puzzle.puzzle_type) {
+              this.pushStream("notice", `A puzzle has begun: ${body.active_puzzle.puzzle_type}`, { puzzle: true });
+            }
+            if (body.active_minigame && body.active_minigame.game_type) {
+              this.pushStream("notice", `A minigame challenge: ${body.active_minigame.game_type}`, { minigame: true });
             }
             if (body.summary_update) {
               this.pushStream("summary", body.summary_update, body);
@@ -2250,7 +2281,7 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/read`, {
             method: "POST",
-            body: JSON.stringify({ thread: this.sms.thread.trim(), limit: Number(this.sms.limit || 20) }),
+            body: JSON.stringify({ thread: this.sms.thread.trim(), limit: Number(this.sms.limit || 20), viewer_actor_id: (this.turnForm.actor_id || "").trim() || null }),
           });
           this.smsText = formatJson(body);
         } catch (error) {
