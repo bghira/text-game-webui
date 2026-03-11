@@ -66,6 +66,8 @@ class TurnResult(BaseModel):
     dice_result: dict | None = None
     turn_visibility: dict = Field(default_factory=dict)
     notices: list[str] = Field(default_factory=list)
+    active_puzzle: dict | None = None
+    active_minigame: dict | None = None
 
 
 class PuzzleAnswerRequest(BaseModel):
@@ -102,6 +104,7 @@ class SmsListRequest(BaseModel):
 class SmsReadRequest(BaseModel):
     thread: str
     limit: int = 20
+    viewer_actor_id: str | None = None
 
 
 class SmsWriteRequest(BaseModel):
@@ -142,6 +145,7 @@ class SourceMaterialIngest(BaseModel):
     text: str
     document_label: str | None = None
     format: str | None = None
+    replace_document: bool = True
 
 
 class CampaignRuleUpdate(BaseModel):
@@ -162,3 +166,40 @@ class LevelUpRequest(BaseModel):
 
 class PersonaUpdateRequest(BaseModel):
     persona: str
+
+
+class SetupStartRequest(BaseModel):
+    actor_id: str | None = None
+    on_rails: bool = False
+    attachment_text: str | None = None
+
+
+class SetupMessageRequest(BaseModel):
+    actor_id: str
+    message: str
+
+
+class SourceMaterialSearchRequest(BaseModel):
+    query: str
+    document_key: str | None = None
+    top_k: int = 5
+
+
+class SourceMaterialDigestIngest(BaseModel):
+    text: str
+    document_label: str
+    format: str | None = None
+    replace_document: bool = True
+
+
+class CharacterPortraitRequest(BaseModel):
+    character_slug: str
+    image_url: str
+
+
+class ScheduledSmsRequest(BaseModel):
+    thread: str
+    sender: str
+    recipient: str
+    message: str
+    delay_seconds: int

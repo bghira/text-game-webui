@@ -65,6 +65,7 @@
       sessionsList: [],
       submitting: false,
       _lastSubmitAt: 0,
+      _streamingNarration: "",
 
       /* Settings panel state */
       ollamaModels: [],
@@ -89,6 +90,7 @@
         tge_ollama_keep_alive: null,
         tge_runtime_probe_llm_default: null,
         health_ok: false,
+        streaming_supported: false,
       },
       runtimeChecks: {
         backend: "unknown",
@@ -201,6 +203,41 @@
       campaignRuleLookupKey: "",
       campaignRuleForm: { key: "", value: "", mode: "add" },
       campaignRuleStatus: "",
+
+      /* Campaign setup wizard */
+      setupMode: false,
+      setupPhase: null,
+      setupMessage: "",
+      setupResponse: "",
+      setupSending: false,
+      setupAttachmentText: "",
+      setupOnRails: false,
+
+      /* Scene images */
+      sceneImages: {},
+
+      /* Literary styles */
+      literaryStyles: {},
+
+      /* Source material search */
+      sourceSearchQuery: "",
+      sourceSearchDocKey: "",
+      sourceSearchResults: [],
+      sourceSearching: false,
+      sourceBrowseKeys: [],
+
+      /* Source material digest ingest */
+      digestUpload: { label: "", format: "", text: "", replace: true },
+      digestUploadStatus: "",
+      digestUploading: false,
+
+      /* Character portrait */
+      portraitForm: { slug: "", image_url: "" },
+      portraitStatus: "",
+
+      /* Scheduled SMS */
+      scheduledSms: { thread: "", sender: "", recipient: "", message: "", delay_seconds: 30 },
+      scheduledSmsStatus: "",
 
       /* Puzzle / Minigame interaction */
       puzzleAnswer: "",
@@ -538,6 +575,7 @@
           this.runtimeInfo.tge_llm_base_url = runtime.tge_llm_base_url || null;
           this.runtimeInfo.tge_ollama_keep_alive = runtime.tge_ollama_keep_alive || null;
           this.runtimeInfo.tge_runtime_probe_llm_default = runtime.tge_runtime_probe_llm_default === true;
+          this.runtimeInfo.streaming_supported = runtime.streaming_supported === true;
 
           const health = await this.api("/api/health");
           this.runtimeInfo.health_ok = health.ok === true;
@@ -820,6 +858,224 @@
         }
       },
 
+      /* ---- Campaign setup ---- */
+      async checkSetupMode() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/setup`);
+          this.setupMode = !!data.in_setup;
+          this.setupPhase = data.setup_phase || null;
+        } catch (_) {
+          this.setupMode = false;
+          this.setupPhase = null;
+        }
+      },
+
+      async startCampaignSetup() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        this.setupSending = true;
+        try {
+          const payload = {
+            actor_id: (this.turnForm.actor_id || "").trim() || null,
+            on_rails: this.setupOnRails,
+            attachment_text: (this.setupAttachmentText || "").trim() || null,
+          };
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/setup/start`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          this.setupResponse = result.message || "";
+          this.setupPhase = result.setup_phase || null;
+          this.setupMode = !!result.setup_phase;
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          this.setupSending = false;
+        }
+      },
+
+      async sendSetupMessage() {
+        this.resetError();
+        if (!this.selectedCampaignId || !this.setupMessage.trim()) return;
+        this.setupSending = true;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/setup/message`, {
+            method: "POST",
+            body: JSON.stringify({
+              actor_id: (this.turnForm.actor_id || "").trim(),
+              message: this.setupMessage.trim(),
+            }),
+          });
+          this.setupResponse = result.message || "";
+          this.setupPhase = result.setup_phase || null;
+          this.setupMessage = "";
+          if (result.completed) {
+            this.setupMode = false;
+            this.setupPhase = null;
+            this.pushStream("notice", "Campaign setup completed!", { setup: true });
+            /* Reload campaign data after setup completion */
+            await Promise.all([
+              this.loadMap(),
+              this.loadPlayerState(),
+              this.loadPlayerStatistics(),
+              this.loadPlayerAttributes(),
+              this.loadDebugSnapshot(),
+              this.loadCampaignFlags(),
+              this.loadStoryState(),
+              this.loadCampaignPersona(),
+              this.loadSceneImages(),
+              this.loadLiteraryStyles(),
+              this.loadSourceMaterials(),
+            ]);
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          this.setupSending = false;
+        }
+      },
+
+      /* ---- Scene images ---- */
+      async loadSceneImages() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/scene-images`);
+          this.sceneImages = data.images || {};
+        } catch (_) { this.sceneImages = {}; }
+      },
+
+      /* ---- Literary styles ---- */
+      async loadLiteraryStyles() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/literary-styles`);
+          this.literaryStyles = data.styles || {};
+        } catch (_) { this.literaryStyles = {}; }
+      },
+
+      /* ---- SMS cancel ---- */
+      async cancelSmsDeliveries() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/cancel`, {
+            method: "POST",
+          });
+          if (result.ok) {
+            this.statusMessage = `Cancelled ${result.cancelled} pending SMS delivery(ies).`;
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- Source material search ---- */
+      async searchSourceMaterial() {
+        this.resetError();
+        if (!this.selectedCampaignId || !this.sourceSearchQuery.trim()) return;
+        this.sourceSearching = true;
+        try {
+          const body = { query: this.sourceSearchQuery.trim(), top_k: 5 };
+          if (this.sourceSearchDocKey.trim()) body.document_key = this.sourceSearchDocKey.trim();
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/source-materials/search`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+          });
+          this.sourceSearchResults = data.results || [];
+        } catch (error) { this.errorMessage = String(error); }
+        this.sourceSearching = false;
+      },
+
+      async browseSourceKeys() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/source-materials/browse`);
+          this.sourceBrowseKeys = data.keys || [];
+        } catch (_) { this.sourceBrowseKeys = []; }
+      },
+
+      /* ---- Digest ingest ---- */
+      async ingestWithDigest() {
+        this.resetError();
+        if (!this.selectedCampaignId || !this.digestUpload.text.trim() || !this.digestUpload.label.trim()) return;
+        this.digestUploading = true;
+        this.digestUploadStatus = "Ingesting with digest (this may take a while)...";
+        try {
+          const body = {
+            text: this.digestUpload.text.trim(),
+            document_label: this.digestUpload.label.trim(),
+            replace_document: this.digestUpload.replace,
+          };
+          if (this.digestUpload.format) body.format = this.digestUpload.format;
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/source-materials/digest`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+          });
+          if (data.ok) {
+            const profileCount = Object.keys(data.literary_profiles || {}).length;
+            this.digestUploadStatus = `Stored ${data.chunks_stored} chunks (${data.document_key}). ${profileCount} literary profile(s) extracted.`;
+            this.digestUpload.text = "";
+            await Promise.all([this.loadSourceMaterials(), this.loadLiteraryStyles()]);
+          } else {
+            this.digestUploadStatus = "Ingest failed.";
+          }
+        } catch (error) {
+          this.digestUploadStatus = "Error: " + String(error);
+        }
+        this.digestUploading = false;
+      },
+
+      /* ---- Character portrait ---- */
+      async recordCharacterPortrait() {
+        this.resetError();
+        if (!this.selectedCampaignId || !this.portraitForm.slug.trim() || !this.portraitForm.image_url.trim()) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster/portrait`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ character_slug: this.portraitForm.slug.trim(), image_url: this.portraitForm.image_url.trim() }),
+          });
+          this.portraitStatus = data.ok ? `Portrait set for ${data.character_slug}.` : "Failed to set portrait.";
+          if (data.ok) { this.portraitForm.slug = ""; this.portraitForm.image_url = ""; }
+        } catch (error) { this.portraitStatus = "Error: " + String(error); }
+      },
+
+      /* ---- Scheduled SMS ---- */
+      async scheduleSmsDelivery() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const s = this.scheduledSms;
+        if (!s.thread.trim() || !s.sender.trim() || !s.recipient.trim() || !s.message.trim()) return;
+        try {
+          const data = await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/schedule`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              thread: s.thread.trim(), sender: s.sender.trim(),
+              recipient: s.recipient.trim(), message: s.message.trim(),
+              delay_seconds: Number(s.delay_seconds) || 30,
+            }),
+          });
+          if (data.ok) {
+            this.scheduledSmsStatus = `Scheduled in ${data.delay_seconds}s.`;
+            this.scheduledSms.message = "";
+          } else {
+            this.scheduledSmsStatus = data.reason || "Scheduling failed.";
+          }
+        } catch (error) { this.scheduledSmsStatus = "Error: " + String(error); }
+      },
+
+      /* ---- Campaign delete ---- */
+      async deleteCampaign() {
+        if (!this.selectedCampaignId) return;
+        if (!confirm("Delete this campaign and all its data? This cannot be undone.")) return;
+        this.resetError();
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}`, { method: "DELETE" });
+          this.statusMessage = "Campaign deleted.";
+          this.selectedCampaignId = null;
+          await this.refreshCampaigns();
+        } catch (error) { this.errorMessage = String(error); }
+      },
+
       /* ---- Puzzle interaction ---- */
       async getPuzzleHint() {
         this.resetError();
@@ -939,6 +1195,8 @@
             this.loadDebugSnapshot(),
             this.loadCampaignFlags(),
             this.loadRecentTurns(),
+            this.loadStoryState(),
+            this.loadSceneImages(),
           ]);
         } catch (error) {
           this.errorMessage = String(error);
@@ -1017,6 +1275,16 @@
         this.sourceMaterials = [];
         this.campaignRules = [];
         this.selectedCampaignRule = null;
+        this.setupMode = false;
+        this.setupPhase = null;
+        this.setupResponse = "";
+        this.sceneImages = {};
+        this.literaryStyles = {};
+        this.sourceSearchResults = [];
+        this.sourceBrowseKeys = [];
+        this.digestUploadStatus = "";
+        this.portraitStatus = "";
+        this.scheduledSmsStatus = "";
         const selected = this.campaigns.find((row) => row.id === campaignId);
         if (selected) {
           this.turnForm.actor_id = selected.actor_id;
@@ -1042,6 +1310,10 @@
           this.loadCampaignRules(),
           this.loadRecentTurns(),
           this.loadCampaignPersona(),
+          this.checkSetupMode(),
+          this.loadSceneImages(),
+          this.loadLiteraryStyles(),
+          this.loadStoryState(),
         ]);
         this.statusMessage = `Selected campaign ${campaignId}.`;
       },
@@ -1165,6 +1437,67 @@
         };
       },
 
+      _scrollStream() {
+        this.$nextTick(() => {
+          const stream = document.getElementById("turn-stream");
+          if (stream) stream.scrollTop = stream.scrollHeight;
+        });
+      },
+
+      _handleStreamEvent(eventType, data, streamEntryId) {
+        if (eventType === "phase") {
+          const labels = { starting: "Starting turn...", generating: "Generating narration...", narrating: "Streaming narration..." };
+          this.statusMessage = labels[data.phase] || `Phase: ${data.phase}`;
+        } else if (eventType === "token") {
+          this._streamingNarration += data.text;
+          const entry = this.turnStream.find((e) => e.id === streamEntryId);
+          if (entry) entry.text = this._streamingNarration;
+          this._scrollStream();
+        } else if (eventType === "complete") {
+          const entry = this.turnStream.find((e) => e.id === streamEntryId);
+          if (entry) {
+            entry.text = normalizeTurnNarration(data);
+            entry._streaming = false;
+            entry.meta = { ...data };
+            if (data.state_update && data.state_update.game_time) {
+              entry.meta._game_time = data.state_update.game_time;
+            }
+          }
+          /* Supplementary entries — same as non-streaming path */
+          normalizeTurnNotices(data).forEach((notice) => {
+            this.pushStream("notice", notice, { notice });
+          });
+          if (typeof data.xp_awarded === "number" && data.xp_awarded > 0) {
+            this.pushStream("notice", `+${data.xp_awarded} XP`, { xp: true });
+          }
+          if (data.reasoning) {
+            this.pushStream("reasoning", data.reasoning, data);
+          }
+          if (data.image_prompt) {
+            this.pushStream("image_prompt", data.image_prompt, data);
+          }
+          if (data.dice_result && data.dice_result.attribute) {
+            const d = data.dice_result;
+            const label = d.success ? "SUCCESS" : "FAIL";
+            const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
+            this.pushStream("dice", text, d);
+          }
+          if (data.summary_update) {
+            this.pushStream("summary", data.summary_update, data);
+            if (this.campaignSummary) {
+              this.campaignSummary += "\n" + data.summary_update;
+            } else {
+              this.campaignSummary = data.summary_update;
+            }
+          }
+          if (data.state_update && data.state_update.game_time) {
+            this.gameTime = data.state_update.game_time;
+          }
+        } else if (eventType === "error") {
+          this.errorMessage = data.message || "Streaming error";
+        }
+      },
+
       async submitTurn() {
         this.resetError();
         if (!this.selectedCampaignId) {
@@ -1184,52 +1517,121 @@
             action: this.turnForm.action.trim(),
             session_id: this.selectedSessionId || null,
           };
-          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/turns`, {
-            method: "POST",
-            body: JSON.stringify(payload),
-          });
-          this._lastSubmitAt = Date.now();
-          normalizeTurnNotices(body).forEach((notice) => {
-            this.pushStream("notice", notice, { notice });
-          });
-          /* XP gain notification */
-          if (typeof body.xp_awarded === "number" && body.xp_awarded > 0) {
-            this.pushStream("notice", `+${body.xp_awarded} XP`, { xp: true });
-          }
-          const narration = normalizeTurnNarration(body);
-          const narratorMeta = { ...body };
-          /* Attach game time to narrator meta for display */
-          if (body.state_update && body.state_update.game_time) {
-            narratorMeta._game_time = body.state_update.game_time;
-          }
-          this.pushStream("narrator", narration, narratorMeta);
-          if (body.reasoning) {
-            this.pushStream("reasoning", body.reasoning, body);
-          }
-          if (body.image_prompt) {
-            this.pushStream("image_prompt", body.image_prompt, body);
-          }
-          if (body.dice_result && body.dice_result.attribute) {
-            const d = body.dice_result;
-            const label = d.success ? "SUCCESS" : "FAIL";
-            const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
-            this.pushStream("dice", text, d);
-          }
-          if (body.summary_update) {
-            this.pushStream("summary", body.summary_update, body);
-            /* Append to running campaign summary */
-            if (this.campaignSummary) {
-              this.campaignSummary += "\n" + body.summary_update;
-            } else {
-              this.campaignSummary = body.summary_update;
+
+          if (!this.runtimeInfo.streaming_supported) {
+            /* Non-streaming fallback (original path) */
+            const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/turns`, {
+              method: "POST",
+              body: JSON.stringify(payload),
+            });
+            this._lastSubmitAt = Date.now();
+            normalizeTurnNotices(body).forEach((notice) => {
+              this.pushStream("notice", notice, { notice });
+            });
+            if (typeof body.xp_awarded === "number" && body.xp_awarded > 0) {
+              this.pushStream("notice", `+${body.xp_awarded} XP`, { xp: true });
             }
+            const narration = normalizeTurnNarration(body);
+            const narratorMeta = { ...body };
+            if (body.state_update && body.state_update.game_time) {
+              narratorMeta._game_time = body.state_update.game_time;
+            }
+            this.pushStream("narrator", narration, narratorMeta);
+            if (body.reasoning) {
+              this.pushStream("reasoning", body.reasoning, body);
+            }
+            if (body.image_prompt) {
+              this.pushStream("image_prompt", body.image_prompt, body);
+            }
+            if (body.dice_result && body.dice_result.attribute) {
+              const d = body.dice_result;
+              const label = d.success ? "SUCCESS" : "FAIL";
+              const text = `${d.attribute} check (DC ${d.dc}): rolled ${d.roll} + ${d.modifier} = ${d.total} — ${label}`;
+              this.pushStream("dice", text, d);
+            }
+            if (body.summary_update) {
+              this.pushStream("summary", body.summary_update, body);
+              if (this.campaignSummary) {
+                this.campaignSummary += "\n" + body.summary_update;
+              } else {
+                this.campaignSummary = body.summary_update;
+              }
+            }
+            this.turnForm.action = "";
+            setTimeout(() => { this._lastSubmitAt = 0; }, 4000);
+            if (body.state_update && body.state_update.game_time) {
+              this.gameTime = body.state_update.game_time;
+            }
+          } else {
+            /* SSE streaming path */
+            this._streamingNarration = "";
+            this.turnCounter += 1;
+            const streamEntryId = this.turnCounter;
+            this.turnStream.push({
+              id: streamEntryId,
+              type: "narrator",
+              at: nowLabel(),
+              text: "",
+              meta: {},
+              _streaming: true,
+            });
+            this._scrollStream();
+
+            const resp = await fetch(`/api/campaigns/${this.selectedCampaignId}/turns/stream`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            if (!resp.ok) {
+              const errBody = await resp.text();
+              throw new Error(errBody || `HTTP ${resp.status}`);
+            }
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+            let currentEvent = "";
+            let currentData = "";
+
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split("\n");
+              buffer = lines.pop();  /* keep incomplete line in buffer */
+              for (const line of lines) {
+                if (line.startsWith("event: ")) {
+                  currentEvent = line.slice(7).trim();
+                } else if (line.startsWith("data: ")) {
+                  currentData = line.slice(6);
+                } else if (line === "") {
+                  /* End of SSE event block */
+                  if (currentEvent && currentData) {
+                    try {
+                      const parsed = JSON.parse(currentData);
+                      this._handleStreamEvent(currentEvent, parsed, streamEntryId);
+                    } catch (_e) {
+                      /* ignore malformed JSON */
+                    }
+                  }
+                  currentEvent = "";
+                  currentData = "";
+                }
+              }
+            }
+            /* Flush any remaining event in buffer */
+            if (currentEvent && currentData) {
+              try {
+                const parsed = JSON.parse(currentData);
+                this._handleStreamEvent(currentEvent, parsed, streamEntryId);
+              } catch (_e) { /* ignore */ }
+            }
+
+            this._lastSubmitAt = Date.now();
+            this.turnForm.action = "";
+            setTimeout(() => { this._lastSubmitAt = 0; }, 4000);
           }
-          this.turnForm.action = "";
-          setTimeout(() => { this._lastSubmitAt = 0; }, 4000);
-          /* Update game time from turn response */
-          if (body.state_update && body.state_update.game_time) {
-            this.gameTime = body.state_update.game_time;
-          }
+
           await Promise.all([
             this.loadSessions(),
             this.loadMap(),
@@ -1242,6 +1644,8 @@
             this.loadMedia(),
             this.loadDebugSnapshot(),
             this.loadRecentTurns(),
+            this.loadStoryState(),
+            this.loadSceneImages(),
           ]);
           this.statusMessage = "Turn submitted.";
         } catch (error) {

@@ -9,7 +9,6 @@ from fastapi.templating import Jinja2Templates
 from app.api.routes import router as api_router
 from app.api.ws import router as ws_router
 from app.realtime.hub import RealtimeHub
-from app.services.engine_gateway import FEATURES
 from app.services.gateway_factory import build_gateway
 from app.settings import Settings
 from app.ui.routes import router as ui_router
@@ -25,7 +24,6 @@ def create_app() -> FastAPI:
     app.state.gateway = gateway
     app.state.gateway_backend = backend
     app.state.realtime = RealtimeHub()
-    app.state.features = FEATURES
     app.state.templates = Jinja2Templates(directory=str(app_dir / "templates"))
 
     app.mount("/static", StaticFiles(directory=str(app_dir / "static")), name="static")

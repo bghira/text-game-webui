@@ -7,6 +7,7 @@ from typing import NoReturn
 from urllib import request as urllib_request
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.services.engine_gateway import FEATURES, EngineGateway
@@ -15,6 +16,7 @@ from app.services.schemas import (
     AvatarActionRequest,
     CampaignRuleUpdate,
     CampaignFlagsUpdate,
+    CharacterPortraitRequest,
     LLMSettingsUpdate,
     LevelUpRequest,
     MinigameMoveRequest,
@@ -25,13 +27,18 @@ from app.services.schemas import (
     PersonaUpdateRequest,
     PuzzleAnswerRequest,
     RosterRemoveRequest,
+    ScheduledSmsRequest,
+    SetupMessageRequest,
+    SetupStartRequest,
     RosterUpsertRequest,
     SessionCreateRequest,
     SessionUpdateRequest,
     SmsListRequest,
     SmsReadRequest,
     SmsWriteRequest,
+    SourceMaterialDigestIngest,
     SourceMaterialIngest,
+    SourceMaterialSearchRequest,
     TurnRequest,
 )
 
@@ -71,6 +78,7 @@ async def runtime(request: Request) -> dict:
         out["tge_llm_base_url"] = settings.tge_llm_base_url
         out["tge_ollama_keep_alive"] = settings.tge_ollama_keep_alive
         out["tge_runtime_probe_llm_default"] = bool(settings.tge_runtime_probe_llm)
+    out["streaming_supported"] = settings.tge_completion_mode != "deterministic"
     return out
 
 
@@ -186,19 +194,8 @@ async def update_session(
     return {"session": row}
 
 
-@router.post("/campaigns/{campaign_id}/turns")
-async def submit_turn(
-    campaign_id: str,
-    payload: TurnRequest,
-    request: Request,
-    gateway: EngineGateway = Depends(get_gateway),
-) -> dict:
-    try:
-        result = await gateway.submit_turn(campaign_id, payload)
-    except KeyError as err:
-        _not_found(err)
-    except ValueError as err:
-        _bad_request(err)
+async def _publish_turn_events(request: Request, campaign_id: str, result, gateway) -> None:
+    """Publish turn, media, and timer events via the realtime layer."""
     await request.app.state.realtime.publish(
         campaign_id,
         {
@@ -217,7 +214,7 @@ async def submit_turn(
                 "actor_id": result.actor_id,
                 "payload": {
                     "image_prompt": result.image_prompt,
-                    "actor_id": payload.actor_id,
+                    "actor_id": result.actor_id,
                     "session_id": result.session_id,
                     "turn_visibility": result.turn_visibility,
                 },
@@ -241,7 +238,73 @@ async def submit_turn(
         )
     except KeyError:
         pass
+
+
+@router.post("/campaigns/{campaign_id}/turns")
+async def submit_turn(
+    campaign_id: str,
+    payload: TurnRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        result = await gateway.submit_turn(campaign_id, payload)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+    await _publish_turn_events(request, campaign_id, result, gateway)
     return result.model_dump()
+
+
+@router.post("/campaigns/{campaign_id}/turns/stream")
+async def submit_turn_stream(
+    campaign_id: str,
+    payload: TurnRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> StreamingResponse:
+    from app.services.schemas import TurnResult as TurnResultModel
+
+    async def _sse():
+        final_result = None
+        if not hasattr(gateway, "submit_turn_stream"):
+            # Fallback: non-streaming gateway -> single complete event
+            try:
+                result = await gateway.submit_turn(campaign_id, payload)
+            except KeyError as err:
+                yield f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+                return
+            except ValueError as err:
+                yield f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+                return
+            yield f"event: complete\ndata: {json.dumps(result.model_dump())}\n\n"
+            final_result = result
+        else:
+            try:
+                async for event in gateway.submit_turn_stream(campaign_id, payload):
+                    event_type = event.get("event", "message")
+                    data = json.dumps(event.get("data", {}))
+                    yield f"event: {event_type}\ndata: {data}\n\n"
+                    if event_type == "complete":
+                        final_result = TurnResultModel(**event["data"])
+                    elif event_type == "error":
+                        return
+            except KeyError as err:
+                yield f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+                return
+            except ValueError as err:
+                yield f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+                return
+
+        if final_result:
+            await _publish_turn_events(request, campaign_id, final_result, gateway)
+
+    return StreamingResponse(
+        _sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/campaigns/{campaign_id}/export")
@@ -482,6 +545,160 @@ async def get_minigame_board(campaign_id: str, gateway: EngineGateway = Depends(
         _not_found(err)
 
 
+@router.get("/campaigns/{campaign_id}/setup")
+async def get_setup_status(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.is_in_setup_mode(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/setup/start")
+async def start_campaign_setup(
+    campaign_id: str,
+    payload: SetupStartRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.start_campaign_setup(
+            campaign_id,
+            actor_id=payload.actor_id,
+            on_rails=payload.on_rails,
+            attachment_text=payload.attachment_text,
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.post("/campaigns/{campaign_id}/setup/message")
+async def handle_setup_message(
+    campaign_id: str,
+    payload: SetupMessageRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.handle_setup_message(campaign_id, payload.actor_id, payload.message)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.get("/campaigns/{campaign_id}/scene-images")
+async def get_scene_images(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_scene_images(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/literary-styles")
+async def get_literary_styles(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_literary_styles(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/sms/cancel")
+async def cancel_sms_deliveries(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.cancel_sms_deliveries(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/sms/schedule")
+async def schedule_sms_delivery(
+    campaign_id: str,
+    payload: ScheduledSmsRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.schedule_sms_delivery(
+            campaign_id,
+            thread=payload.thread,
+            sender=payload.sender,
+            recipient=payload.recipient,
+            message=payload.message,
+            delay_seconds=payload.delay_seconds,
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.post("/campaigns/{campaign_id}/source-materials/search")
+async def search_source_material(
+    campaign_id: str,
+    payload: SourceMaterialSearchRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.search_source_material(
+            campaign_id,
+            payload.query,
+            document_key=payload.document_key,
+            top_k=payload.top_k,
+        )
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/source-materials/digest")
+async def ingest_source_material_with_digest(
+    campaign_id: str,
+    payload: SourceMaterialDigestIngest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.ingest_source_material_with_digest(campaign_id, payload)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.get("/campaigns/{campaign_id}/source-materials/browse")
+async def browse_source_keys(
+    campaign_id: str,
+    wildcard: str = "*",
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.browse_source_keys(campaign_id, wildcard=wildcard)
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/roster/portrait")
+async def record_character_portrait(
+    campaign_id: str,
+    payload: CharacterPortraitRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.record_character_portrait(campaign_id, payload.character_slug, payload.image_url)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.delete("/campaigns/{campaign_id}")
+async def delete_campaign(
+    campaign_id: str,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.delete_campaign(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
 @router.get("/campaigns/{campaign_id}/story")
 async def get_story_state(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:
@@ -672,7 +889,7 @@ async def sms_list(campaign_id: str, payload: SmsListRequest, gateway: EngineGat
 @router.post("/campaigns/{campaign_id}/sms/read")
 async def sms_read(campaign_id: str, payload: SmsReadRequest, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:
-        return await gateway.sms_read(campaign_id, payload.thread, payload.limit)
+        return await gateway.sms_read(campaign_id, payload.thread, payload.limit, viewer_actor_id=payload.viewer_actor_id)
     except KeyError as err:
         _not_found(err)
 

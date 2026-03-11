@@ -737,6 +737,17 @@ button:disabled {
   color: var(--ink);
 }
 
+.narrator-text.streaming::after {
+  content: "\25AE";
+  animation: blink-cursor 0.7s step-end infinite;
+  margin-left: 2px;
+  opacity: 0.7;
+}
+
+@keyframes blink-cursor {
+  50% { opacity: 0; }
+}
+
 .turn-footer {
   display: flex;
   justify-content: flex-end;
@@ -1197,21 +1208,6 @@ details summary {
   color: #5a7268;
 }
 
-.feature-list {
-  margin: 0;
-  padding-left: 1.2rem;
-}
-
-.feature-list li {
-  margin-bottom: 0.3rem;
-  font-size: 0.84rem;
-}
-
-.feature-list code {
-  font-family: var(--mono);
-  font-size: 0.76rem;
-}
-
 /* ---- Player Attributes ---- */
 
 .player-attributes {
@@ -1557,6 +1553,311 @@ details summary {
 
 .mechanic-fail {
   color: var(--error);
+}
+
+/* ---- Campaign Setup Wizard ---- */
+
+.setup-wizard {
+  background: #f4f8f6;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.setup-wizard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.setup-wizard-header h4 {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+}
+
+.setup-phase-badge {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  text-transform: lowercase;
+}
+
+.setup-start-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.setup-start-controls p {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: #4a5e54;
+}
+
+.setup-attachment-details summary {
+  font-size: 0.82rem;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.setup-attachment-details textarea {
+  margin-top: 0.3rem;
+  width: 100%;
+  font-size: 0.82rem;
+}
+
+.btn-setup-start {
+  background: var(--accent);
+  color: #eff8f4;
+  border-color: #224740;
+  font-size: 0.84rem;
+  padding: 0.45rem 1rem;
+  align-self: flex-start;
+}
+
+.btn-setup-start:hover:not(:disabled) {
+  background: #346b5e;
+}
+
+.setup-response-card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+}
+
+.setup-response-card p {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.setup-message-form {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.setup-message-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.84rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.setup-complete-card {
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+}
+
+.setup-complete-card p {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: #2e7d32;
+}
+
+/* ---- Scene Images ---- */
+
+.scene-images-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.scene-images-panel h4 {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.scene-images-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+
+.scene-image-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  text-align: center;
+}
+
+.scene-image-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+
+.scene-image-card small {
+  font-size: 0.7rem;
+  color: #6a7a70;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- Literary Styles ---- */
+
+.literary-styles-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.literary-styles-panel h4 {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.literary-styles-list {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.literary-style-item summary {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0.25rem 0;
+}
+
+.literary-style-item summary:hover {
+  color: var(--accent);
+}
+
+.literary-style-profile {
+  margin: 0.2rem 0 0.4rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: #4a5e54;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--line);
+  white-space: pre-wrap;
+}
+
+/* ---- SMS Actions ---- */
+
+.sms-actions {
+  margin-bottom: 0.5rem;
+}
+
+.btn-cancel-sms {
+  background: #fff3e0;
+  border: 1px solid #ffcc80;
+  color: #e65100;
+  font-size: 0.82rem;
+  padding: 0.35rem 0.75rem;
+}
+
+.btn-cancel-sms:hover:not(:disabled) {
+  background: #ffe0b2;
+}
+
+/* ---- Source Material Search ---- */
+
+.source-search-row {
+  display: flex;
+  gap: 0.35rem;
+  align-items: end;
+}
+
+.source-search-input {
+  flex: 2;
+  min-width: 0;
+  font-size: 0.82rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.source-search-dockey {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.source-search-results {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 300px;
+  overflow-y: auto;
+  margin-top: 0.3rem;
+}
+
+.source-search-hit {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.45rem 0.6rem;
+}
+
+.source-hit-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.2rem;
+}
+
+.source-hit-header small {
+  font-size: 0.72rem;
+  color: #6a7a70;
+}
+
+.source-hit-score {
+  font-family: var(--mono);
+}
+
+.source-hit-text {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+/* ---- Campaign Delete ---- */
+
+.btn-delete-campaign {
+  background: transparent;
+  border: 1px solid #ef9a9a;
+  color: #c62828;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem;
+  width: 100%;
+  margin-top: 0.3rem;
+}
+
+.btn-delete-campaign:hover {
+  background: #fce4ec;
 }
 
 /* ---- Responsive ---- */
