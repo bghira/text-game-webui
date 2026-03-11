@@ -18,7 +18,6 @@ from .engine_gateway import EngineGateway
 try:
     from text_game_engine.core.engine import GameEngine
     from text_game_engine.core.types import GiveItemInstruction, LLMTurnOutput, TimerInstruction
-    from text_game_engine import build_text_completion_port
     from text_game_engine.tool_aware_llm import (
         DeterministicLLM as EngineDeterministicLLM,
         ToolAwareZorkLLM as EngineToolAwareLLM,
@@ -173,7 +172,12 @@ class OpenAICompatibleCompletionPort:
 
 
 class OllamaCompletionPort:
-    """Probe-capable wrapper around text-game-engine's native Ollama backend."""
+    """Ollama completion port using the OpenAI-compatible /v1/chat/completions endpoint.
+
+    Ollama 0.13+ removed the native /api/chat and /api/generate endpoints.
+    This implementation targets the stable /v1/chat/completions endpoint and
+    includes Ollama-specific extras (keep_alive, options) in the request body.
+    """
 
     def __init__(
         self,
@@ -184,16 +188,44 @@ class OllamaCompletionPort:
         keep_alive: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> None:
-        backend_kwargs: dict[str, Any] = {
-            "model": model,
-            "base_url": base_url,
-            "request_timeout": max(int(timeout_seconds or 90), 1),
-        }
-        if keep_alive:
-            backend_kwargs["keep_alive"] = keep_alive
-        if options:
-            backend_kwargs["options"] = options
-        self._completion = build_text_completion_port("ollama", **backend_kwargs)
+        # Normalise to bare host so we can append /v1/chat/completions.
+        clean_url = base_url.rstrip("/")
+        for suffix in ("/v1", "/api"):
+            if clean_url.endswith(suffix):
+                clean_url = clean_url[: -len(suffix)]
+                break
+        self._base_url = clean_url
+        self._model = model
+        self._timeout_seconds = max(int(timeout_seconds or 90), 1)
+        self._keep_alive = keep_alive
+        self._options = dict(options or {})
+
+    def _request_sync(self, payload: dict[str, Any]) -> str | None:
+        url = f"{self._base_url}/v1/chat/completions"
+        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        req = urllib_request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=self._timeout_seconds) as response:  # noqa: S310
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib_error.HTTPError:
+            return None
+        except Exception:
+            return None
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return None
+        return OpenAICompatibleCompletionPort._extract_content(choices[0]) or None
 
     async def complete(
         self,
@@ -203,12 +235,21 @@ class OllamaCompletionPort:
         temperature: float = 0.8,
         max_tokens: int = 2048,
     ) -> str | None:
-        return await self._completion.complete(
-            system_prompt,
-            prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+            "stream": False,
+        }
+        if self._keep_alive:
+            payload["keep_alive"] = self._keep_alive
+        if self._options:
+            payload["options"] = self._options
+        return await asyncio.to_thread(self._request_sync, payload)
 
     async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
         timeout = max(int(timeout_seconds or 8), 1)
@@ -2172,7 +2213,7 @@ class TextGameEngineGateway(EngineGateway):
                 "completion_mode": mode,
                 "model": model,
                 "base_url": base_url,
-                "note": "Settings apply until server restart.",
+                "note": "Settings applied and saved.",
             }
 
     async def runtime_checks(self, probe_llm: bool = False) -> dict:
@@ -2546,7 +2587,15 @@ class TextGameEngineGateway(EngineGateway):
 
         raise KeyError(f"Unknown campaign: {campaign.id}")
 
-    async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
+    def _pre_turn_setup(
+        self,
+        campaign_id: str,
+        request: TurnRequest,
+    ) -> tuple[int, str | None]:
+        """Validate campaign, resolve session, and capture XP before the turn.
+
+        Returns ``(xp_before, session_id)``.
+        """
         xp_before = 0
         session_id = str(request.session_id or "").strip() or None
         with self._session_factory() as session:
@@ -2564,22 +2613,18 @@ class TextGameEngineGateway(EngineGateway):
 
         self._enforce_session_access(campaign_id, request.actor_id, session_id)
         self._emulator.get_or_create_player(campaign_id, request.actor_id)
-        narration = await self._emulator.play_action(
-            campaign_id=campaign_id,
-            actor_id=request.actor_id,
-            action=request.action,
-            session_id=session_id,
-            manage_claim=True,
-        )
-        notices = self._emulator.pop_turn_ephemeral_notices(
-            campaign_id,
-            request.actor_id,
-            session_id,
-        )
+        return xp_before, session_id
 
-        if narration is None:
-            narration = "The world shifts, but nothing clear emerges."
-
+    def _build_turn_result(
+        self,
+        campaign_id: str,
+        request: TurnRequest,
+        narration: str,
+        notices: list[str],
+        xp_before: int,
+        session_id: str | None,
+    ) -> TurnResult:
+        """Post-turn DB queries to assemble the complete TurnResult."""
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
@@ -2654,6 +2699,17 @@ class TextGameEngineGateway(EngineGateway):
             if isinstance(raw_dice, dict) and raw_dice.get("attribute"):
                 dice_result = raw_dice
 
+        # Extract active puzzle / minigame from campaign state
+        active_puzzle: dict | None = None
+        active_minigame: dict | None = None
+        if isinstance(campaign_state, dict):
+            raw_puzzle = campaign_state.get("_active_puzzle")
+            if isinstance(raw_puzzle, dict) and raw_puzzle.get("puzzle_type"):
+                active_puzzle = raw_puzzle
+            raw_minigame = campaign_state.get("_active_minigame")
+            if isinstance(raw_minigame, dict) and raw_minigame.get("game_type"):
+                active_minigame = raw_minigame
+
         return TurnResult(
             actor_id=request.actor_id,
             session_id=session_id,
@@ -2667,7 +2723,63 @@ class TextGameEngineGateway(EngineGateway):
             dice_result=dice_result,
             turn_visibility=turn_visibility,
             notices=notices,
+            active_puzzle=active_puzzle,
+            active_minigame=active_minigame,
         )
+
+    async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
+        xp_before, session_id = self._pre_turn_setup(campaign_id, request)
+        narration = await self._emulator.play_action(
+            campaign_id=campaign_id,
+            actor_id=request.actor_id,
+            action=request.action,
+            session_id=session_id,
+            manage_claim=True,
+        )
+        notices = self._emulator.pop_turn_ephemeral_notices(
+            campaign_id,
+            request.actor_id,
+            session_id,
+        )
+
+        if narration is None:
+            narration = "The world shifts, but nothing clear emerges."
+
+        return self._build_turn_result(campaign_id, request, narration, notices, xp_before, session_id)
+
+    async def submit_turn_stream(self, campaign_id: str, request: TurnRequest):
+        """Async generator yielding SSE event dicts for streaming turn resolution."""
+        yield {"event": "phase", "data": {"phase": "starting"}}
+
+        xp_before, session_id = self._pre_turn_setup(campaign_id, request)
+
+        yield {"event": "phase", "data": {"phase": "generating"}}
+
+        narration = await self._emulator.play_action(
+            campaign_id=campaign_id,
+            actor_id=request.actor_id,
+            action=request.action,
+            session_id=session_id,
+            manage_claim=True,
+        )
+        notices = self._emulator.pop_turn_ephemeral_notices(
+            campaign_id,
+            request.actor_id,
+            session_id,
+        )
+
+        if narration is None:
+            narration = "The world shifts, but nothing clear emerges."
+
+        # Stream narration in chunks for typewriter effect
+        yield {"event": "phase", "data": {"phase": "narrating"}}
+        CHUNK = 4  # characters per token event
+        for i in range(0, len(narration), CHUNK):
+            yield {"event": "token", "data": {"text": narration[i : i + CHUNK]}}
+
+        # Build complete result (DB queries)
+        result = self._build_turn_result(campaign_id, request, narration, notices, xp_before, session_id)
+        yield {"event": "complete", "data": result.model_dump()}
 
     async def campaign_export(
         self,
@@ -3325,8 +3437,8 @@ class TextGameEngineGateway(EngineGateway):
         rows = self._emulator.list_sms_threads(campaign_id, wildcard=wildcard or "*", limit=200)
         return {"threads": rows}
 
-    async def sms_read(self, campaign_id: str, thread: str, limit: int) -> dict:
-        canonical, matched, messages = self._emulator.read_sms_thread(campaign_id, thread, limit=limit)
+    async def sms_read(self, campaign_id: str, thread: str, limit: int, viewer_actor_id: str | None = None) -> dict:
+        canonical, matched, messages = self._emulator.read_sms_thread(campaign_id, thread, limit=limit, viewer_actor_id=viewer_actor_id)
         return {
             "thread": canonical or thread,
             "matched": matched,
@@ -3508,13 +3620,14 @@ class TextGameEngineGateway(EngineGateway):
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
-        result = self._emulator.ingest_source_material_text(
+        chunks_stored, document_key = self._emulator.ingest_source_material_text(
             campaign_id,
             text=payload.text,
-            document_label=payload.document_label,
-            format=payload.format,
+            document_label=payload.document_label or "source-material",
+            source_format=payload.format,
+            replace_document=payload.replace_document,
         )
-        return result if isinstance(result, dict) else {"ok": True}
+        return {"ok": True, "chunks_stored": chunks_stored, "document_key": document_key}
 
     async def get_campaign_rules(self, campaign_id: str, key: str | None = None) -> dict:
         with self._session_factory() as session:
@@ -3838,6 +3951,122 @@ class TextGameEngineGateway(EngineGateway):
         except Exception as exc:
             return {"board": None, "error": str(exc)}
 
+    async def is_in_setup_mode(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        in_setup = self._emulator.is_in_setup_mode(campaign)
+        state = self._parse_json(campaign.state_json, {})
+        phase = str(state.get("setup_phase") or "").strip() if isinstance(state, dict) else ""
+        setup_data = state.get("setup_data", {}) if isinstance(state, dict) else {}
+        return {
+            "in_setup": in_setup,
+            "setup_phase": phase if in_setup else None,
+            "setup_data_keys": list(setup_data.keys()) if isinstance(setup_data, dict) else [],
+        }
+
+    async def start_campaign_setup(
+        self,
+        campaign_id: str,
+        *,
+        actor_id: str | None = None,
+        on_rails: bool = False,
+        attachment_text: str | None = None,
+    ) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            campaign_name = campaign.name
+        try:
+            message = await self._emulator.start_campaign_setup(
+                campaign_id,
+                actor_id=actor_id,
+                raw_name=campaign_name,
+                on_rails=on_rails,
+                attachment_text=attachment_text,
+                ingest_source_material=bool(attachment_text),
+            )
+            return {"ok": True, "message": str(message or ""), "setup_phase": "classify_confirm"}
+        except Exception as exc:
+            return {"ok": False, "message": str(exc), "setup_phase": None}
+
+    async def handle_setup_message(self, campaign_id: str, actor_id: str, message: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        try:
+            response = await self._emulator.handle_setup_message(
+                campaign_id,
+                actor_id,
+                message,
+            )
+            # Check current phase after handling
+            with self._session_factory() as session:
+                campaign = session.get(Campaign, campaign_id)
+                state = self._parse_json(campaign.state_json, {}) if campaign else {}
+            phase = str(state.get("setup_phase") or "").strip() if isinstance(state, dict) else ""
+            return {
+                "ok": True,
+                "message": str(response or ""),
+                "setup_phase": phase if phase and phase != "completed" else None,
+                "completed": phase == "completed" or not phase,
+            }
+        except Exception as exc:
+            return {"ok": False, "message": str(exc), "setup_phase": None, "completed": False}
+
+    async def get_scene_images(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+        raw = state.get("room_scene_images", {})
+        images = {}
+        if isinstance(raw, dict):
+            for room_key, data in raw.items():
+                url = None
+                if isinstance(data, str):
+                    url = data
+                elif isinstance(data, dict):
+                    url = data.get("url") or data.get("image_url")
+                if url:
+                    images[room_key] = url
+        return {"images": images, "count": len(images)}
+
+    async def get_literary_styles(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+        raw = state.get("literary_styles", {})
+        if not isinstance(raw, dict):
+            raw = {}
+        styles = {}
+        for key, val in raw.items():
+            if isinstance(val, dict):
+                styles[key] = {
+                    "profile": str(val.get("profile", ""))[:400],
+                }
+            elif isinstance(val, str):
+                styles[key] = {"profile": val[:400]}
+        return {"styles": styles, "count": len(styles)}
+
+    async def cancel_sms_deliveries(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        cancelled = self._emulator.cancel_pending_sms_deliveries(campaign_id)
+        return {"ok": True, "cancelled": cancelled}
+
     async def get_story_state(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
@@ -3856,3 +4085,144 @@ class TextGameEngineGateway(EngineGateway):
             "active_puzzle": state.get("_active_puzzle"),
             "active_minigame": state.get("_active_minigame"),
         }
+
+    async def search_source_material(self, campaign_id: str, query: str, *, document_key: str | None = None, top_k: int = 5) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        query_clean = str(query or "").strip()
+        if not query_clean:
+            return {"results": [], "query": query_clean}
+        top_k_clean = max(1, min(int(top_k), 20))
+        try:
+            raw = self._emulator.search_source_material(
+                query_clean,
+                campaign_id,
+                document_key=document_key,
+                top_k=top_k_clean,
+            )
+        except Exception:
+            return {"results": [], "query": query_clean, "error": "Search failed."}
+        results = []
+        for doc_key, doc_label, chunk_idx, chunk_text, score in raw:
+            results.append({
+                "document_key": doc_key,
+                "document_label": doc_label,
+                "chunk_index": chunk_idx,
+                "text": str(chunk_text or "")[:1000],
+                "score": round(float(score), 4),
+            })
+        return {"results": results, "query": query_clean}
+
+    async def ingest_source_material_with_digest(self, campaign_id: str, payload) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        text = str(payload.text or "").strip()
+        label = str(payload.document_label or "").strip()
+        if not text:
+            raise ValueError("Source material text is required.")
+        if not label:
+            raise ValueError("Document label is required.")
+        fmt = str(payload.format or "").strip().lower() or None
+        replace = bool(payload.replace_document)
+        try:
+            chunks_stored, document_key, literary_profiles = await self._emulator.ingest_source_material_with_digest(
+                campaign_id,
+                document_label=label,
+                text=text,
+                source_format=fmt,
+                replace_document=replace,
+            )
+        except Exception as exc:
+            raise ValueError(f"Digest ingest failed: {exc}") from exc
+        profiles_clean: dict[str, object] = {}
+        if isinstance(literary_profiles, dict):
+            for name, profile in literary_profiles.items():
+                if isinstance(profile, dict):
+                    profiles_clean[str(name)] = {k: str(v)[:400] for k, v in profile.items()}
+                elif isinstance(profile, str):
+                    profiles_clean[str(name)] = profile[:400]
+        return {
+            "ok": True,
+            "chunks_stored": int(chunks_stored),
+            "document_key": str(document_key),
+            "literary_profiles": profiles_clean,
+        }
+
+    async def browse_source_keys(self, campaign_id: str, *, wildcard: str = "*", document_key: str | None = None) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        try:
+            keys = self._emulator.browse_source_keys(
+                campaign_id,
+                document_key=document_key,
+                wildcard=wildcard,
+                limit=60,
+            )
+        except Exception:
+            keys = []
+        return {"keys": list(keys) if isinstance(keys, list) else []}
+
+    async def record_character_portrait(self, campaign_id: str, character_slug: str, image_url: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        slug = str(character_slug or "").strip()
+        url = str(image_url or "").strip()
+        if not slug:
+            raise ValueError("character_slug is required.")
+        if not url:
+            raise ValueError("image_url is required.")
+        try:
+            ok = self._emulator.record_character_portrait_url(campaign_id, slug, url)
+        except Exception:
+            ok = False
+        return {"ok": bool(ok), "character_slug": slug, "image_url": url}
+
+    async def schedule_sms_delivery(self, campaign_id: str, *, thread: str, sender: str, recipient: str, message: str, delay_seconds: int) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        thread_clean = str(thread or "").strip()
+        sender_clean = str(sender or "").strip()
+        recipient_clean = str(recipient or "").strip()
+        message_clean = str(message or "").strip()
+        delay = max(0, min(int(delay_seconds), 86400))
+        if not all([thread_clean, sender_clean, recipient_clean, message_clean]):
+            raise ValueError("thread, sender, recipient, and message are all required.")
+        try:
+            ok, reason, actual_delay = self._emulator.schedule_sms_thread_delivery(
+                campaign_id,
+                thread=thread_clean,
+                sender=sender_clean,
+                recipient=recipient_clean,
+                message=message_clean,
+                delay_seconds=delay,
+            )
+        except Exception as exc:
+            return {"ok": False, "reason": str(exc), "delay_seconds": delay}
+        return {"ok": bool(ok), "reason": reason, "delay_seconds": actual_delay}
+
+    async def delete_campaign(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            name = campaign.name
+            # Delete all related data
+            session.query(Turn).filter(Turn.campaign_id == campaign_id).delete()
+            session.query(Timer).filter(Timer.campaign_id == campaign_id).delete()
+            session.query(GameSession).filter(GameSession.campaign_id == campaign_id).delete()
+            session.query(Player).filter(Player.campaign_id == campaign_id).delete()
+            session.query(MediaRef).filter(MediaRef.campaign_id == campaign_id).delete()
+            session.query(OutboxEvent).filter(OutboxEvent.campaign_id == campaign_id).delete()
+            session.delete(campaign)
+            session.commit()
+        return {"ok": True, "deleted_campaign_id": campaign_id, "name": name}

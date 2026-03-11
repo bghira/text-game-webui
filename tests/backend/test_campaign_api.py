@@ -401,3 +401,165 @@ def test_ws_receives_media_event_on_avatar_action(client):
         assert message["type"] == "media"
         assert message["payload"]["action"] == "avatar_accept"
         assert message["payload"]["ok"] is True
+
+
+def _parse_sse_events(raw_text: str) -> list[dict]:
+    """Parse a raw SSE text body into a list of {event, data} dicts."""
+    events = []
+    current_event = None
+    current_data_lines: list[str] = []
+    for line in raw_text.splitlines():
+        if line.startswith("event:"):
+            current_event = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            current_data_lines.append(line[len("data:"):].strip())
+        elif line == "":
+            if current_event is not None or current_data_lines:
+                import json as _json
+                data_str = "\n".join(current_data_lines)
+                try:
+                    data = _json.loads(data_str)
+                except (ValueError, TypeError):
+                    data = data_str
+                events.append({"event": current_event or "message", "data": data})
+                current_event = None
+                current_data_lines = []
+    # Handle trailing event without final blank line
+    if current_event is not None or current_data_lines:
+        import json as _json
+        data_str = "\n".join(current_data_lines)
+        try:
+            data = _json.loads(data_str)
+        except (ValueError, TypeError):
+            data = data_str
+        events.append({"event": current_event or "message", "data": data})
+    return events
+
+
+def test_stream_turn_returns_sse_events(client):
+    """POST /turns/stream should return phase, token, and complete SSE events."""
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    res = client.post(
+        f"/api/campaigns/{campaign_id}/turns/stream",
+        json={"actor_id": "dale-denton", "action": "look around"},
+    )
+    assert res.status_code == 200
+    assert "text/event-stream" in res.headers.get("content-type", "")
+
+    events = _parse_sse_events(res.text)
+    event_types = [e["event"] for e in events]
+
+    # Must contain at least: phase(starting), phase(generating), phase(narrating), token(s), complete
+    assert "phase" in event_types
+    assert "token" in event_types
+    assert "complete" in event_types
+
+    # Phase events should come before tokens which should come before complete
+    first_phase = event_types.index("phase")
+    first_token = event_types.index("token")
+    complete_idx = event_types.index("complete")
+    assert first_phase < first_token < complete_idx
+
+    # The complete event should contain a valid TurnResult-like payload
+    complete_data = events[complete_idx]["data"]
+    assert "narration" in complete_data
+    assert "TURN 1" in complete_data["narration"]
+    assert complete_data["actor_id"] == "dale-denton"
+    assert complete_data["image_prompt"] is not None
+
+
+def test_stream_turn_unknown_campaign_returns_error_event(client):
+    """POST /turns/stream with bad campaign_id should yield an error SSE event."""
+    res = client.post(
+        "/api/campaigns/nonexistent-campaign/turns/stream",
+        json={"actor_id": "dale-denton", "action": "wait"},
+    )
+    assert res.status_code == 200
+    events = _parse_sse_events(res.text)
+    assert len(events) >= 1
+    assert events[-1]["event"] == "error"
+
+
+def test_stream_turn_token_text_matches_narration(client):
+    """Token texts concatenated should equal the complete narration."""
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    res = client.post(
+        f"/api/campaigns/{campaign_id}/turns/stream",
+        json={"actor_id": "dale-denton", "action": "wait"},
+    )
+    assert res.status_code == 200
+
+    events = _parse_sse_events(res.text)
+    token_texts = "".join(
+        e["data"]["text"] for e in events if e["event"] == "token"
+    )
+    complete_event = next(e for e in events if e["event"] == "complete")
+    assert token_texts == complete_event["data"]["narration"]
+
+
+def test_delete_campaign_removes_it(client):
+    """DELETE /campaigns/{id} should remove the campaign from listings."""
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    # Verify it exists
+    list_before = client.get("/api/campaigns", params={"namespace": "default"})
+    assert any(c["id"] == campaign_id for c in list_before.json()["campaigns"])
+
+    # Delete
+    del_res = client.delete(f"/api/campaigns/{campaign_id}")
+    assert del_res.status_code == 200
+    assert del_res.json()["ok"] is True
+    assert del_res.json()["deleted_campaign_id"] == campaign_id
+
+    # Verify it's gone
+    list_after = client.get("/api/campaigns", params={"namespace": "default"})
+    assert not any(c["id"] == campaign_id for c in list_after.json()["campaigns"])
+
+    # Subsequent reads should 404
+    get_res = client.get(f"/api/campaigns/{campaign_id}/roster")
+    assert get_res.status_code == 404
+
+
+def test_delete_campaign_unknown_returns_404(client):
+    """DELETE /campaigns/{id} with unknown id should return 404."""
+    res = client.delete("/api/campaigns/nonexistent-campaign")
+    assert res.status_code == 404
+
+
+def test_sms_read_with_viewer_actor_id(client):
+    """POST /sms/read should accept viewer_actor_id without error."""
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    # Write a message first
+    client.post(
+        f"/api/campaigns/{campaign_id}/sms/write",
+        json={
+            "thread": "saul",
+            "sender": "dale-denton",
+            "recipient": "saul-silver",
+            "message": "Hey dude.",
+        },
+    )
+
+    # Read with viewer_actor_id
+    res = client.post(
+        f"/api/campaigns/{campaign_id}/sms/read",
+        json={"thread": "saul", "limit": 10, "viewer_actor_id": "dale-denton"},
+    )
+    assert res.status_code == 200
+    assert res.json()["thread"] == "saul"
+    assert len(res.json()["messages"]) == 1
+
+    # Read without viewer_actor_id (should also work)
+    res_no_viewer = client.post(
+        f"/api/campaigns/{campaign_id}/sms/read",
+        json={"thread": "saul", "limit": 10},
+    )
+    assert res_no_viewer.status_code == 200
+    assert len(res_no_viewer.json()["messages"]) == 1

@@ -4,10 +4,11 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 import json
+from collections.abc import AsyncIterator
 from typing import Protocol
 from uuid import uuid4
 
-from .schemas import CampaignRuleUpdate, CampaignSummary, MemoryStoreRequest, SourceMaterialIngest, SmsMessage, TurnRequest, TurnResult
+from .schemas import CampaignRuleUpdate, CampaignSummary, MemoryStoreRequest, SourceMaterialDigestIngest, SourceMaterialIngest, SmsMessage, TurnRequest, TurnResult
 
 
 FEATURES = [
@@ -45,6 +46,17 @@ FEATURES = [
     "puzzle_answer",
     "minigame_move",
     "minigame_board",
+    "campaign_setup",
+    "scene_images",
+    "literary_styles",
+    "cancel_sms",
+    "source_material_search",
+    "source_material_digest",
+    "source_material_browse",
+    "character_portrait",
+    "scheduled_sms",
+    "campaign_delete",
+    "streaming",
 ]
 
 
@@ -81,6 +93,7 @@ class EngineGateway(Protocol):
     ) -> None: ...
     async def runtime_checks(self, probe_llm: bool = False) -> dict: ...
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
+    def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]: ...
     async def campaign_export(
         self,
         campaign_id: str,
@@ -113,7 +126,7 @@ class EngineGateway(Protocol):
     async def memory_turn(self, campaign_id: str, turn_id: int) -> dict: ...
     async def memory_store(self, campaign_id: str, payload: MemoryStoreRequest) -> dict: ...
     async def sms_list(self, campaign_id: str, wildcard: str) -> dict: ...
-    async def sms_read(self, campaign_id: str, thread: str, limit: int) -> dict: ...
+    async def sms_read(self, campaign_id: str, thread: str, limit: int, viewer_actor_id: str | None = None) -> dict: ...
     async def sms_write(self, campaign_id: str, thread: str, sender: str, recipient: str, message: str) -> dict: ...
     async def debug_snapshot(self, campaign_id: str) -> dict: ...
     async def get_campaign_flags(self, campaign_id: str) -> dict: ...
@@ -144,7 +157,19 @@ class EngineGateway(Protocol):
     async def submit_puzzle_answer(self, campaign_id: str, answer: str) -> dict: ...
     async def submit_minigame_move(self, campaign_id: str, move: str) -> dict: ...
     async def get_minigame_board(self, campaign_id: str) -> dict: ...
+    async def is_in_setup_mode(self, campaign_id: str) -> dict: ...
+    async def start_campaign_setup(self, campaign_id: str, *, actor_id: str | None = None, on_rails: bool = False, attachment_text: str | None = None) -> dict: ...
+    async def handle_setup_message(self, campaign_id: str, actor_id: str, message: str) -> dict: ...
+    async def get_scene_images(self, campaign_id: str) -> dict: ...
+    async def get_literary_styles(self, campaign_id: str) -> dict: ...
+    async def cancel_sms_deliveries(self, campaign_id: str) -> dict: ...
     async def get_story_state(self, campaign_id: str) -> dict: ...
+    async def search_source_material(self, campaign_id: str, query: str, *, document_key: str | None = None, top_k: int = 5) -> dict: ...
+    async def ingest_source_material_with_digest(self, campaign_id: str, payload: SourceMaterialDigestIngest) -> dict: ...
+    async def browse_source_keys(self, campaign_id: str, *, wildcard: str = "*", document_key: str | None = None) -> dict: ...
+    async def record_character_portrait(self, campaign_id: str, character_slug: str, image_url: str) -> dict: ...
+    async def schedule_sms_delivery(self, campaign_id: str, *, thread: str, sender: str, recipient: str, message: str, delay_seconds: int) -> dict: ...
+    async def delete_campaign(self, campaign_id: str) -> dict: ...
 
 
 class InMemoryEngineGateway:
@@ -433,6 +458,18 @@ class InMemoryEngineGateway:
             turn_visibility=turn_visibility,
             notices=[],
         )
+
+    async def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]:
+        """Yield SSE events for a streaming turn. Falls back to single complete event."""
+        yield {"event": "phase", "data": {"phase": "starting"}}
+        yield {"event": "phase", "data": {"phase": "generating"}}
+        result = await self.submit_turn(campaign_id, request)
+        narration = result.narration or ""
+        yield {"event": "phase", "data": {"phase": "narrating"}}
+        chunk_size = 4
+        for i in range(0, len(narration), chunk_size):
+            yield {"event": "token", "data": {"text": narration[i : i + chunk_size]}}
+        yield {"event": "complete", "data": result.model_dump()}
 
     async def campaign_export(
         self,
@@ -836,7 +873,7 @@ Legend: @ current player
             threads = [thread for thread in threads if fnmatch(thread, wildcard)]
         return {"threads": threads}
 
-    async def sms_read(self, campaign_id: str, thread: str, limit: int) -> dict:
+    async def sms_read(self, campaign_id: str, thread: str, limit: int, viewer_actor_id: str | None = None) -> dict:
         self._require_campaign(campaign_id)
         msgs = self._sms[campaign_id].get(thread, [])
         return {"thread": thread, "messages": [m.model_dump() for m in msgs[-limit:]]}
@@ -1005,13 +1042,73 @@ Legend: @ current player
         self._require_campaign(campaign_id)
         return {"board": None, "note": "No active minigame."}
 
+    async def is_in_setup_mode(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"in_setup": False, "setup_phase": None}
+
+    async def start_campaign_setup(self, campaign_id: str, *, actor_id: str | None = None, on_rails: bool = False, attachment_text: str | None = None) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": False, "note": "InMemory backend — setup not supported.", "message": ""}
+
+    async def handle_setup_message(self, campaign_id: str, actor_id: str, message: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": False, "note": "InMemory backend — setup not supported.", "message": ""}
+
+    async def get_scene_images(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"images": {}}
+
+    async def get_literary_styles(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"styles": {}}
+
+    async def cancel_sms_deliveries(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": True, "cancelled": 0}
+
     async def get_story_state(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)
         return {
             "story_outline": None,
+            "current_chapter": None,
+            "current_scene": None,
             "plot_threads": {},
             "consequences": {},
             "chapter_plan": {},
             "active_puzzle": None,
             "active_minigame": None,
         }
+
+    async def search_source_material(self, campaign_id: str, query: str, *, document_key: str | None = None, top_k: int = 5) -> dict:
+        self._require_campaign(campaign_id)
+        return {"results": [], "query": query}
+
+    async def ingest_source_material_with_digest(self, campaign_id: str, payload: SourceMaterialDigestIngest) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": True, "chunks_stored": 0, "document_key": "", "literary_profiles": {}, "note": "InMemory backend — digest ingest not supported."}
+
+    async def browse_source_keys(self, campaign_id: str, *, wildcard: str = "*", document_key: str | None = None) -> dict:
+        self._require_campaign(campaign_id)
+        return {"keys": []}
+
+    async def record_character_portrait(self, campaign_id: str, character_slug: str, image_url: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": False, "note": "InMemory backend — portraits not supported."}
+
+    async def schedule_sms_delivery(self, campaign_id: str, *, thread: str, sender: str, recipient: str, message: str, delay_seconds: int) -> dict:
+        self._require_campaign(campaign_id)
+        return {"ok": False, "note": "InMemory backend — scheduled SMS not supported."}
+
+    async def delete_campaign(self, campaign_id: str) -> dict:
+        campaign = self._require_campaign(campaign_id)
+        del self._campaigns[campaign_id]
+        self._sessions.pop(campaign_id, None)
+        self._turns.pop(campaign_id, None)
+        self._timers.pop(campaign_id, None)
+        self._memory.pop(campaign_id, None)
+        self._sms.pop(campaign_id, None)
+        self._players.pop(campaign_id, None)
+        self._roster_npcs.pop(campaign_id, None)
+        self._media.pop(campaign_id, None)
+        self._campaign_rules.pop(campaign_id, None)
+        return {"ok": True, "deleted_campaign_id": campaign_id, "name": campaign.name}

@@ -30,6 +30,9 @@
         </button>
       </template>
     </div>
+    <template x-if="selectedCampaignId">
+      <button type="button" @click="deleteCampaign()" class="btn-delete-campaign">Delete Campaign</button>
+    </template>
 
     <h2>Windows</h2>
     <div class="stack compact">
@@ -133,7 +136,7 @@
         <article class="turn-entry" :class="'turn-type-' + entry.type">
           <template x-if="entry.type === 'narrator'">
             <div class="turn-narrator">
-              <p class="narrator-text" x-text="entry.text"></p>
+              <p class="narrator-text" :class="{ 'streaming': entry._streaming }" x-text="entry.text"></p>
               <span class="turn-footer">
                 <template x-if="entry.meta && entry.meta._game_time && entry.meta._game_time.day">
                   <small class="turn-game-time" x-text="'Day ' + entry.meta._game_time.day + ', ' + String(entry.meta._game_time.hour||0).padStart(2,'0') + ':' + String(entry.meta._game_time.minute||0).padStart(2,'0')"></small>
@@ -378,6 +381,82 @@
       <div x-show="inspectorTab === 'campaign'" class="stack">
         <template x-if="inspectorTab === 'campaign'">
           <div class="stack">
+
+            <!-- Campaign Setup Wizard -->
+            <template x-if="setupMode">
+              <div class="setup-wizard">
+                <div class="setup-wizard-header">
+                  <h4>Campaign Setup</h4>
+                  <span class="setup-phase-badge" x-text="setupPhase || 'starting'"></span>
+                </div>
+                <template x-if="!setupPhase || setupPhase === 'none'">
+                  <div class="setup-start-controls">
+                    <p>This campaign is ready for guided setup. The narrator will help you create your world.</p>
+                    <label class="flag-toggle">
+                      <input type="checkbox" x-model="setupOnRails" />
+                      <span>On Rails <small>(follow a structured storyline)</small></span>
+                    </label>
+                    <details class="setup-attachment-details">
+                      <summary>Attach Reference Text</summary>
+                      <textarea x-model="setupAttachmentText" rows="4" placeholder="Paste lore, setting notes, or a story premise..."></textarea>
+                    </details>
+                    <button type="button" @click="startCampaignSetup()" :disabled="!selectedCampaignId" class="btn-setup-start">Begin Setup</button>
+                  </div>
+                </template>
+                <template x-if="setupPhase && setupPhase !== 'none' && setupPhase !== 'completed'">
+                  <div class="setup-conversation">
+                    <template x-if="setupResponse">
+                      <div class="setup-response-card">
+                        <p x-text="setupResponse"></p>
+                      </div>
+                    </template>
+                    <form class="setup-message-form" @submit.prevent="sendSetupMessage()">
+                      <input x-model="setupMessage" placeholder="Your response..." :disabled="setupSending" class="setup-message-input" />
+                      <button type="submit" :disabled="!setupMessage.trim() || setupSending">
+                        <span x-show="!setupSending">Send</span>
+                        <span x-show="setupSending">...</span>
+                      </button>
+                    </form>
+                  </div>
+                </template>
+                <template x-if="setupPhase === 'completed'">
+                  <div class="setup-complete-card">
+                    <p>Setup complete! Your campaign world has been created. Submit your first action to begin playing.</p>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- Scene Images -->
+            <template x-if="Object.keys(sceneImages).length > 0">
+              <div class="scene-images-panel">
+                <h4>Scene Images</h4>
+                <div class="scene-images-grid">
+                  <template x-for="[room, url] in Object.entries(sceneImages)" :key="room">
+                    <div class="scene-image-card">
+                      <img :src="url" :alt="'Scene: ' + room" loading="lazy" />
+                      <small x-text="room"></small>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <!-- Literary Styles -->
+            <template x-if="Object.keys(literaryStyles).length > 0">
+              <div class="literary-styles-panel">
+                <h4>Literary Styles</h4>
+                <div class="literary-styles-list">
+                  <template x-for="[name, profile] in Object.entries(literaryStyles)" :key="name">
+                    <details class="literary-style-item">
+                      <summary x-text="name"></summary>
+                      <p class="literary-style-profile" x-text="typeof profile === 'string' ? profile : JSON.stringify(profile, null, 2)"></p>
+                    </details>
+                  </template>
+                </div>
+              </div>
+            </template>
+
             <div class="campaign-flags" x-init="loadCampaignFlags()">
               <h4>Campaign Flags</h4>
               <label class="flag-toggle">
@@ -472,9 +551,86 @@
                     Text Content
                     <textarea x-model="sourceUpload.text" rows="6" placeholder="Paste source material here..."></textarea>
                   </label>
+                  <label class="checkbox-label">
+                    <input type="checkbox" x-model="sourceUpload.replace" />
+                    Replace existing document
+                  </label>
                   <button type="submit" :disabled="!selectedCampaignId || !sourceUpload.text.trim()">Upload</button>
                   <p x-show="sourceUploadStatus" x-text="sourceUploadStatus" class="muted"></p>
                 </form>
+              </details>
+              <details class="source-upload-details">
+                <summary>Search Source Material</summary>
+                <form class="stack compact" @submit.prevent="searchSourceMaterial()">
+                  <div class="source-search-row">
+                    <input x-model="sourceSearchQuery" placeholder="Search query..." class="source-search-input" />
+                    <input x-model="sourceSearchDocKey" placeholder="Doc key (optional)" class="source-search-dockey" />
+                    <button type="submit" :disabled="!selectedCampaignId || !sourceSearchQuery.trim() || sourceSearching">Search</button>
+                  </div>
+                </form>
+                <template x-if="sourceSearchResults.length > 0">
+                  <div class="source-search-results">
+                    <template x-for="(hit, idx) in sourceSearchResults" :key="idx">
+                      <div class="source-search-hit">
+                        <div class="source-hit-header">
+                          <small x-text="hit.document_label || hit.document_key"></small>
+                          <small class="source-hit-score" x-text="'score: ' + hit.score"></small>
+                        </div>
+                        <p class="source-hit-text" x-text="hit.text"></p>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="sourceSearchResults.length === 0 && sourceSearchQuery.trim()">
+                  <p class="muted">No results.</p>
+                </template>
+              </details>
+              <details class="source-upload-details">
+                <summary>Upload with Digest</summary>
+                <form class="stack compact" @submit.prevent="ingestWithDigest()">
+                  <label>
+                    Label
+                    <input x-model="digestUpload.label" placeholder="Story of the Northern Realms" required />
+                  </label>
+                  <label>
+                    Format
+                    <select x-model="digestUpload.format">
+                      <option value="">Auto-detect</option>
+                      <option value="story">Story / Prose</option>
+                      <option value="rulebook">Rulebook</option>
+                      <option value="generic">Generic / Notes</option>
+                    </select>
+                  </label>
+                  <label class="flag-toggle">
+                    <input type="checkbox" x-model="digestUpload.replace" />
+                    <span>Replace existing document</span>
+                  </label>
+                  <label>
+                    Text Content
+                    <textarea x-model="digestUpload.text" rows="6" placeholder="Paste source material here..."></textarea>
+                  </label>
+                  <button type="submit" :disabled="!selectedCampaignId || !digestUpload.text.trim() || !digestUpload.label.trim() || digestUploading">
+                    <span x-show="!digestUploading">Upload with Digest</span>
+                    <span x-show="digestUploading">Processing...</span>
+                  </button>
+                  <p x-show="digestUploadStatus" x-text="digestUploadStatus" class="muted"></p>
+                </form>
+              </details>
+              <details class="source-upload-details">
+                <summary>Browse Source Keys</summary>
+                <div class="stack compact">
+                  <button type="button" @click="browseSourceKeys()" :disabled="!selectedCampaignId">Load Keys</button>
+                  <template x-if="sourceBrowseKeys.length > 0">
+                    <ul class="source-docs-list">
+                      <template x-for="key in sourceBrowseKeys" :key="key">
+                        <li x-text="key"></li>
+                      </template>
+                    </ul>
+                  </template>
+                  <template x-if="sourceBrowseKeys.length === 0">
+                    <p class="muted">No source keys found.</p>
+                  </template>
+                </div>
               </details>
               <details class="source-upload-details">
                 <summary>Campaign Rules</summary>
@@ -757,6 +913,22 @@
           </div>
         </form>
 
+        <details class="source-upload-details">
+          <summary>Set Character Portrait</summary>
+          <form class="stack compact" @submit.prevent="recordCharacterPortrait()">
+            <label>
+              Character Slug
+              <input x-model="portraitForm.slug" placeholder="arsipea-denton" />
+            </label>
+            <label>
+              Image URL
+              <input x-model="portraitForm.image_url" placeholder="https://..." />
+            </label>
+            <button type="submit" :disabled="!selectedCampaignId || !portraitForm.slug.trim() || !portraitForm.image_url.trim()">Set Portrait</button>
+            <p x-show="portraitStatus" x-text="portraitStatus" class="muted"></p>
+          </form>
+        </details>
+
         <pre x-text="rosterText"></pre>
       </div>
 
@@ -863,6 +1035,38 @@
           </label>
           <button type="submit" :disabled="!selectedCampaignId">Run sms_write</button>
         </form>
+
+        <div class="sms-actions">
+          <button type="button" @click="cancelSmsDeliveries()" :disabled="!selectedCampaignId" class="btn-cancel-sms">Cancel Pending Deliveries</button>
+        </div>
+
+        <details class="source-upload-details">
+          <summary>Schedule SMS Delivery</summary>
+          <form class="stack compact" @submit.prevent="scheduleSmsDelivery()">
+            <label>
+              Thread
+              <input x-model="scheduledSms.thread" placeholder="saul" />
+            </label>
+            <label>
+              Sender
+              <input x-model="scheduledSms.sender" placeholder="saul-silver" />
+            </label>
+            <label>
+              Recipient
+              <input x-model="scheduledSms.recipient" placeholder="dale-denton" />
+            </label>
+            <label>
+              Delay (seconds)
+              <input x-model.number="scheduledSms.delay_seconds" type="number" min="0" max="86400" />
+            </label>
+            <label>
+              Message
+              <textarea x-model="scheduledSms.message" rows="3" placeholder="Message to schedule..."></textarea>
+            </label>
+            <button type="submit" :disabled="!selectedCampaignId || !scheduledSms.thread.trim() || !scheduledSms.message.trim()">Schedule</button>
+            <p x-show="scheduledSmsStatus" x-text="scheduledSmsStatus" class="muted"></p>
+          </form>
+        </details>
 
         <pre x-text="smsText"></pre>
       </div>
