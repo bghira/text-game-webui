@@ -962,6 +962,9 @@ async def update_settings(
         result = gateway.reconfigure_llm(merged)
     except ValueError as err:
         _bad_request(err)
+    # Persist settings to SQLite so they survive restarts.
+    from app.settings import persist_settings
+    persist_settings(request.app.state.settings)
     return result
 
 

@@ -18,7 +18,6 @@ from .engine_gateway import EngineGateway
 try:
     from text_game_engine.core.engine import GameEngine
     from text_game_engine.core.types import GiveItemInstruction, LLMTurnOutput, TimerInstruction
-    from text_game_engine import build_text_completion_port
     from text_game_engine.tool_aware_llm import (
         DeterministicLLM as EngineDeterministicLLM,
         ToolAwareZorkLLM as EngineToolAwareLLM,
@@ -173,7 +172,12 @@ class OpenAICompatibleCompletionPort:
 
 
 class OllamaCompletionPort:
-    """Probe-capable wrapper around text-game-engine's native Ollama backend."""
+    """Ollama completion port using the OpenAI-compatible /v1/chat/completions endpoint.
+
+    Ollama 0.13+ removed the native /api/chat and /api/generate endpoints.
+    This implementation targets the stable /v1/chat/completions endpoint and
+    includes Ollama-specific extras (keep_alive, options) in the request body.
+    """
 
     def __init__(
         self,
@@ -184,16 +188,44 @@ class OllamaCompletionPort:
         keep_alive: str | None = None,
         options: dict[str, Any] | None = None,
     ) -> None:
-        backend_kwargs: dict[str, Any] = {
-            "model": model,
-            "base_url": base_url,
-            "request_timeout": max(int(timeout_seconds or 90), 1),
-        }
-        if keep_alive:
-            backend_kwargs["keep_alive"] = keep_alive
-        if options:
-            backend_kwargs["options"] = options
-        self._completion = build_text_completion_port("ollama", **backend_kwargs)
+        # Normalise to bare host so we can append /v1/chat/completions.
+        clean_url = base_url.rstrip("/")
+        for suffix in ("/v1", "/api"):
+            if clean_url.endswith(suffix):
+                clean_url = clean_url[: -len(suffix)]
+                break
+        self._base_url = clean_url
+        self._model = model
+        self._timeout_seconds = max(int(timeout_seconds or 90), 1)
+        self._keep_alive = keep_alive
+        self._options = dict(options or {})
+
+    def _request_sync(self, payload: dict[str, Any]) -> str | None:
+        url = f"{self._base_url}/v1/chat/completions"
+        body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        req = urllib_request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=self._timeout_seconds) as response:  # noqa: S310
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib_error.HTTPError:
+            return None
+        except Exception:
+            return None
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None
+
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return None
+        return OpenAICompatibleCompletionPort._extract_content(choices[0]) or None
 
     async def complete(
         self,
@@ -203,12 +235,21 @@ class OllamaCompletionPort:
         temperature: float = 0.8,
         max_tokens: int = 2048,
     ) -> str | None:
-        return await self._completion.complete(
-            system_prompt,
-            prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+            "stream": False,
+        }
+        if self._keep_alive:
+            payload["keep_alive"] = self._keep_alive
+        if self._options:
+            payload["options"] = self._options
+        return await asyncio.to_thread(self._request_sync, payload)
 
     async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
         timeout = max(int(timeout_seconds or 8), 1)
@@ -2172,7 +2213,7 @@ class TextGameEngineGateway(EngineGateway):
                 "completion_mode": mode,
                 "model": model,
                 "base_url": base_url,
-                "note": "Settings apply until server restart.",
+                "note": "Settings applied and saved.",
             }
 
     async def runtime_checks(self, probe_llm: bool = False) -> dict:

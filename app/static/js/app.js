@@ -1608,6 +1608,11 @@
             });
             this._scrollStream();
 
+            /* Mark submit timestamp BEFORE the fetch so the WS echo
+               suppression is active when the server publishes the turn
+               event (which happens before SSE bytes arrive). */
+            this._lastSubmitAt = Date.now();
+
             const resp = await fetch(`/api/campaigns/${this.selectedCampaignId}/turns/stream`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -1658,9 +1663,11 @@
               } catch (_e) { /* ignore */ }
             }
 
-            this._lastSubmitAt = Date.now();
             this.turnForm.action = "";
-            setTimeout(() => { this._lastSubmitAt = 0; }, 4000);
+            /* Reset echo suppression after a generous window — the LLM call
+               can be slow so we refresh the timestamp and give it 5 extra seconds. */
+            this._lastSubmitAt = Date.now();
+            setTimeout(() => { this._lastSubmitAt = 0; }, 5000);
           }
 
           await Promise.all([

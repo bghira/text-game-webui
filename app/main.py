@@ -10,13 +10,14 @@ from app.api.routes import router as api_router
 from app.api.ws import router as ws_router
 from app.realtime.hub import RealtimeHub
 from app.services.gateway_factory import build_gateway
-from app.settings import Settings
+from app.settings import Settings, load_persisted_settings
 from app.ui.routes import router as ui_router
 
 
 def create_app() -> FastAPI:
     app_dir = Path(__file__).resolve().parent
     settings = Settings()
+    load_persisted_settings(settings)
     gateway, backend = build_gateway(settings)
 
     app = FastAPI(title=settings.app_name, debug=settings.debug)

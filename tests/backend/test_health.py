@@ -57,6 +57,39 @@ def test_runtime_checks_probe_query_override(client):
     assert res.json()["probe_llm"] is True
 
 
+def test_settings_persistence_round_trip(tmp_path):
+    """Settings saved via persist_settings should be loaded on next startup."""
+    import os
+    db_file = tmp_path / "test-webui.db"
+    db_url = f"sqlite+pysqlite:///{db_file}"
+    os.environ["TEXT_GAME_WEBUI_TGE_DATABASE_URL"] = db_url
+    os.environ["TEXT_GAME_WEBUI_GATEWAY_BACKEND"] = "inmemory"
+    try:
+        from app.settings import Settings, persist_settings, load_persisted_settings
+
+        # Create initial settings and change some values
+        s1 = Settings()
+        s1.tge_database_url = db_url
+        s1.tge_completion_mode = "ollama"
+        s1.tge_llm_model = "my-custom-model"
+        s1.tge_llm_base_url = "http://10.0.0.5:11434"
+        s1.tge_llm_temperature = 0.42
+        persist_settings(s1)
+
+        # Create fresh settings (would use env/defaults) and load persisted overrides
+        s2 = Settings()
+        s2.tge_database_url = db_url
+        load_persisted_settings(s2)
+
+        assert s2.tge_completion_mode == "ollama"
+        assert s2.tge_llm_model == "my-custom-model"
+        assert s2.tge_llm_base_url == "http://10.0.0.5:11434"
+        assert s2.tge_llm_temperature == 0.42
+    finally:
+        os.environ.pop("TEXT_GAME_WEBUI_TGE_DATABASE_URL", None)
+        os.environ.pop("TEXT_GAME_WEBUI_GATEWAY_BACKEND", None)
+
+
 def test_diagnostics_bundle_endpoint_without_campaign(client):
     res = client.get("/api/diagnostics/bundle")
     assert res.status_code == 200
