@@ -1894,7 +1894,8 @@ details summary {
 }
 .file-item small { color: #7a8a80; margin-left: auto; white-space: nowrap; }
 .file-status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-.dot-pending { background: #7a8a80; }
+.dot-reading { background: #7a8a80; animation: blink-cursor 0.7s step-end infinite; }
+.dot-ready { background: #7a8a80; }
 .dot-uploading { background: var(--accent); animation: blink-cursor 0.7s step-end infinite; }
 .dot-done { background: #3a8a5c; }
 .dot-error { background: var(--error); }

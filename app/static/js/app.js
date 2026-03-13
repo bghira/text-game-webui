@@ -299,9 +299,11 @@
       /* ---- Turn stream hydration from history ---- */
       populateTurnStreamFromHistory() {
         if (!this.recentTurns || this.recentTurns.length === 0) return;
+        const sessionId = this.selectedSessionId;
         const entries = [];
         let counter = 0;
         for (const turn of this.recentTurns) {
+          if (sessionId && turn.session_id && turn.session_id !== sessionId) continue;
           if (turn.kind === "narration" || turn.kind === "action_response") {
             counter++;
             const meta = turn.meta || {};
@@ -1276,16 +1278,23 @@
         }
       },
 
+      _allowedFileExtensions: [".txt", ".md", ".text"],
+
       _addCampaignFiles(files) {
         const existing = new Set(this.campaignForm.files.map(f => f.file.name));
         for (const file of files) {
           if (existing.has(file.name)) continue;
+          const ext = file.name.includes(".") ? "." + file.name.split(".").pop().toLowerCase() : "";
+          if (!this._allowedFileExtensions.includes(ext)) continue;
           existing.add(file.name);
-          this.campaignForm.files.push({ file, text: "", status: "pending" });
-          const reader = new FileReader();
-          const entry = this.campaignForm.files[this.campaignForm.files.length - 1];
-          reader.onload = (e) => { entry.text = e.target.result; };
-          reader.readAsText(file);
+          const ready = new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => { entry.text = e.target.result; entry.status = "ready"; resolve(); };
+            reader.onerror = () => { entry.status = "error"; reject(new Error("Failed to read " + file.name)); };
+            reader.readAsText(file);
+          });
+          const entry = { file, text: "", status: "reading", _ready: ready };
+          this.campaignForm.files.push(entry);
         }
       },
 
@@ -1322,7 +1331,13 @@
           await this.selectCampaign(campaign.id);
           await this.ensureSharedWindow();
 
-          // 2. Ingest each file via digest endpoint
+          // 2. Wait for all file reads to complete
+          if (this.campaignForm.files.length > 0) {
+            this.campaignForm.createStatus = "Reading files...";
+            await Promise.allSettled(this.campaignForm.files.map(f => f._ready));
+          }
+
+          // 3. Ingest each file via digest endpoint
           const allTexts = [];
           for (let i = 0; i < this.campaignForm.files.length; i++) {
             const f = this.campaignForm.files[i];
@@ -1347,7 +1362,7 @@
             }
           }
 
-          // 3. Start setup wizard with combined text
+          // 4. Start setup wizard with combined text
           if (allTexts.length > 0) {
             this.campaignForm.createStatus = "Starting setup wizard...";
             try {
@@ -1365,7 +1380,7 @@
             }
           }
 
-          // 4. Clean up form
+          // 5. Clean up form
           this.campaignForm.name = "";
           this.campaignForm.files = [];
           this.campaignForm.on_rails = false;
