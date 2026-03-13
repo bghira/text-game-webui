@@ -386,3 +386,137 @@ export async function smsToolsFlow(
 
   return { calls };
 }
+
+/* ---- Turn history types and helpers ---- */
+
+export type HistoryTurn = {
+  kind: string;
+  content: string;
+  session_id?: string;
+  created_at?: string;
+  meta?: Record<string, unknown>;
+};
+
+export type Campaign = {
+  id: string;
+  name: string;
+  actor_id: string;
+};
+
+export type Session = {
+  id: string;
+  surface_key?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export function populateTurnStreamFromHistory(
+  recentTurns: HistoryTurn[],
+  selectedSessionId: string,
+): { entries: Array<{ id: number; type: string; text: string; at: string; meta: Record<string, unknown> }>; turnCounter: number; gameTime: Record<string, unknown> } {
+  let gameTime: Record<string, unknown> = {};
+  const entries: Array<{ id: number; type: string; text: string; at: string; meta: Record<string, unknown> }> = [];
+  let counter = 0;
+  for (const turn of recentTurns) {
+    if (selectedSessionId && turn.session_id && turn.session_id !== selectedSessionId) continue;
+    if (turn.kind === "narration" || turn.kind === "action_response") {
+      counter++;
+      const meta = turn.meta || {};
+      const entry: { id: number; type: string; text: string; at: string; meta: Record<string, unknown> } = {
+        id: counter,
+        type: "narrator",
+        at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
+        text: turn.content || "[No content]",
+        meta: {},
+      };
+      if (meta.game_time) {
+        entry.meta._game_time = meta.game_time;
+        gameTime = meta.game_time as Record<string, unknown>;
+      }
+      entries.push(entry);
+    }
+  }
+  return { entries, turnCounter: counter, gameTime };
+}
+
+export function resolveRestoredSelection(
+  savedCampaignId: string | null,
+  savedSessionId: string | null,
+  campaigns: Campaign[],
+  sessionsList: Session[],
+): { campaignId: string | null; sessionId: string | null } {
+  if (!savedCampaignId || !campaigns.some(c => c.id === savedCampaignId)) {
+    return { campaignId: null, sessionId: null };
+  }
+  const sessionId = savedSessionId && sessionsList.some(s => s.id === savedSessionId)
+    ? savedSessionId
+    : null;
+  return { campaignId: savedCampaignId, sessionId };
+}
+
+export type FileEntry = {
+  name: string;
+  text: string;
+  status: string;
+};
+
+export async function campaignCreationWithDocsFlow(
+  fetcher: FetchLike,
+  campaignName: string,
+  actorId: string,
+  files: FileEntry[],
+  onRails: boolean,
+): Promise<{ calls: string[]; campaignId: string; failedFiles: string[] }> {
+  const calls: string[] = [];
+  const failedFiles: string[] = [];
+
+  // 1. Create campaign
+  calls.push("/api/campaigns");
+  const body = await fetcher("/api/campaigns", {
+    method: "POST",
+    body: JSON.stringify({
+      namespace: "default",
+      name: campaignName.trim(),
+      actor_id: actorId.trim(),
+    }),
+  }) as { campaign: { id: string; name: string } };
+
+  const campaignId = body.campaign.id;
+
+  // 2. Ingest each file via digest endpoint
+  const allTexts: string[] = [];
+  for (const f of files) {
+    if (!f.text || !f.text.trim()) continue;
+    const digestUrl = `/api/campaigns/${campaignId}/source-materials/digest`;
+    calls.push(digestUrl);
+    try {
+      await fetcher(digestUrl, {
+        method: "POST",
+        body: JSON.stringify({
+          text: f.text,
+          document_label: f.name.replace(/\.[^.]+$/, ""),
+          format: null,
+          replace_document: true,
+        }),
+      });
+      allTexts.push(f.text);
+    } catch (_err) {
+      failedFiles.push(f.name);
+    }
+  }
+
+  // 3. Start setup wizard with combined text (only when files ingested)
+  if (allTexts.length > 0) {
+    const setupUrl = `/api/campaigns/${campaignId}/setup/start`;
+    calls.push(setupUrl);
+    await fetcher(setupUrl, {
+      method: "POST",
+      body: JSON.stringify({
+        actor_id: actorId.trim(),
+        on_rails: onRails,
+        attachment_text: allTexts.join("\n\n---\n\n"),
+      }),
+    });
+  }
+
+  return { calls, campaignId, failedFiles };
+}
