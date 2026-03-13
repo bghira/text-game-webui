@@ -117,6 +117,10 @@
         namespace: "default",
         name: "",
         actor_id: "",
+        files: [],
+        on_rails: false,
+        creating: false,
+        createStatus: "",
       },
       turnForm: {
         actor_id: "",
@@ -274,9 +278,50 @@
         await this.loadOllamaModels();
         /* watch debug toggle to guard inspector tab */
         this.$watch("$store.app.debugMode", () => this.ensureValidInspectorTab());
+
+        // Restore persisted campaign selection
+        const savedCampaignId = localStorage.getItem("selectedCampaignId");
+        if (savedCampaignId && this.campaigns.some(c => c.id === savedCampaignId)) {
+          await this.selectCampaign(savedCampaignId);
+          const savedSessionId = localStorage.getItem("selectedSessionId");
+          if (savedSessionId && this.sessionsList.some(s => s.id === savedSessionId)) {
+            this.selectSession(savedSessionId);
+          } else {
+            this.populateTurnStreamFromHistory();
+          }
+        }
+
         if (!this.statusMessage.startsWith("Runtime backend:")) {
           this.statusMessage = "Initialized.";
         }
+      },
+
+      /* ---- Turn stream hydration from history ---- */
+      populateTurnStreamFromHistory() {
+        if (!this.recentTurns || this.recentTurns.length === 0) return;
+        const entries = [];
+        let counter = 0;
+        for (const turn of this.recentTurns) {
+          if (turn.kind === "narration" || turn.kind === "action_response") {
+            counter++;
+            const meta = turn.meta || {};
+            const entry = {
+              id: counter,
+              type: "narrator",
+              at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
+              text: turn.content || "[No content]",
+              meta: {},
+            };
+            if (meta.game_time) {
+              entry.meta._game_time = meta.game_time;
+              this.gameTime = meta.game_time;
+            }
+            entries.push(entry);
+          }
+        }
+        this.turnCounter = counter;
+        this.turnStream = entries;
+        this._scrollStream();
       },
 
       /* ---- Turn stream filtering ---- */
@@ -499,9 +544,11 @@
 
       selectSession(sessionId) {
         this.selectedSessionId = sessionId || "";
+        localStorage.setItem("selectedSessionId", this.selectedSessionId);
         this.syncTurnSessionSelection();
         this.turnStream = [];
         this.connectSocket();
+        this.populateTurnStreamFromHistory();
         const row = this.currentSessionRecord();
         if (row) {
           const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
@@ -1082,6 +1129,8 @@
             this.socketReconnectTimer = null;
           }
           this.selectedCampaignId = null;
+          localStorage.removeItem("selectedCampaignId");
+          localStorage.removeItem("selectedSessionId");
           this.turnStream = [];
           this.sessions = [];
           await this.refreshCampaigns();
@@ -1227,24 +1276,100 @@
         }
       },
 
+      _addCampaignFiles(files) {
+        const existing = new Set(this.campaignForm.files.map(f => f.file.name));
+        for (const file of files) {
+          if (existing.has(file.name)) continue;
+          existing.add(file.name);
+          this.campaignForm.files.push({ file, text: "", status: "pending" });
+          const reader = new FileReader();
+          const entry = this.campaignForm.files[this.campaignForm.files.length - 1];
+          reader.onload = (e) => { entry.text = e.target.result; };
+          reader.readAsText(file);
+        }
+      },
+
+      handleFileSelect(event) {
+        this._addCampaignFiles(Array.from(event.target.files || []));
+        event.target.value = "";
+      },
+
+      handleFileDrop(event) {
+        this._addCampaignFiles(Array.from(event.dataTransfer.files || []));
+      },
+
+      removeUploadedFile(index) {
+        this.campaignForm.files.splice(index, 1);
+      },
+
       async createCampaign() {
         this.resetError();
+        if (!this.campaignForm.name.trim() || !this.campaignForm.actor_id.trim()) return;
+        this.campaignForm.creating = true;
+        this.campaignForm.createStatus = "Creating campaign...";
         try {
-          const payload = {
-            namespace: this.campaignForm.namespace || "default",
-            name: this.campaignForm.name.trim(),
-            actor_id: this.campaignForm.actor_id.trim(),
-          };
+          // 1. Create campaign
           const body = await this.api("/api/campaigns", {
             method: "POST",
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+              namespace: this.campaignForm.namespace || "default",
+              name: this.campaignForm.name.trim(),
+              actor_id: this.campaignForm.actor_id.trim(),
+            }),
           });
           const campaign = body.campaign;
-          this.campaignForm.name = "";
           await this.refreshCampaigns();
           await this.selectCampaign(campaign.id);
-          // Auto-open shared window and focus action input
           await this.ensureSharedWindow();
+
+          // 2. Ingest each file via digest endpoint
+          const allTexts = [];
+          for (let i = 0; i < this.campaignForm.files.length; i++) {
+            const f = this.campaignForm.files[i];
+            if (!f.text || !f.text.trim()) continue;
+            f.status = "uploading";
+            this.campaignForm.createStatus = `Ingesting document ${i + 1}/${this.campaignForm.files.length}: ${f.file.name}...`;
+            try {
+              await this.api(`/api/campaigns/${campaign.id}/source-materials/digest`, {
+                method: "POST",
+                body: JSON.stringify({
+                  text: f.text,
+                  document_label: f.file.name.replace(/\.[^.]+$/, ""),
+                  format: null,
+                  replace_document: true,
+                }),
+              });
+              f.status = "done";
+              allTexts.push(f.text);
+            } catch (err) {
+              f.status = "error";
+              console.warn("Digest ingest failed for", f.file.name, err);
+            }
+          }
+
+          // 3. Start setup wizard with combined text
+          if (allTexts.length > 0) {
+            this.campaignForm.createStatus = "Starting setup wizard...";
+            try {
+              await this.api(`/api/campaigns/${campaign.id}/setup/start`, {
+                method: "POST",
+                body: JSON.stringify({
+                  actor_id: this.campaignForm.actor_id.trim(),
+                  on_rails: this.campaignForm.on_rails,
+                  attachment_text: allTexts.join("\n\n---\n\n"),
+                }),
+              });
+              await this.checkSetupMode();
+            } catch (err) {
+              console.warn("Setup wizard start failed:", err);
+            }
+          }
+
+          // 4. Clean up form
+          this.campaignForm.name = "";
+          this.campaignForm.files = [];
+          this.campaignForm.on_rails = false;
+          this.campaignForm.createStatus = "";
           this.$nextTick(() => {
             const input = document.getElementById("action-input");
             if (input) input.focus();
@@ -1252,13 +1377,17 @@
           this.statusMessage = `Created campaign ${campaign.name}.`;
         } catch (error) {
           this.errorMessage = String(error);
+        } finally {
+          this.campaignForm.creating = false;
         }
       },
 
       async selectCampaign(campaignId) {
         this.resetError();
         this.selectedCampaignId = campaignId;
+        localStorage.setItem("selectedCampaignId", campaignId);
         this.selectedSessionId = "";
+        localStorage.removeItem("selectedSessionId");
         this.turnStream = [];
         /* Reset per-campaign derived state to prevent stale values */
         this.gameTime = {};

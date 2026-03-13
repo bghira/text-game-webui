@@ -8,13 +8,45 @@
     <form class="stack compact" @submit.prevent="createCampaign()">
       <label>
         Campaign Name
-        <input x-model="campaignForm.name" placeholder="New Campaign" required />
+        <input x-model="campaignForm.name" placeholder="New Campaign" required :disabled="campaignForm.creating" />
       </label>
       <label>
         Your Character
-        <input x-model="campaignForm.actor_id" placeholder="dale-denton" required />
+        <input x-model="campaignForm.actor_id" placeholder="dale-denton" required :disabled="campaignForm.creating" />
       </label>
-      <button type="submit">+ New Campaign</button>
+
+      <!-- File upload zone -->
+      <div class="file-drop-zone" :class="{ 'drop-zone-disabled': campaignForm.creating }"
+           @dragover.prevent
+           @dragenter.prevent="$el._dragCount = ($el._dragCount || 0) + 1; $el.classList.add('drag-over')"
+           @dragleave="$el._dragCount = ($el._dragCount || 1) - 1; if (!$el._dragCount) $el.classList.remove('drag-over')"
+           @drop.prevent="$el._dragCount = 0; $el.classList.remove('drag-over'); if (!campaignForm.creating) handleFileDrop($event)">
+        <p class="drop-zone-text">Drop .txt files here or <label class="file-pick-label">browse<input type="file" multiple accept=".txt,.md,.text" @change="handleFileSelect($event)" class="sr-only" :disabled="campaignForm.creating" /></label></p>
+        <template x-if="campaignForm.files.length > 0">
+          <ul class="file-list">
+            <template x-for="(f, idx) in campaignForm.files" :key="idx">
+              <li class="file-item" :class="'file-' + f.status">
+                <span class="file-name" x-text="f.file.name"></span>
+                <small x-text="(f.file.size / 1024).toFixed(1) + ' KB'"></small>
+                <span class="file-status-dot" :class="'dot-' + f.status"></span>
+                <button type="button" @click="removeUploadedFile(idx)" class="file-remove" :disabled="campaignForm.creating">&times;</button>
+              </li>
+            </template>
+          </ul>
+        </template>
+      </div>
+
+      <template x-if="campaignForm.files.length > 0">
+        <label class="flag-toggle">
+          <input type="checkbox" x-model="campaignForm.on_rails" :disabled="campaignForm.creating" />
+          <span>On Rails <small>(follow a structured storyline)</small></span>
+        </label>
+      </template>
+
+      <button type="submit" :disabled="campaignForm.creating">
+        <span x-show="!campaignForm.creating">+ New Campaign</span>
+        <span x-show="campaignForm.creating" x-text="campaignForm.createStatus || 'Creating...'"></span>
+      </button>
     </form>
 
     <div class="stack compact campaign-list">
