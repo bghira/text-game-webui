@@ -1860,6 +1860,48 @@ details summary {
   background: #fce4ec;
 }
 
+/* ---- File Drop Zone ---- */
+
+.file-drop-zone {
+  border: 2px dashed var(--line);
+  border-radius: 6px;
+  padding: 0.75rem;
+  text-align: center;
+  transition: border-color 0.2s, background 0.2s;
+}
+.file-drop-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(45, 90, 79, 0.06);
+}
+.file-drop-zone.drop-zone-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.drop-zone-text { margin: 0; font-size: 0.85rem; color: #7a8a80; }
+.file-pick-label { color: var(--accent); cursor: pointer; text-decoration: underline; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+.file-list { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+.file-item {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.25rem 0; font-size: 0.85rem;
+  min-width: 0;
+}
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.file-item small { color: #7a8a80; margin-left: auto; white-space: nowrap; }
+.file-status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-reading { background: #7a8a80; animation: blink-cursor 0.7s step-end infinite; }
+.dot-ready { background: #7a8a80; }
+.dot-uploading { background: var(--accent); animation: blink-cursor 0.7s step-end infinite; }
+.dot-done { background: #3a8a5c; }
+.dot-error { background: var(--error); }
+.file-remove { background: none; border: none; color: #7a8a80; cursor: pointer; font-size: 1.1rem; padding: 0 0.25rem; }
+.file-remove:hover { color: var(--error); }
+
 /* ---- Responsive ---- */
 
 @media (max-width: 768px) {
