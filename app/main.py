@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,10 +10,101 @@ from fastapi.templating import Jinja2Templates
 
 from app.api.routes import router as api_router
 from app.api.ws import router as ws_router
+from app.media.image_cache import ImageCache
 from app.realtime.hub import RealtimeHub
 from app.services.gateway_factory import build_gateway
 from app.settings import Settings, load_persisted_settings
 from app.ui.routes import router as ui_router
+
+log = logging.getLogger(__name__)
+
+
+def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
+    """Wire up the image-generation subsystem based on settings."""
+    generated_dir = app_dir / "static" / "generated"
+    image_cache = ImageCache(generated_dir, max_memory=settings.image_cache_max_memory)
+    app.state.image_cache = image_cache
+
+    # Mount /generated/ so PNGs are served directly
+    app.mount(
+        "/generated",
+        StaticFiles(directory=str(generated_dir)),
+        name="generated",
+    )
+
+    backend = (settings.image_backend or "none").strip().lower()
+    daemon = None
+    diffusers_client = None
+    comfyui_client = None
+
+    if backend == "diffusers":
+        from app.media.diffusers_daemon import DiffusersDaemon
+        from app.media.diffusers_client import DiffusersClient
+
+        daemon = DiffusersDaemon(
+            host=settings.diffusers_host,
+            port=settings.diffusers_port,
+            model=settings.diffusers_model,
+            device=settings.diffusers_device,
+            dtype=settings.diffusers_dtype,
+            offload=settings.diffusers_offload,
+            quantization=settings.diffusers_quantization,
+            vae_tiling=settings.diffusers_vae_tiling,
+        )
+        diffusers_client = DiffusersClient(daemon.base_url)
+
+    elif backend == "comfyui":
+        from app.media.comfyui_client import ComfyUIClient
+
+        workflow = None
+        if settings.comfyui_workflow_json:
+            try:
+                # Could be inline JSON or a file path
+                raw = settings.comfyui_workflow_json.strip()
+                if raw.startswith("{"):
+                    workflow = json.loads(raw)
+                else:
+                    workflow = json.loads(Path(raw).read_text())
+            except Exception as exc:
+                log.warning("Failed to load custom ComfyUI workflow: %s", exc)
+        comfyui_client = ComfyUIClient(settings.comfyui_url, workflow_template=workflow)
+
+    app.state.diffusers_daemon = daemon
+    app.state.diffusers_client = diffusers_client
+    app.state.comfyui_client = comfyui_client
+
+    # Create and inject LocalMediaPort if a backend is configured
+    if backend in ("diffusers", "comfyui"):
+        from app.media.media_port import LocalMediaPort
+
+        media_port = LocalMediaPort(
+            backend=backend,
+            diffusers_client=diffusers_client,
+            comfyui_client=comfyui_client,
+            image_cache=image_cache,
+            realtime_hub=app.state.realtime,
+            settings=settings,
+        )
+        app.state.media_port = media_port
+
+        # Inject into the TGE gateway if applicable
+        gateway = app.state.gateway
+        if hasattr(gateway, "set_media_port"):
+            gateway.set_media_port(media_port)
+            log.info("Media port injected into gateway (backend=%s)", backend)
+    else:
+        app.state.media_port = None
+
+    # Auto-start daemon if configured
+    if daemon and settings.diffusers_autostart:
+
+        async def _autostart() -> None:
+            log.info("Auto-starting diffusers daemon")
+            await daemon.start()
+
+        @app.on_event("startup")
+        async def _on_startup() -> None:
+            await _autostart()
 
 
 def create_app() -> FastAPI:
@@ -28,6 +121,10 @@ def create_app() -> FastAPI:
     app.state.templates = Jinja2Templates(directory=str(app_dir / "templates"))
 
     app.mount("/static", StaticFiles(directory=str(app_dir / "static")), name="static")
+
+    # Initialize media subsystem (mounts /generated/ and wires media_port)
+    _init_media(app, settings, app_dir)
+
     app.include_router(api_router)
     app.include_router(ws_router)
     app.include_router(ui_router)

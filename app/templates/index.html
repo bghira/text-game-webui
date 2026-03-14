@@ -12,7 +12,7 @@
       </label>
       <label>
         Your Character
-        <input x-model="campaignForm.actor_id" placeholder="dale-denton" required :disabled="campaignForm.creating" />
+        <input x-model="campaignForm.actor_id" placeholder="your-character-name" required :disabled="campaignForm.creating" />
       </label>
 
       <!-- File upload zone -->
@@ -21,7 +21,7 @@
            @dragenter.prevent="$el._dragCount = ($el._dragCount || 0) + 1; $el.classList.add('drag-over')"
            @dragleave="$el._dragCount = ($el._dragCount || 1) - 1; if (!$el._dragCount) $el.classList.remove('drag-over')"
            @drop.prevent="$el._dragCount = 0; $el.classList.remove('drag-over'); if (!campaignForm.creating) handleFileDrop($event)">
-        <p class="drop-zone-text">Drop .txt / .md files here or <label class="file-pick-label">browse<input type="file" multiple accept=".txt,.md,.text" @change="handleFileSelect($event)" class="sr-only" :disabled="campaignForm.creating" /></label></p>
+        <p class="drop-zone-text">Drop .txt / .md files here or <label class="file-pick-label">browse<input type="file" multiple accept=".txt,.md" @change="handleFileSelect($event)" class="sr-only" :disabled="campaignForm.creating" /></label></p>
         <template x-if="campaignForm.files.length > 0">
           <ul class="file-list">
             <template x-for="(f, idx) in campaignForm.files" :key="f.file.name">
@@ -235,7 +235,9 @@
           </template>
         </article>
       </template>
-      <p x-show="turnStream.length === 0" class="empty">No turns yet.</p>
+      <p x-show="turnStream.length === 0 && !selectedCampaignId" class="empty">No turns yet.</p>
+      <p x-show="turnStream.length === 0 && selectedCampaignId && setupMode" class="empty">Your campaign is ready. Open the <strong>Campaign</strong> tab below to start the setup wizard.</p>
+      <p x-show="turnStream.length === 0 && selectedCampaignId && !setupMode" class="empty">Type an action below to begin your adventure.</p>
     </div>
 
     <!-- Action Bar (horizontal) -->

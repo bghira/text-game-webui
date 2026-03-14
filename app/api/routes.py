@@ -17,6 +17,8 @@ from app.services.schemas import (
     CampaignRuleUpdate,
     CampaignFlagsUpdate,
     CharacterPortraitRequest,
+    ImageGenerateRequest,
+    ImageSettingsUpdate,
     LLMSettingsUpdate,
     LevelUpRequest,
     MinigameMoveRequest,
@@ -1000,3 +1002,228 @@ async def list_ollama_models(request: Request) -> dict:
         return await asyncio.to_thread(_fetch_ollama_models, url)
     except Exception:
         return {"models": [], "reachable": False}
+
+
+# ---------------------------------------------------------------------------
+# Image generation settings & daemon control
+# ---------------------------------------------------------------------------
+
+
+@router.get("/settings/image")
+async def get_image_settings(request: Request) -> dict:
+    settings = request.app.state.settings
+    daemon = getattr(request.app.state, "diffusers_daemon", None)
+    return {
+        "image_backend": settings.image_backend,
+        "diffusers_host": settings.diffusers_host,
+        "diffusers_port": settings.diffusers_port,
+        "diffusers_model": settings.diffusers_model,
+        "diffusers_device": settings.diffusers_device,
+        "diffusers_dtype": settings.diffusers_dtype,
+        "diffusers_offload": settings.diffusers_offload,
+        "diffusers_quantization": settings.diffusers_quantization,
+        "diffusers_vae_tiling": settings.diffusers_vae_tiling,
+        "diffusers_autostart": settings.diffusers_autostart,
+        "comfyui_url": settings.comfyui_url,
+        "comfyui_workflow_json": settings.comfyui_workflow_json,
+        "image_width": settings.image_width,
+        "image_height": settings.image_height,
+        "image_steps": settings.image_steps,
+        "image_guidance_scale": settings.image_guidance_scale,
+        "image_cache_max_memory": settings.image_cache_max_memory,
+        "daemon_state": daemon.state.value if daemon else None,
+    }
+
+
+@router.post("/settings/image")
+async def update_image_settings(
+    payload: ImageSettingsUpdate,
+    request: Request,
+) -> dict:
+    settings = request.app.state.settings
+    raw = payload.model_dump()
+    updated = []
+    for k, v in raw.items():
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        setattr(settings, k, v)
+        updated.append(k)
+    if not updated:
+        raise HTTPException(status_code=400, detail="No settings provided.")
+
+    from app.settings import persist_settings
+
+    persist_settings(settings)
+    return {"updated": updated}
+
+
+@router.post("/image/daemon/start")
+async def start_image_daemon(request: Request) -> dict:
+    daemon = getattr(request.app.state, "diffusers_daemon", None)
+    if daemon is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No diffusers daemon configured. Set image_backend to 'diffusers' first.",
+        )
+    return await daemon.start()
+
+
+@router.post("/image/daemon/stop")
+async def stop_image_daemon(request: Request) -> dict:
+    daemon = getattr(request.app.state, "diffusers_daemon", None)
+    if daemon is None:
+        raise HTTPException(status_code=400, detail="No diffusers daemon configured.")
+    return await daemon.stop()
+
+
+@router.get("/image/daemon/status")
+async def image_daemon_status(request: Request) -> dict:
+    daemon = getattr(request.app.state, "diffusers_daemon", None)
+    if daemon is None:
+        return {"state": "not_configured"}
+
+    result: dict = {"state": daemon.state.value}
+
+    # Include GPU stats if daemon is running
+    client = getattr(request.app.state, "diffusers_client", None)
+    if client and daemon.state.value == "running":
+        try:
+            result["system_stats"] = await client.system_stats()
+        except Exception:
+            result["system_stats"] = None
+    return result
+
+
+@router.get("/image/daemon/logs")
+async def image_daemon_logs(request: Request) -> dict:
+    daemon = getattr(request.app.state, "diffusers_daemon", None)
+    if daemon is None:
+        return {"logs": []}
+    return {"logs": daemon.recent_logs}
+
+
+@router.post("/image/generate")
+async def generate_image(
+    payload: ImageGenerateRequest,
+    request: Request,
+) -> dict:
+    settings = request.app.state.settings
+    backend = (settings.image_backend or "none").strip().lower()
+
+    if backend == "diffusers":
+        client = getattr(request.app.state, "diffusers_client", None)
+        if client is None:
+            raise HTTPException(status_code=400, detail="Diffusers client not initialized.")
+        result = await client.generate(
+            prompt=payload.prompt,
+            model_id=payload.model_id or settings.diffusers_model,
+            width=payload.width or settings.image_width,
+            height=payload.height or settings.image_height,
+            steps=payload.steps or settings.image_steps,
+            guidance_scale=payload.guidance_scale or settings.image_guidance_scale,
+            seed=payload.seed,
+        )
+        return result
+
+    elif backend == "comfyui":
+        client = getattr(request.app.state, "comfyui_client", None)
+        if client is None:
+            raise HTTPException(status_code=400, detail="ComfyUI client not initialized.")
+        prompt_id = await client.queue_prompt(
+            prompt=payload.prompt,
+            width=payload.width or settings.image_width,
+            height=payload.height or settings.image_height,
+            steps=payload.steps or settings.image_steps,
+            seed=payload.seed,
+            model=payload.model_id or settings.diffusers_model,
+        )
+        return {"job_id": prompt_id, "status": "pending", "backend": "comfyui"}
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No image backend configured (current: {backend}).",
+        )
+
+
+@router.get("/image/status/{job_id}")
+async def image_job_status(job_id: str, request: Request) -> dict:
+    settings = request.app.state.settings
+    backend = (settings.image_backend or "none").strip().lower()
+
+    if backend == "diffusers":
+        client = getattr(request.app.state, "diffusers_client", None)
+        if client is None:
+            raise HTTPException(status_code=400, detail="Diffusers client not initialized.")
+        status = await client.poll_status(job_id)
+        # If completed, store the first image in cache and return a URL
+        if status.get("status") == "completed" and status.get("images"):
+            cache = request.app.state.image_cache
+            entry = cache.store_from_base64(
+                base64_png=status["images"][0],
+                prompt="(manual generation)",
+            )
+            status["image_url"] = cache.url_for(entry)
+            status["image_id"] = entry.image_id
+        return status
+
+    elif backend == "comfyui":
+        client = getattr(request.app.state, "comfyui_client", None)
+        if client is None:
+            raise HTTPException(status_code=400, detail="ComfyUI client not initialized.")
+        try:
+            history = await asyncio.to_thread(client._get, f"/history/{job_id}")
+        except Exception as exc:
+            return {"status": "polling", "error": str(exc)}
+        if job_id in history:
+            entry = history[job_id]
+            completed = entry.get("status", {}).get("completed", False)
+            if completed:
+                # Download and cache first output image
+                for _nid, node_out in entry.get("outputs", {}).items():
+                    images = node_out.get("images", [])
+                    if images:
+                        img_info = images[0]
+                        png_bytes = await client.download_image(
+                            filename=img_info["filename"],
+                            subfolder=img_info.get("subfolder", ""),
+                            type_=img_info.get("type", "output"),
+                        )
+                        cache = request.app.state.image_cache
+                        cached = cache.store(
+                            png_bytes=png_bytes,
+                            prompt="(manual generation)",
+                        )
+                        return {
+                            "status": "completed",
+                            "image_url": cache.url_for(cached),
+                            "image_id": cached.image_id,
+                        }
+                return {"status": "completed", "images": []}
+            return {"status": "processing"}
+        return {"status": "pending"}
+
+    raise HTTPException(status_code=400, detail="No image backend configured.")
+
+
+@router.get("/image/recent")
+async def recent_images(request: Request) -> dict:
+    cache = getattr(request.app.state, "image_cache", None)
+    if cache is None:
+        return {"images": []}
+    entries = cache.recent(limit=20)
+    return {
+        "images": [
+            {
+                "image_id": e.image_id,
+                "url": cache.url_for(e),
+                "prompt": e.prompt,
+                "campaign_id": e.campaign_id,
+                "ref_type": e.ref_type,
+                "created_at": e.created_at,
+            }
+            for e in entries
+        ]
+    }

@@ -18,6 +18,24 @@ _PERSISTABLE_KEYS = frozenset({
     "tge_llm_timeout_seconds",
     "tge_ollama_keep_alive",
     "tge_ollama_options_json",
+    # Image generation settings
+    "image_backend",
+    "diffusers_host",
+    "diffusers_port",
+    "diffusers_model",
+    "diffusers_device",
+    "diffusers_dtype",
+    "diffusers_offload",
+    "diffusers_quantization",
+    "diffusers_vae_tiling",
+    "diffusers_autostart",
+    "comfyui_url",
+    "comfyui_workflow_json",
+    "image_width",
+    "image_height",
+    "image_steps",
+    "image_guidance_scale",
+    "image_cache_max_memory",
 })
 
 
@@ -134,4 +152,59 @@ class Settings(BaseModel):
     )
     tge_runtime_probe_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS", "8"))
+    )
+
+    # -- Image generation settings ------------------------------------------
+    image_backend: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_IMAGE_BACKEND", "none")
+    )  # none | diffusers | comfyui
+    diffusers_host: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_HOST", "127.0.0.1")
+    )
+    diffusers_port: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_PORT", "8189"))
+    )
+    diffusers_model: str = Field(
+        default_factory=lambda: os.getenv(
+            "TEXT_GAME_WEBUI_DIFFUSERS_MODEL", "black-forest-labs/FLUX.2-klein-4b"
+        )
+    )
+    diffusers_device: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_DEVICE", "cuda")
+    )
+    diffusers_dtype: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_DTYPE", "bf16")
+    )
+    diffusers_offload: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_OFFLOAD", "none")
+    )
+    diffusers_quantization: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_QUANTIZATION", "none")
+    )
+    diffusers_vae_tiling: bool = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_VAE_TILING", "1") in {"1", "true", "True"}
+    )
+    diffusers_autostart: bool = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_AUTOSTART", "0") in {"1", "true", "True"}
+    )
+    comfyui_url: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_COMFYUI_URL", "http://127.0.0.1:8188")
+    )
+    comfyui_workflow_json: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_COMFYUI_WORKFLOW_JSON", "")
+    )
+    image_width: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_WIDTH", "1024"))
+    )
+    image_height: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_HEIGHT", "1024"))
+    )
+    image_steps: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_STEPS", "20"))
+    )
+    image_guidance_scale: float = Field(
+        default_factory=lambda: float(os.getenv("TEXT_GAME_WEBUI_IMAGE_GUIDANCE_SCALE", "3.5"))
+    )
+    image_cache_max_memory: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_CACHE_MAX_MEMORY", "50"))
     )

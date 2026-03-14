@@ -10,6 +10,8 @@ Web UI shell for `text-game-engine`.
   - `tge` (uses local `text-game-engine` installation + SQLite)
 - Realtime campaign stream via websocket (`/ws/campaigns/{campaign_id}`).
 - Inspector surfaces for sessions/map/timers/calendar/roster (including upsert/remove actions)/player state+inventory/media status+avatar actions/memory/SMS/debug snapshot.
+- Campaign creation with document upload (`.txt`/`.md` drag-and-drop), automatic source-material digest, and setup wizard auto-start.
+- State restoration: selected campaign and session persist to `localStorage` and restore on refresh, with turn stream hydrated from history.
 - Runtime checks endpoint for gateway/database/LLM probe status (`GET /api/runtime/checks`).
   - Supports explicit probe override: `GET /api/runtime/checks?probe_llm=true`.
 
