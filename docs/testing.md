@@ -9,6 +9,7 @@
   - deterministic realtime publish contract assertions (`tests/backend/test_realtime_publish.py`)
   - 404 handling for missing campaigns
   - gateway backend factory behavior
+  - image settings get/update, daemon lifecycle, generate/status flows for both Diffusers and ComfyUI backends (`tests/backend/test_image_api.py`)
 
 Optional test:
 - `tests/backend/test_tge_gateway_optional.py` runs only when `text_game_engine` is installed.

@@ -79,11 +79,11 @@ Scene images and character avatars can be generated locally via a Diffusers daem
 export TEXT_GAME_WEBUI_IMAGE_BACKEND=diffusers
 export TEXT_GAME_WEBUI_DIFFUSERS_MODEL='black-forest-labs/FLUX.2-klein-4b'
 export TEXT_GAME_WEBUI_DIFFUSERS_DEVICE=cuda      # cuda | mps | cpu
-export TEXT_GAME_WEBUI_DIFFUSERS_DTYPE=bf16        # bf16 | fp16 | fp32
+export TEXT_GAME_WEBUI_DIFFUSERS_DTYPE=bf16        # f16 | bf16 | f32
 export TEXT_GAME_WEBUI_DIFFUSERS_AUTOSTART=1       # start daemon on boot
 # optional tuning
 export TEXT_GAME_WEBUI_DIFFUSERS_OFFLOAD=none      # none | model | sequential
-export TEXT_GAME_WEBUI_DIFFUSERS_QUANTIZATION=none # none | qfloat8 | qint8 | qint4
+export TEXT_GAME_WEBUI_DIFFUSERS_QUANTIZATION=none # none | int8 | int4
 export TEXT_GAME_WEBUI_DIFFUSERS_VAE_TILING=1
 ```
 
@@ -107,7 +107,7 @@ export TEXT_GAME_WEBUI_IMAGE_WIDTH=1024
 export TEXT_GAME_WEBUI_IMAGE_HEIGHT=1024
 export TEXT_GAME_WEBUI_IMAGE_STEPS=20
 export TEXT_GAME_WEBUI_IMAGE_GUIDANCE_SCALE=3.5
-export TEXT_GAME_WEBUI_IMAGE_CACHE_MAX_MEMORY=50
+export TEXT_GAME_WEBUI_IMAGE_CACHE_MAX_ENTRIES=50
 ```
 
 When an image backend is active, the engine generates scene images during gameplay and avatar proposals during character creation. Avatars appear in the Player tab with accept/decline controls. Scene images appear in the Campaign tab. Character portraits can be set manually from the Roster tab.
