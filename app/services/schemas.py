@@ -222,7 +222,7 @@ class ImageSettingsUpdate(BaseModel):
     image_height: int | None = None
     image_steps: int | None = None
     image_guidance_scale: float | None = None
-    image_cache_max_memory: int | None = None
+    image_cache_max_entries: int | None = None
 
 
 class ImageGenerateRequest(BaseModel):

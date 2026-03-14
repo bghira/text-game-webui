@@ -243,6 +243,7 @@ class LocalMediaPort:
             width=s.image_width,
             height=s.image_height,
             steps=s.image_steps,
+            cfg=s.image_guidance_scale,
             seed=-1,
             model=model or s.diffusers_model,
         )

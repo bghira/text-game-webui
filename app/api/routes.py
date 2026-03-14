@@ -1030,7 +1030,7 @@ async def get_image_settings(request: Request) -> dict:
         "image_height": settings.image_height,
         "image_steps": settings.image_steps,
         "image_guidance_scale": settings.image_guidance_scale,
-        "image_cache_max_memory": settings.image_cache_max_memory,
+        "image_cache_max_entries": settings.image_cache_max_entries,
         "daemon_state": daemon.state.value if daemon else None,
     }
 
@@ -1056,7 +1056,16 @@ async def update_image_settings(
     from app.settings import persist_settings
 
     persist_settings(settings)
-    return {"updated": updated}
+
+    # Settings that affect the wired-up media subsystem require a restart
+    _RESTART_KEYS = {
+        "image_backend", "diffusers_host", "diffusers_port", "diffusers_model",
+        "diffusers_device", "diffusers_dtype", "diffusers_offload",
+        "diffusers_quantization", "diffusers_vae_tiling", "comfyui_url",
+        "comfyui_workflow_json",
+    }
+    restart_required = bool(_RESTART_KEYS & set(updated))
+    return {"updated": updated, "restart_required": restart_required}
 
 
 @router.post("/image/daemon/start")
@@ -1119,10 +1128,10 @@ async def generate_image(
         result = await client.generate(
             prompt=payload.prompt,
             model_id=payload.model_id or settings.diffusers_model,
-            width=payload.width or settings.image_width,
-            height=payload.height or settings.image_height,
-            steps=payload.steps or settings.image_steps,
-            guidance_scale=payload.guidance_scale or settings.image_guidance_scale,
+            width=payload.width if payload.width is not None else settings.image_width,
+            height=payload.height if payload.height is not None else settings.image_height,
+            steps=payload.steps if payload.steps is not None else settings.image_steps,
+            guidance_scale=payload.guidance_scale if payload.guidance_scale is not None else settings.image_guidance_scale,
             seed=payload.seed,
         )
         return result
@@ -1133,9 +1142,10 @@ async def generate_image(
             raise HTTPException(status_code=400, detail="ComfyUI client not initialized.")
         prompt_id = await client.queue_prompt(
             prompt=payload.prompt,
-            width=payload.width or settings.image_width,
-            height=payload.height or settings.image_height,
-            steps=payload.steps or settings.image_steps,
+            width=payload.width if payload.width is not None else settings.image_width,
+            height=payload.height if payload.height is not None else settings.image_height,
+            steps=payload.steps if payload.steps is not None else settings.image_steps,
+            cfg=payload.guidance_scale if payload.guidance_scale is not None else settings.image_guidance_scale,
             seed=payload.seed,
             model=payload.model_id or settings.diffusers_model,
         )
@@ -1174,7 +1184,7 @@ async def image_job_status(job_id: str, request: Request) -> dict:
         if client is None:
             raise HTTPException(status_code=400, detail="ComfyUI client not initialized.")
         try:
-            history = await asyncio.to_thread(client._get, f"/history/{job_id}")
+            history = await client.get_history(job_id)
         except Exception as exc:
             return {"status": "polling", "error": str(exc)}
         if job_id in history:

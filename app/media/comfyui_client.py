@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from copy import deepcopy
 
@@ -43,7 +44,7 @@ DEFAULT_FLUX_WORKFLOW: dict = {
         "inputs": {
             "seed": "{{seed}}",
             "steps": "{{steps}}",
-            "cfg": 3.5,
+            "cfg": "{{cfg}}",
             "sampler_name": "euler",
             "scheduler": "normal",
             "denoise": 1.0,
@@ -138,6 +139,7 @@ class ComfyUIClient:
         width: int = 1024,
         height: int = 1024,
         steps: int = 20,
+        cfg: float = 3.5,
         seed: int = -1,
         model: str = "",
     ) -> str:
@@ -153,6 +155,7 @@ class ComfyUIClient:
             "width": width,
             "height": height,
             "steps": steps,
+            "cfg": cfg,
             "seed": seed,
             "model": model,
         }
@@ -174,9 +177,7 @@ class ComfyUIClient:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                history = await asyncio.to_thread(
-                    self._get, f"/history/{prompt_id}"
-                )
+                history = await self.get_history(prompt_id)
                 if prompt_id in history:
                     entry = history[prompt_id]
                     status = entry.get("status", {})
@@ -189,11 +190,17 @@ class ComfyUIClient:
             await asyncio.sleep(interval)
         return {"status": "timeout", "error": f"Timed out after {timeout}s"}
 
+    async def get_history(self, prompt_id: str) -> dict:
+        """Fetch prompt execution history by ID."""
+        return await asyncio.to_thread(self._get, f"/history/{prompt_id}")
+
     async def download_image(
         self, filename: str, subfolder: str = "", type_: str = "output"
     ) -> bytes:
-        params = f"?filename={filename}&subfolder={subfolder}&type={type_}"
-        return await asyncio.to_thread(self._get_bytes, f"/view{params}")
+        params = urllib.parse.urlencode(
+            {"filename": filename, "subfolder": subfolder, "type": type_}
+        )
+        return await asyncio.to_thread(self._get_bytes, f"/view?{params}")
 
     def set_workflow_template(self, workflow: dict) -> None:
         self._workflow = workflow

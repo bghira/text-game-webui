@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sqlite3
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # Keys that can be persisted to the webui_kv table.
@@ -35,7 +35,7 @@ _PERSISTABLE_KEYS = frozenset({
     "image_height",
     "image_steps",
     "image_guidance_scale",
-    "image_cache_max_memory",
+    "image_cache_max_entries",
 })
 
 
@@ -205,6 +205,31 @@ class Settings(BaseModel):
     image_guidance_scale: float = Field(
         default_factory=lambda: float(os.getenv("TEXT_GAME_WEBUI_IMAGE_GUIDANCE_SCALE", "3.5"))
     )
-    image_cache_max_memory: int = Field(
-        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_CACHE_MAX_MEMORY", "50"))
+    image_cache_max_entries: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_CACHE_MAX_ENTRIES", "50"))
     )
+
+    # -- Validators --------------------------------------------------------
+
+    _DTYPE_ALIASES: dict[str, str] = {"fp16": "f16", "fp32": "f32"}
+    _VALID_DTYPES: set[str] = {"f16", "bf16", "f32"}
+    _VALID_QUANTIZATIONS: set[str] = {"none", "int8", "int4"}
+
+    @field_validator("diffusers_dtype", mode="before")
+    @classmethod
+    def _normalize_dtype(cls, v: str) -> str:
+        v = cls._DTYPE_ALIASES.get(v, v)
+        if v not in cls._VALID_DTYPES:
+            raise ValueError(f"diffusers_dtype must be one of {cls._VALID_DTYPES}, got {v!r}")
+        return v
+
+    @field_validator("diffusers_quantization", mode="before")
+    @classmethod
+    def _normalize_quantization(cls, v: str) -> str:
+        # Strip common "q" prefix aliases
+        normalized = v.lower().removeprefix("q")
+        if normalized not in cls._VALID_QUANTIZATIONS:
+            raise ValueError(
+                f"diffusers_quantization must be one of {cls._VALID_QUANTIZATIONS}, got {v!r}"
+            )
+        return normalized

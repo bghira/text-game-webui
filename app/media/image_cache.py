@@ -28,10 +28,10 @@ class ImageCache:
     whether the raw bytes are kept in RAM for fast re-serving.
     """
 
-    def __init__(self, generated_dir: Path, max_memory: int = 50) -> None:
+    def __init__(self, generated_dir: Path, max_entries: int = 50) -> None:
         self._dir = generated_dir
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._max = max_memory
+        self._max = max_entries
         self._lock = threading.Lock()
         self._entries: OrderedDict[str, ImageCacheEntry] = OrderedDict()
 

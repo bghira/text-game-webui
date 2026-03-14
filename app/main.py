@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
     """Wire up the image-generation subsystem based on settings."""
     generated_dir = app_dir / "static" / "generated"
-    image_cache = ImageCache(generated_dir, max_memory=settings.image_cache_max_memory)
+    image_cache = ImageCache(generated_dir, max_entries=settings.image_cache_max_entries)
     app.state.image_cache = image_cache
 
     # Mount /generated/ so PNGs are served directly
