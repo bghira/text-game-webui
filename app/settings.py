@@ -4,7 +4,7 @@ import json
 import os
 import re
 import sqlite3
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # Keys that can be persisted to the webui_kv table.
@@ -18,6 +18,24 @@ _PERSISTABLE_KEYS = frozenset({
     "tge_llm_timeout_seconds",
     "tge_ollama_keep_alive",
     "tge_ollama_options_json",
+    # Image generation settings
+    "image_backend",
+    "diffusers_host",
+    "diffusers_port",
+    "diffusers_model",
+    "diffusers_device",
+    "diffusers_dtype",
+    "diffusers_offload",
+    "diffusers_quantization",
+    "diffusers_vae_tiling",
+    "diffusers_autostart",
+    "comfyui_url",
+    "comfyui_workflow_json",
+    "image_width",
+    "image_height",
+    "image_steps",
+    "image_guidance_scale",
+    "image_cache_max_entries",
 })
 
 
@@ -135,3 +153,83 @@ class Settings(BaseModel):
     tge_runtime_probe_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS", "8"))
     )
+
+    # -- Image generation settings ------------------------------------------
+    image_backend: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_IMAGE_BACKEND", "none")
+    )  # none | diffusers | comfyui
+    diffusers_host: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_HOST", "127.0.0.1")
+    )
+    diffusers_port: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_PORT", "8189"))
+    )
+    diffusers_model: str = Field(
+        default_factory=lambda: os.getenv(
+            "TEXT_GAME_WEBUI_DIFFUSERS_MODEL", "black-forest-labs/FLUX.2-klein-4b"
+        )
+    )
+    diffusers_device: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_DEVICE", "cuda")
+    )
+    diffusers_dtype: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_DTYPE", "bf16")
+    )
+    diffusers_offload: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_OFFLOAD", "none")
+    )
+    diffusers_quantization: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_QUANTIZATION", "none")
+    )
+    diffusers_vae_tiling: bool = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_VAE_TILING", "1") in {"1", "true", "True"}
+    )
+    diffusers_autostart: bool = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_AUTOSTART", "0") in {"1", "true", "True"}
+    )
+    comfyui_url: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_COMFYUI_URL", "http://127.0.0.1:8188")
+    )
+    comfyui_workflow_json: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_COMFYUI_WORKFLOW_JSON", "")
+    )
+    image_width: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_WIDTH", "1024"))
+    )
+    image_height: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_HEIGHT", "1024"))
+    )
+    image_steps: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_STEPS", "20"))
+    )
+    image_guidance_scale: float = Field(
+        default_factory=lambda: float(os.getenv("TEXT_GAME_WEBUI_IMAGE_GUIDANCE_SCALE", "3.5"))
+    )
+    image_cache_max_entries: int = Field(
+        default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_IMAGE_CACHE_MAX_ENTRIES", "50"))
+    )
+
+    # -- Validators --------------------------------------------------------
+
+    _DTYPE_ALIASES: dict[str, str] = {"fp16": "f16", "fp32": "f32"}
+    _VALID_DTYPES: set[str] = {"f16", "bf16", "f32"}
+    _VALID_QUANTIZATIONS: set[str] = {"none", "int8", "int4"}
+
+    @field_validator("diffusers_dtype", mode="before")
+    @classmethod
+    def _normalize_dtype(cls, v: str) -> str:
+        v = cls._DTYPE_ALIASES.get(v, v)
+        if v not in cls._VALID_DTYPES:
+            raise ValueError(f"diffusers_dtype must be one of {cls._VALID_DTYPES}, got {v!r}")
+        return v
+
+    @field_validator("diffusers_quantization", mode="before")
+    @classmethod
+    def _normalize_quantization(cls, v: str) -> str:
+        # Strip common "q" prefix aliases
+        normalized = v.lower().removeprefix("q")
+        if normalized not in cls._VALID_QUANTIZATIONS:
+            raise ValueError(
+                f"diffusers_quantization must be one of {cls._VALID_QUANTIZATIONS}, got {v!r}"
+            )
+        return normalized

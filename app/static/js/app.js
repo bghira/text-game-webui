@@ -546,7 +546,11 @@
 
       selectSession(sessionId) {
         this.selectedSessionId = sessionId || "";
-        localStorage.setItem("selectedSessionId", this.selectedSessionId);
+        if (this.selectedSessionId) {
+          localStorage.setItem("selectedSessionId", this.selectedSessionId);
+        } else {
+          localStorage.removeItem("selectedSessionId");
+        }
         this.syncTurnSessionSelection();
         this.turnStream = [];
         this.connectSocket();
@@ -1278,7 +1282,7 @@
         }
       },
 
-      _allowedFileExtensions: [".txt", ".md", ".text"],
+      _allowedFileExtensions: [".txt", ".md"],
 
       _addCampaignFiles(files) {
         const existing = new Set(this.campaignForm.files.map(f => f.file.name));
@@ -1287,13 +1291,13 @@
           const ext = file.name.includes(".") ? "." + file.name.split(".").pop().toLowerCase() : "";
           if (!this._allowedFileExtensions.includes(ext)) continue;
           existing.add(file.name);
-          const ready = new Promise((resolve, reject) => {
+          const entry = { file, text: "", status: "reading", _ready: null };
+          entry._ready = new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = (e) => { entry.text = e.target.result; entry.status = "ready"; resolve(); };
             reader.onerror = () => { entry.status = "error"; reject(new Error("Failed to read " + file.name)); };
             reader.readAsText(file);
           });
-          const entry = { file, text: "", status: "reading", _ready: ready };
           this.campaignForm.files.push(entry);
         }
       },
@@ -1335,6 +1339,12 @@
           if (this.campaignForm.files.length > 0) {
             this.campaignForm.createStatus = "Reading files...";
             await Promise.allSettled(this.campaignForm.files.map(f => f._ready));
+            const readErrors = this.campaignForm.files.filter(f => f.status === "error");
+            if (readErrors.length > 0) {
+              const names = readErrors.map(f => f.file.name).join(", ");
+              this.campaignForm.createStatus = `Could not read: ${names}. Continuing with remaining files...`;
+              await new Promise(r => setTimeout(r, 1500));
+            }
           }
 
           // 3. Ingest each file via digest endpoint
@@ -1471,6 +1481,7 @@
           this.loadLiteraryStyles(),
           this.loadStoryState(),
         ]);
+        this.populateTurnStreamFromHistory();
         this.statusMessage = `Selected campaign ${campaignId}.`;
       },
 

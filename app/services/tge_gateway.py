@@ -4226,3 +4226,11 @@ class TextGameEngineGateway(EngineGateway):
             session.delete(campaign)
             session.commit()
         return {"ok": True, "deleted_campaign_id": campaign_id, "name": name}
+
+    def set_media_port(self, media_port: object) -> None:
+        """Inject a MediaGenerationPort implementation after construction.
+
+        Safe because ZorkEmulator null-checks ``_media_port`` at every
+        usage site before calling into it.
+        """
+        self._emulator._media_port = media_port

@@ -203,3 +203,33 @@ class ScheduledSmsRequest(BaseModel):
     recipient: str
     message: str
     delay_seconds: int
+
+
+class ImageSettingsUpdate(BaseModel):
+    image_backend: str | None = None
+    diffusers_host: str | None = None
+    diffusers_port: int | None = None
+    diffusers_model: str | None = None
+    diffusers_device: str | None = None
+    diffusers_dtype: str | None = None
+    diffusers_offload: str | None = None
+    diffusers_quantization: str | None = None
+    diffusers_vae_tiling: bool | None = None
+    diffusers_autostart: bool | None = None
+    comfyui_url: str | None = None
+    comfyui_workflow_json: str | None = None
+    image_width: int | None = None
+    image_height: int | None = None
+    image_steps: int | None = None
+    image_guidance_scale: float | None = None
+    image_cache_max_entries: int | None = None
+
+
+class ImageGenerateRequest(BaseModel):
+    prompt: str
+    model_id: str | None = None
+    width: int | None = None
+    height: int | None = None
+    steps: int | None = None
+    guidance_scale: float | None = None
+    seed: int = -1
