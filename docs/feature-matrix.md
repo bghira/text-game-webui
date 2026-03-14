@@ -14,9 +14,9 @@
 | Player state + inventory inspector | `GET /api/campaigns/{id}/player-state?actor_id=...` | Inspector Player tab | `tests/backend/test_campaign_api.py`, `tests/frontend/flows/turn_submit_flow.test.ts` |
 | Scene/avatar media status | `GET /api/campaigns/{id}/media?actor_id=...` | Inspector Media tab | `tests/backend/test_campaign_api.py`, `tests/frontend/flows/turn_submit_flow.test.ts`, `tests/backend/test_tge_gateway_optional.py` |
 | Avatar accept/decline actions | `POST /api/campaigns/{id}/media/avatar/accept`, `POST /api/campaigns/{id}/media/avatar/decline` | Inspector Media tab | `tests/backend/test_campaign_api.py`, `tests/backend/test_tge_gateway_optional.py`, `tests/frontend/flows/media_avatar_flow.test.ts` |
-| Image generation | `POST /api/image/generate`, `GET /api/image/status/{job_id}`, `GET /api/image/recent` | Turn stream image prompts, Campaign tab scene images | — |
-| Image daemon control | `POST /api/image/daemon/start`, `POST /api/image/daemon/stop`, `GET /api/image/daemon/status`, `GET /api/image/daemon/logs` | N/A (API only) | — |
-| Image settings | `GET /api/settings/image`, `POST /api/settings/image` | N/A (API only) | — |
+| Image generation | `POST /api/image/generate`, `GET /api/image/status/{job_id}`, `GET /api/image/recent` | Turn stream image prompts, Campaign tab scene images | `tests/backend/test_image_api.py` |
+| Image daemon control | `POST /api/image/daemon/start`, `POST /api/image/daemon/stop`, `GET /api/image/daemon/status`, `GET /api/image/daemon/logs` | N/A (API only) | `tests/backend/test_image_api.py` |
+| Image settings | `GET /api/settings/image`, `POST /api/settings/image` | N/A (API only) | `tests/backend/test_image_api.py` |
 | Scene images | `GET /api/campaigns/{id}/scene-images` | Campaign tab scene images grid | `tests/backend/test_campaign_api.py` |
 | Character portraits | `POST /api/campaigns/{id}/roster/portrait` | Inspector Roster tab | `tests/backend/test_campaign_api.py` |
 | Memory tools | `POST /api/campaigns/{id}/memory/search`, `POST /api/campaigns/{id}/memory/terms`, `POST /api/campaigns/{id}/memory/turn`, `POST /api/campaigns/{id}/memory/store` | Inspector Memory tab | `tests/backend/test_campaign_api.py`, `tests/frontend/flows/memory_flow.test.ts` |
