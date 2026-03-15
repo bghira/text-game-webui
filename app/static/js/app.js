@@ -307,7 +307,7 @@
         let counter = 0;
         for (const turn of this.recentTurns) {
           if (sessionId && turn.session_id && turn.session_id !== sessionId) continue;
-          if (turn.kind === "narration" || turn.kind === "action_response") {
+          if (turn.kind === "narrator" || turn.kind === "player") {
             counter++;
             const meta = turn.meta || {};
             const entry = {
