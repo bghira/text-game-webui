@@ -113,6 +113,9 @@
         api_last_error_message: null,
       },
 
+      gpuStats: { available: false, gpu: null, ollama_models: [] },
+      _gpuPollId: null,
+
       campaignForm: {
         namespace: "default",
         name: "",
@@ -635,9 +638,23 @@
           await this.runRuntimeChecks(false);
 
           this.statusMessage = `Runtime backend: ${this.runtimeInfo.gateway_backend}.`;
+
+          await this.loadGpuStats();
+          if (this.gpuStats.available && !this._gpuPollId) {
+            this._gpuPollId = setInterval(() => this.loadGpuStats(), 15000);
+          }
         } catch (error) {
           this.runtimeInfo.health_ok = false;
           this.errorMessage = String(error);
+        }
+      },
+
+      async loadGpuStats() {
+        try {
+          const data = await this.api("/api/gpu-stats");
+          this.gpuStats = data;
+        } catch (_) {
+          this.gpuStats = { available: false, gpu: null, ollama_models: [] };
         }
       },
 

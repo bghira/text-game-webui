@@ -98,3 +98,6 @@ class DiffusersClient:
 
     async def interrupt(self) -> dict:
         return await asyncio.to_thread(self._post, "/interrupt", {})
+
+    async def unload(self) -> dict:
+        return await asyncio.to_thread(self._post, "/unload", {})

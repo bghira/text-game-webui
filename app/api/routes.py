@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import platform
+import plistlib
+import re
+import shutil
+import subprocess
+import time
 from datetime import UTC, datetime
 from typing import NoReturn
 from urllib import request as urllib_request
@@ -43,6 +50,11 @@ from app.services.schemas import (
     SourceMaterialSearchRequest,
     TurnRequest,
 )
+
+try:
+    import torch
+except Exception:  # pragma: no cover - optional dependency
+    torch = None
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -1005,6 +1017,392 @@ async def list_ollama_models(request: Request) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# GPU stats (Ollama + local accelerator probes)
+# ---------------------------------------------------------------------------
+
+_gpu_cache: dict = {}
+_gpu_cache_ts: float = 0.0
+_GPU_CACHE_TTL = 5.0  # seconds
+
+
+def _coerce_percent(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return round(float(value), 1)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("%"):
+            text = text[:-1]
+        try:
+            return round(float(text), 1)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_bytes(value: object) -> int | None:
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    if not isinstance(value, str):
+        return None
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*([KMGTP]?i?B)?", value.strip(), re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        number = float(match.group(1))
+    except ValueError:
+        return None
+    if number < 0:
+        return None
+    unit = (match.group(2) or "B").upper()
+    multipliers = {
+        "B": 1,
+        "KB": 1000,
+        "MB": 1000**2,
+        "GB": 1000**3,
+        "TB": 1000**4,
+        "KIB": 1024,
+        "MIB": 1024**2,
+        "GIB": 1024**3,
+        "TIB": 1024**4,
+    }
+    return int(number * multipliers.get(unit, 1))
+
+
+def _normalize_gpu_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    normalized = name.strip()
+    for prefix in ("NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "AMD "):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):]
+    return normalized
+
+
+def _pick_primary_gpu(candidates: list[dict]) -> dict | None:
+    usable = [candidate for candidate in candidates if candidate]
+    if not usable:
+        return None
+
+    def _sort_key(candidate: dict) -> tuple[int, float, float]:
+        used = candidate.get("vram_used_bytes")
+        util = candidate.get("utilization_pct")
+        temp = candidate.get("temp_c")
+        return (
+            1 if used is not None else 0,
+            float(used or 0),
+            float(util if util is not None else (temp or 0)),
+        )
+
+    return max(usable, key=_sort_key)
+
+
+def _query_nvidia_smi() -> dict | None:
+    """Parse nvidia-smi CSV output. Returns the most-active GPU if available."""
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        r = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        candidates: list[dict] = []
+        for raw_line in r.stdout.splitlines():
+            if not raw_line.strip():
+                continue
+            parts = [p.strip() for p in raw_line.split(",")]
+            if len(parts) < 5:
+                continue
+            candidates.append({
+                "name": _normalize_gpu_name(parts[0]),
+                "utilization_pct": int(parts[1]),
+                "vram_used_bytes": int(parts[2]) * 1048576,
+                "vram_total_bytes": int(parts[3]) * 1048576,
+                "temp_c": int(parts[4]),
+            })
+        return _pick_primary_gpu(candidates)
+    except Exception:
+        return None
+
+
+def _query_rocm_torch_memory(index: int) -> tuple[int | None, int | None]:
+    if torch is None or not hasattr(torch, "cuda") or not torch.cuda.is_available():  # type: ignore[attr-defined]
+        return None, None
+    if not hasattr(torch.cuda, "mem_get_info"):
+        return None, None
+    try:
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(index)  # type: ignore[misc]
+        except TypeError:
+            with torch.cuda.device(index):
+                free_bytes, total_bytes = torch.cuda.mem_get_info()  # type: ignore[call-arg]
+    except Exception:
+        return None, None
+    if not total_bytes:
+        return None, None
+    return max(0, int(total_bytes - free_bytes)), int(total_bytes)
+
+
+def _query_rocm_smi() -> dict | None:
+    rocm_smi = shutil.which("rocm-smi")
+    if not rocm_smi:
+        for candidate in ("/opt/rocm/bin/rocm-smi", "/usr/bin/rocm-smi"):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                rocm_smi = candidate
+                break
+    if not rocm_smi:
+        return None
+
+    commands = [
+        [rocm_smi, "--showproductname", "--showuse", "--showtemp", "--showmemuse", "--json"],
+        [rocm_smi, "--showproductname", "--showuse", "--showtemp", "--showmeminfo", "vram", "--json"],
+        [rocm_smi, "--showuse", "--showtemp", "--json"],
+        [rocm_smi, "--showuse"],
+    ]
+
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+
+        output = (completed.stdout or "").strip()
+        if not output:
+            continue
+
+        if "--json" in command:
+            try:
+                data = json.loads(output)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            candidates: list[dict] = []
+            for key, entry in data.items():
+                if not isinstance(entry, dict):
+                    continue
+                index_match = re.search(r"(\d+)", str(key))
+                gpu_index = int(index_match.group(1)) if index_match else len(candidates)
+                used_bytes, total_bytes = _query_rocm_torch_memory(gpu_index)
+                if used_bytes is None:
+                    used_bytes = (
+                        _coerce_bytes(entry.get("VRAM Total Used Memory (B)"))
+                        or _coerce_bytes(entry.get("VRAM Total Used Memory"))
+                        or _coerce_bytes(entry.get("GPU Memory Used (B)"))
+                        or _coerce_bytes(entry.get("GPU Memory Used"))
+                    )
+                if total_bytes is None:
+                    total_bytes = (
+                        _coerce_bytes(entry.get("VRAM Total Memory (B)"))
+                        or _coerce_bytes(entry.get("VRAM Total Memory"))
+                        or _coerce_bytes(entry.get("GPU Memory Total (B)"))
+                        or _coerce_bytes(entry.get("GPU Memory Total"))
+                    )
+                utilization_pct = None
+                for util_key in (
+                    "GPU use (%)",
+                    "GPU use (%) (avg)",
+                    "GPU use (%) (average)",
+                    "GPU use (%) (current)",
+                ):
+                    utilization_pct = _coerce_percent(entry.get(util_key))
+                    if utilization_pct is not None:
+                        break
+                temp_c = None
+                for temp_key, raw_value in entry.items():
+                    if "temperature" not in str(temp_key).lower():
+                        continue
+                    temp_c = _coerce_percent(raw_value)
+                    if temp_c is not None:
+                        break
+                candidates.append({
+                    "name": _normalize_gpu_name(
+                        str(
+                            entry.get("Card model")
+                            or entry.get("Card series")
+                            or entry.get("Device Name")
+                            or entry.get("Market Name")
+                            or "AMD GPU"
+                        )
+                    ),
+                    "utilization_pct": utilization_pct,
+                    "vram_used_bytes": used_bytes,
+                    "vram_total_bytes": total_bytes,
+                    "temp_c": temp_c,
+                })
+            primary = _pick_primary_gpu(candidates)
+            if primary:
+                return primary
+            continue
+
+        matches = re.findall(r"GPU\s*\[\s*(\d+)\s*\].*?GPU use.*?:\s*([0-9]+(?:\.[0-9]+)?)", output)
+        if not matches:
+            continue
+        candidates = []
+        for gpu_index_raw, util_raw in matches:
+            gpu_index = int(gpu_index_raw)
+            used_bytes, total_bytes = _query_rocm_torch_memory(gpu_index)
+            candidates.append({
+                "name": "AMD GPU",
+                "utilization_pct": _coerce_percent(util_raw),
+                "vram_used_bytes": used_bytes,
+                "vram_total_bytes": total_bytes,
+                "temp_c": None,
+            })
+        primary = _pick_primary_gpu(candidates)
+        if primary:
+            return primary
+
+    return None
+
+
+def _query_mps_stats() -> dict | None:
+    if platform.system() != "Darwin" or torch is None:
+        return None
+    backend = getattr(torch.backends, "mps", None)
+    if backend is None or not backend.is_available():
+        return None
+
+    used_bytes = None
+    total_bytes = None
+    driver_alloc = getattr(torch.mps, "driver_allocated_memory", None)
+    driver_total = getattr(torch.mps, "driver_total_memory", None)
+    if callable(driver_alloc) and callable(driver_total):
+        try:
+            used_bytes = int(driver_alloc())
+            total_bytes = int(driver_total())
+        except Exception:
+            used_bytes = None
+            total_bytes = None
+
+    utilization_pct = None
+    try:
+        completed = subprocess.run(
+            ["ioreg", "-r", "-k", "PerformanceStatistics", "-d", "1", "-a"],
+            check=True,
+            capture_output=True,
+            text=False,
+            timeout=2,
+        )
+        if completed.stdout:
+            data = plistlib.loads(completed.stdout)
+            if isinstance(data, list):
+                values: list[float] = []
+                for entry in data:
+                    if not isinstance(entry, dict):
+                        continue
+                    perf = entry.get("PerformanceStatistics")
+                    if not isinstance(perf, dict):
+                        continue
+                    value = perf.get("Device Utilization %")
+                    if isinstance(value, (int, float)):
+                        values.append(round(float(value), 1))
+                if values:
+                    utilization_pct = max(values)
+    except Exception:
+        utilization_pct = None
+
+    if used_bytes is None and total_bytes is None and utilization_pct is None:
+        return None
+
+    return {
+        "name": "Apple GPU",
+        "utilization_pct": utilization_pct,
+        "vram_used_bytes": used_bytes,
+        "vram_total_bytes": total_bytes,
+        "temp_c": None,
+    }
+
+
+def _query_gpu_stats() -> dict | None:
+    for probe in (_query_nvidia_smi, _query_rocm_smi, _query_mps_stats):
+        result = probe()
+        if result:
+            return result
+    return None
+
+
+def _query_ollama_ps(base_url: str) -> list[dict]:
+    """Fetch /api/ps from Ollama. Returns [] on failure."""
+    for suffix in ("/v1", "/api"):
+        if base_url.endswith(suffix):
+            base_url = base_url[: -len(suffix)]
+            break
+    url = f"{base_url}/api/ps"
+    try:
+        req = urllib_request.Request(url, method="GET")
+        with urllib_request.urlopen(req, timeout=5) as resp:  # noqa: S310
+            data = json.loads(resp.read())
+        models = []
+        for m in data.get("models", []):
+            models.append({
+                "name": m.get("name", ""),
+                "size_vram": m.get("size_vram", 0),
+                "parameter_size": (m.get("details") or {}).get("parameter_size", ""),
+                "quantization": (m.get("details") or {}).get("quantization_level", ""),
+                "expires_at": m.get("expires_at"),
+            })
+        return models
+    except Exception:
+        return []
+
+
+@router.get("/gpu-stats")
+async def gpu_stats(request: Request) -> dict:
+    global _gpu_cache, _gpu_cache_ts
+    now = time.monotonic()
+    if now - _gpu_cache_ts < _GPU_CACHE_TTL and _gpu_cache:
+        return _gpu_cache
+
+    settings = request.app.state.settings
+    mode = getattr(settings, "tge_completion_mode", "")
+
+    if mode != "ollama":
+        result = {"available": False}
+        _gpu_cache, _gpu_cache_ts = result, now
+        return result
+
+    base_url = settings.tge_llm_base_url.rstrip("/")
+    gpu, models = await asyncio.gather(
+        asyncio.to_thread(_query_gpu_stats),
+        asyncio.to_thread(_query_ollama_ps, base_url),
+    )
+
+    if not gpu and not models:
+        result: dict = {"available": False}
+    else:
+        gpu = gpu or {}
+        if not gpu and models:
+            total_vram = sum(m.get("size_vram", 0) for m in models)
+            gpu = {
+                "name": None,
+                "utilization_pct": None,
+                "vram_used_bytes": total_vram,
+                "vram_total_bytes": None,
+                "temp_c": None,
+            }
+        result = {"available": True, "gpu": gpu, "ollama_models": models}
+
+    _gpu_cache, _gpu_cache_ts = result, now
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Image generation settings & daemon control
 # ---------------------------------------------------------------------------
 
@@ -1121,6 +1519,10 @@ async def generate_image(
     settings = request.app.state.settings
     backend = (settings.image_backend or "none").strip().lower()
 
+    orchestrator = getattr(request.app.state, "gpu_orchestrator", None)
+    if orchestrator:
+        await orchestrator.before_image_generation()
+
     if backend == "diffusers":
         client = getattr(request.app.state, "diffusers_client", None)
         if client is None:
@@ -1134,6 +1536,11 @@ async def generate_image(
             guidance_scale=payload.guidance_scale if payload.guidance_scale is not None else settings.image_guidance_scale,
             seed=payload.seed,
         )
+        job_id = result.get("job_id")
+        if orchestrator and job_id:
+            _gpu_orchestrated_jobs = getattr(request.app.state, "gpu_orchestrated_jobs", None)
+            if _gpu_orchestrated_jobs is not None:
+                _gpu_orchestrated_jobs.add(job_id)
         return result
 
     elif backend == "comfyui":
@@ -1149,6 +1556,10 @@ async def generate_image(
             seed=payload.seed,
             model=payload.model_id or settings.diffusers_model,
         )
+        if orchestrator and prompt_id:
+            _gpu_orchestrated_jobs = getattr(request.app.state, "gpu_orchestrated_jobs", None)
+            if _gpu_orchestrated_jobs is not None:
+                _gpu_orchestrated_jobs.add(prompt_id)
         return {"job_id": prompt_id, "status": "pending", "backend": "comfyui"}
 
     else:
@@ -1156,6 +1567,17 @@ async def generate_image(
             status_code=400,
             detail=f"No image backend configured (current: {backend}).",
         )
+
+
+async def _maybe_after_image_generation(request: Request, job_id: str) -> None:
+    """Call orchestrator.after_image_generation() if this job was orchestrated."""
+    tracked = getattr(request.app.state, "gpu_orchestrated_jobs", None)
+    if tracked is None or job_id not in tracked:
+        return
+    tracked.discard(job_id)
+    orchestrator = getattr(request.app.state, "gpu_orchestrator", None)
+    if orchestrator:
+        await orchestrator.after_image_generation()
 
 
 @router.get("/image/status/{job_id}")
@@ -1177,6 +1599,8 @@ async def image_job_status(job_id: str, request: Request) -> dict:
             )
             status["image_url"] = cache.url_for(entry)
             status["image_id"] = entry.image_id
+        if status.get("status") in ("completed", "failed", "interrupted"):
+            await _maybe_after_image_generation(request, job_id)
         return status
 
     elif backend == "comfyui":
@@ -1191,6 +1615,7 @@ async def image_job_status(job_id: str, request: Request) -> dict:
             entry = history[job_id]
             completed = entry.get("status", {}).get("completed", False)
             if completed:
+                await _maybe_after_image_generation(request, job_id)
                 # Download and cache first output image
                 for _nid, node_out in entry.get("outputs", {}).items():
                     images = node_out.get("images", [])

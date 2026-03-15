@@ -7,6 +7,7 @@ from typing import Any
 
 from app.media.comfyui_client import ComfyUIClient
 from app.media.diffusers_client import DiffusersClient
+from app.media.gpu_orchestrator import GpuOrchestrator
 from app.media.image_cache import ImageCache
 
 log = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class LocalMediaPort:
         image_cache: ImageCache,
         realtime_hub: Any,  # app.realtime.hub.RealtimeHub
         settings: Any,  # app.settings.Settings
+        gpu_orchestrator: GpuOrchestrator | None = None,
     ) -> None:
         self._backend = backend
         self._diffusers = diffusers_client
@@ -40,6 +42,7 @@ class LocalMediaPort:
         self._cache = image_cache
         self._hub = realtime_hub
         self._settings = settings
+        self._orchestrator = gpu_orchestrator
 
         # Cached health result (updated asynchronously)
         self._healthy = False
@@ -133,6 +136,8 @@ class LocalMediaPort:
         campaign_id = (metadata or {}).get("campaign_id")
         room_key = (metadata or {}).get("room_key")
 
+        if self._orchestrator:
+            await self._orchestrator.before_image_generation()
         try:
             if self._backend == "diffusers":
                 entry = await self._generate_diffusers(
@@ -180,6 +185,9 @@ class LocalMediaPort:
             )
         except Exception:
             log.exception("Image generation failed for actor=%s", actor_id)
+        finally:
+            if self._orchestrator:
+                await self._orchestrator.after_image_generation()
 
     async def _generate_diffusers(
         self,

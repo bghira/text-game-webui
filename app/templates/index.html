@@ -124,6 +124,59 @@
       </div>
     </div>
 
+    <!-- GPU Stats -->
+    <template x-if="gpuStats.available && gpuStats.gpu">
+      <div class="gpu-stats-widget">
+        <div class="gpu-stats-header">
+          <span class="dot dot-ok"></span>
+          <span>GPU</span>
+          <small x-show="gpuStats.gpu.name" x-text="gpuStats.gpu.name"></small>
+        </div>
+        <div class="gpu-stats-bars">
+          <template x-if="gpuStats.gpu.utilization_pct != null">
+            <div class="gpu-stat-row">
+              <span class="gpu-stat-label">Load</span>
+              <div class="gpu-bar-track">
+                <div class="gpu-bar-fill" :style="`width:${gpuStats.gpu.utilization_pct}%`"
+                     :class="gpuStats.gpu.utilization_pct > 90 ? 'gpu-bar-hot' : ''"></div>
+              </div>
+              <span class="gpu-stat-value" x-text="gpuStats.gpu.utilization_pct + '%'"></span>
+            </div>
+          </template>
+          <div class="gpu-stat-row">
+            <span class="gpu-stat-label">VRAM</span>
+            <div class="gpu-bar-track">
+              <div class="gpu-bar-fill"
+                   :style="`width:${gpuStats.gpu.vram_total_bytes ? Math.round(gpuStats.gpu.vram_used_bytes / gpuStats.gpu.vram_total_bytes * 100) : 0}%`"
+                   :class="gpuStats.gpu.vram_total_bytes && gpuStats.gpu.vram_used_bytes / gpuStats.gpu.vram_total_bytes > 0.9 ? 'gpu-bar-hot' : ''"></div>
+            </div>
+            <span class="gpu-stat-value"
+                  x-text="gpuStats.gpu.vram_total_bytes
+                    ? (gpuStats.gpu.vram_used_bytes/1073741824).toFixed(1)+'/'+
+                      (gpuStats.gpu.vram_total_bytes/1073741824).toFixed(0)+'G'
+                    : (gpuStats.gpu.vram_used_bytes/1073741824).toFixed(1)+'G'"></span>
+          </div>
+          <template x-if="gpuStats.gpu.temp_c != null">
+            <div class="gpu-stat-row">
+              <span class="gpu-stat-label">Temp</span>
+              <div class="gpu-bar-track">
+                <div class="gpu-bar-fill" :style="`width:${Math.min(gpuStats.gpu.temp_c, 100)}%`"
+                     :class="gpuStats.gpu.temp_c > 80 ? 'gpu-bar-hot' : ''"></div>
+              </div>
+              <span class="gpu-stat-value" x-text="gpuStats.gpu.temp_c + '\u00b0'"></span>
+            </div>
+          </template>
+        </div>
+        <template x-if="gpuStats.ollama_models.length > 0">
+          <div class="gpu-model-list">
+            <template x-for="m in gpuStats.ollama_models" :key="m.name">
+              <small class="gpu-model-tag" x-text="m.name"></small>
+            </template>
+          </div>
+        </template>
+      </div>
+    </template>
+
     <template x-if="$store.app.debugMode">
       <div class="stack compact runtime-detail">
         <p><strong>Backend:</strong> <span x-text="runtimeInfo.gateway_backend || 'unknown'"></span></p>

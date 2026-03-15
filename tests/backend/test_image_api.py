@@ -1,8 +1,11 @@
 """Tests for image settings, daemon control, and generation endpoints."""
 from __future__ import annotations
 
+import asyncio
 import base64
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -227,3 +230,117 @@ def test_status_comfyui_pending(client):
     # Clean up
     settings.image_backend = "none"
     client.app.state.comfyui_client = None
+
+
+# ---------------------------------------------------------------------------
+# GPU stats endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_gpu_stats_unavailable_when_not_ollama(client):
+    """GPU stats returns available=false when completion mode is not ollama."""
+    settings = client.app.state.settings
+    original_mode = settings.tge_completion_mode
+    settings.tge_completion_mode = "deterministic"
+
+    # Clear server-side cache so we get a fresh result
+    from app.api import routes as _routes
+    _routes._gpu_cache.clear()
+    _routes._gpu_cache_ts = 0.0
+
+    res = client.get("/api/gpu-stats")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["available"] is False
+
+    # Clean up
+    settings.tge_completion_mode = original_mode
+
+
+# ---------------------------------------------------------------------------
+# GPU orchestrator
+# ---------------------------------------------------------------------------
+
+
+def test_gpu_orchestrator_sequence():
+    """Verify before/after_image_generation call Ollama and diffusers in order."""
+    from app.media.gpu_orchestrator import GpuOrchestrator
+
+    mock_diffusers = AsyncMock()
+    mock_diffusers.unload.return_value = {"status": "unloaded"}
+
+    orchestrator = GpuOrchestrator(
+        ollama_base_url="http://127.0.0.1:11434",
+        ollama_model="test-model",
+        ollama_keep_alive="30m",
+        image_backend="diffusers",
+        diffusers_client=mock_diffusers,
+    )
+
+    call_log: list[str] = []
+
+    def mock_post_generate(body: dict) -> None:
+        if body.get("keep_alive") == 0:
+            call_log.append("evict")
+        elif body.get("prompt") == "":
+            call_log.append("reload")
+
+    def mock_ps() -> list:
+        # Return empty immediately so polling exits fast
+        return []
+
+    orchestrator._ollama_post_generate = mock_post_generate  # type: ignore[assignment]
+    orchestrator._ollama_ps = mock_ps  # type: ignore[assignment]
+
+    # Run the full sequence
+    asyncio.run(orchestrator.before_image_generation())
+    asyncio.run(orchestrator.after_image_generation())
+
+    assert call_log == ["evict", "reload"]
+    mock_diffusers.unload.assert_awaited_once()
+
+
+def test_gpu_orchestrator_comfyui_skips_unload():
+    """ComfyUI path should skip the diffusers unload step."""
+    from app.media.gpu_orchestrator import GpuOrchestrator
+
+    orchestrator = GpuOrchestrator(
+        ollama_base_url="http://127.0.0.1:11434",
+        ollama_model="test-model",
+        ollama_keep_alive="30m",
+        image_backend="comfyui",
+        diffusers_client=None,
+    )
+
+    call_log: list[str] = []
+
+    def mock_post_generate(body: dict) -> None:
+        if body.get("keep_alive") == 0:
+            call_log.append("evict")
+        elif body.get("prompt") == "":
+            call_log.append("reload")
+
+    def mock_ps() -> list:
+        return []
+
+    orchestrator._ollama_post_generate = mock_post_generate  # type: ignore[assignment]
+    orchestrator._ollama_ps = mock_ps  # type: ignore[assignment]
+
+    asyncio.run(orchestrator.before_image_generation())
+    asyncio.run(orchestrator.after_image_generation())
+
+    # Should have evict and reload but no diffusers unload
+    assert call_log == ["evict", "reload"]
+
+
+def test_gpu_orchestrator_url_stripping():
+    """Verify /v1 suffix is stripped from the Ollama base URL."""
+    from app.media.gpu_orchestrator import GpuOrchestrator
+
+    orch = GpuOrchestrator(
+        ollama_base_url="http://127.0.0.1:11434/v1",
+        ollama_model="m",
+        ollama_keep_alive="30m",
+        image_backend="diffusers",
+    )
+    assert orch._ollama_base == "http://127.0.0.1:11434"

@@ -10,6 +10,8 @@
   - 404 handling for missing campaigns
   - gateway backend factory behavior
   - image settings get/update, daemon lifecycle, generate/status flows for both Diffusers and ComfyUI backends (`tests/backend/test_image_api.py`)
+  - GPU stats endpoint returns `available: false` in inmemory mode (`tests/backend/test_image_api.py`)
+  - GPU orchestrator VRAM swap sequence (evict → generate → unload → reload) for diffusers and ComfyUI paths (`tests/backend/test_image_api.py`)
 
 Optional test:
 - `tests/backend/test_tge_gateway_optional.py` runs only when `text_game_engine` is installed.
