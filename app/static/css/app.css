@@ -564,12 +564,14 @@ button:disabled {
 }
 
 .action-bar-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
+  width: 128px;
+  height: 128px;
+  border-radius: var(--radius-md);
   object-fit: cover;
   border: 1.5px solid var(--line);
   flex-shrink: 0;
+  align-self: center;
+  box-shadow: var(--shadow-sm);
 }
 
 .player-identity strong {
@@ -961,15 +963,66 @@ pre {
 
 /* ---- Action bar (unified chat input) ---- */
 
+.action-bar-wrapper {
+  display: flex;
+  align-items: stretch;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.action-bar-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.char-hud {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.6rem;
+  background: var(--accent-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 0.4rem 0.65rem;
+}
+
+.char-hud-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.char-hud-name {
+  font-size: 0.92rem;
+  white-space: nowrap;
+}
+
+.char-hud-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.char-hud-xp {
+  width: 80px;
+}
+
+.char-hud-location {
+  font-size: 0.78rem;
+  color: #6a7a70;
+  font-style: italic;
+}
+
 .action-bar {
   display: flex;
-  align-items: flex-end;
-  gap: 0.5rem;
-  margin-bottom: 0.6rem;
+  align-items: center;
+  gap: 0.4rem;
   background: #fff;
   border: 1.5px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 0.6rem 0.6rem 0.6rem 0.75rem;
+  padding: 0.35rem 0.4rem 0.35rem 0.55rem;
   box-shadow: var(--shadow-sm);
   transition: border-color var(--transition), box-shadow var(--transition);
 }
@@ -981,14 +1034,13 @@ pre {
 
 .actor-select {
   width: auto;
-  min-width: 110px;
-  max-width: 170px;
-  font-size: 0.85rem;
+  min-width: 90px;
+  max-width: 150px;
+  font-size: 0.78rem;
   border: none;
-  background: var(--accent-soft);
-  border-radius: 6px;
-  padding: 0.5rem 0.55rem;
-  align-self: flex-end;
+  background: #fff;
+  border-radius: 4px;
+  padding: 0.25rem 0.35rem;
 }
 
 .actor-select:focus {
@@ -1000,19 +1052,17 @@ pre {
 .action-prompt {
   font-family: var(--mono);
   font-weight: 700;
-  font-size: 1.1rem;
+  font-size: 1.05rem;
   color: var(--accent);
   flex-shrink: 0;
-  align-self: flex-end;
-  padding-bottom: 0.35rem;
 }
 
 .action-input {
   flex: 1;
-  font-size: 1rem;
+  font-size: 0.9rem;
   border: none;
   background: transparent;
-  padding: 0.55rem 0.3rem;
+  padding: 0.4rem 0.3rem;
   resize: none;
   overflow: hidden;
   line-height: 1.4;
@@ -1032,9 +1082,8 @@ pre {
   color: #eff8f4;
   border-color: #224740;
   text-align: center;
-  padding: 0.75rem 1.35rem;
-  font-size: 0.92rem;
-  align-self: flex-end;
+  padding: 0.55rem 1.25rem;
+  font-size: 0.88rem;
   border-radius: var(--radius-sm);
 }
 

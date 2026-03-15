@@ -307,29 +307,50 @@
       <p x-show="turnStream.length === 0 && selectedCampaignId && !setupMode" class="empty">Type an action below to begin your adventure.</p>
     </div>
 
-    <!-- Action Bar (horizontal) -->
-    <form class="action-bar" @submit.prevent="submitTurn()">
+    <!-- Character HUD + Action Bar -->
+    <div class="action-bar-wrapper">
       <template x-if="playerData && playerData.state && playerData.state.avatar_url">
         <img :src="playerData.state.avatar_url" :alt="(playerData.state.character_name || playerData.actor_id || '') + ' avatar'" class="action-bar-avatar" />
       </template>
-      <select x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
-        <template x-for="actor in uniqueActors()" :key="actor">
-          <option :value="actor" x-text="actor"></option>
-        </template>
-      </select>
-      <span class="action-prompt">&gt;</span>
-      <textarea
-        x-model="turnForm.action"
-        placeholder="What do you do?"
-        class="action-input"
-        required
-        id="action-input"
-        rows="1"
-        @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
-        @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
-      ></textarea>
-      <button type="submit" :disabled="!selectedCampaignId || submitting" class="action-submit" :class="{ 'action-thinking': submitting }" x-text="submitting ? 'Thinking...' : 'Submit'"></button>
-    </form>
+      <div class="action-bar-column">
+        <div class="char-hud">
+          <div class="char-hud-top">
+            <strong class="char-hud-name" x-text="(playerData && playerData.state && playerData.state.character_name) || turnForm.actor_id || 'Unknown'"></strong>
+            <select x-show="uniqueActors().length > 1" x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
+              <template x-for="actor in uniqueActors()" :key="actor">
+                <option :value="actor" x-text="actor"></option>
+              </template>
+            </select>
+          </div>
+          <template x-if="playerData">
+            <div class="char-hud-stats">
+              <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
+              <div class="xp-bar-track char-hud-xp">
+                <div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div>
+              </div>
+              <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+            </div>
+          </template>
+          <template x-if="playerData && playerData.state && playerData.state.room_title">
+            <span class="char-hud-location" x-text="playerData.state.room_title"></span>
+          </template>
+        </div>
+        <form class="action-bar" @submit.prevent="submitTurn()">
+          <span class="action-prompt">&gt;</span>
+          <textarea
+            x-model="turnForm.action"
+            placeholder="What do you do?"
+            class="action-input"
+            required
+            id="action-input"
+            rows="1"
+            @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
+            @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
+          ></textarea>
+          <button type="submit" :disabled="!selectedCampaignId || submitting" class="action-submit" :class="{ 'action-thinking': submitting }" x-text="submitting ? 'Thinking...' : 'Submit'"></button>
+        </form>
+      </div>
+    </div>
 
     <p class="status" x-text="statusMessage"></p>
     <p class="error" x-show="errorMessage" x-text="errorMessage" @click="errorMessage = ''" title="Click to dismiss"></p>

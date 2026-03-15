@@ -372,12 +372,12 @@
         );
       },
 
-      /* Deduplicated actor list for the action bar dropdown */
+      /* Deduplicated actor list for the current campaign */
       uniqueActors() {
         const seen = new Set();
         const result = [];
         for (const c of this.campaigns) {
-          if (c.actor_id && !seen.has(c.actor_id)) {
+          if (c.id === this.selectedCampaignId && c.actor_id && !seen.has(c.actor_id)) {
             seen.add(c.actor_id);
             result.push(c.actor_id);
           }
