@@ -73,6 +73,26 @@ def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
     app.state.diffusers_client = diffusers_client
     app.state.comfyui_client = comfyui_client
 
+    # Create GPU orchestrator if Ollama + image backend share a GPU
+    gpu_orchestrator = None
+    if (
+        settings.tge_completion_mode == "ollama"
+        and backend in ("diffusers", "comfyui")
+    ):
+        from app.media.gpu_orchestrator import GpuOrchestrator
+
+        gpu_orchestrator = GpuOrchestrator(
+            ollama_base_url=settings.tge_llm_base_url,
+            ollama_model=settings.tge_llm_model,
+            ollama_keep_alive=settings.tge_ollama_keep_alive,
+            image_backend=backend,
+            diffusers_client=diffusers_client,
+        )
+        log.info("GPU orchestrator created (ollama + %s)", backend)
+
+    app.state.gpu_orchestrator = gpu_orchestrator
+    app.state.gpu_orchestrated_jobs: set = set()
+
     # Create and inject LocalMediaPort if a backend is configured
     if backend in ("diffusers", "comfyui"):
         from app.media.media_port import LocalMediaPort
@@ -84,6 +104,7 @@ def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
             image_cache=image_cache,
             realtime_hub=app.state.realtime,
             settings=settings,
+            gpu_orchestrator=gpu_orchestrator,
         )
         app.state.media_port = media_port
 

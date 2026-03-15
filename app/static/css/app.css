@@ -364,6 +364,47 @@ button:disabled {
   box-shadow: 0 0 0 2px rgba(184, 154, 62, 0.18);
 }
 
+/* GPU Stats Widget */
+.gpu-stats-widget {
+  margin-top: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+}
+.gpu-stats-header {
+  display: flex; align-items: center; gap: 0.4rem;
+  margin-bottom: 0.4rem; font-size: 0.84rem;
+}
+.gpu-stats-header small {
+  color: #5a7268; font-size: 0.7rem; margin-left: auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;
+}
+.gpu-stats-bars { display: grid; gap: 0.3rem; }
+.gpu-stat-row {
+  display: grid; grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center; gap: 0.35rem;
+}
+.gpu-stat-label { font-size: 0.72rem; color: #5a7268; white-space: nowrap; }
+.gpu-stat-value { font-size: 0.72rem; text-align: right; font-family: var(--mono); white-space: nowrap; }
+.gpu-bar-track {
+  height: 6px; background: var(--accent-soft);
+  border-radius: 3px; overflow: hidden; min-width: 0;
+}
+.gpu-bar-fill {
+  height: 100%; background: var(--accent);
+  border-radius: 3px; transition: width 0.5s ease;
+}
+.gpu-bar-hot { background: var(--error); }
+.gpu-model-list {
+  margin-top: 0.35rem; display: flex; flex-wrap: wrap; gap: 0.25rem;
+}
+.gpu-model-tag {
+  background: var(--accent-soft); color: var(--accent);
+  padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.68rem;
+}
+
 .sidebar-hint {
   margin: 0;
   font-size: 0.78rem;

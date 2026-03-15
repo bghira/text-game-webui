@@ -1638,6 +1638,15 @@ async def interrupt():
     return {"status": "interrupt requested"}
 
 
+@app.post("/unload")
+async def unload_model():
+    """Unload the current pipeline from GPU to free VRAM."""
+    srv = get_server()
+    srv.pipeline_manager.unload()
+    srv.pipeline_manager.clear_cache()
+    return {"status": "unloaded"}
+
+
 @app.get("/health")
 async def health():
     """Health check endpoint."""
