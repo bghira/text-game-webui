@@ -119,6 +119,7 @@ class EngineGateway(Protocol):
     async def remove_roster_character(self, campaign_id: str, slug: str, *, player: bool = False) -> dict: ...
     async def get_player_state(self, campaign_id: str, actor_id: str) -> dict: ...
     async def get_media(self, campaign_id: str, actor_id: str | None = None) -> dict: ...
+    async def record_pending_avatar(self, campaign_id: str, actor_id: str, image_url: str, prompt: str | None = None) -> dict: ...
     async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict: ...
     async def decline_pending_avatar(self, campaign_id: str, actor_id: str) -> dict: ...
     async def memory_search(self, campaign_id: str, queries: list[str], category: str | None) -> dict: ...
@@ -792,6 +793,20 @@ Legend: @ current player
             },
             "avatars": avatars,
         }
+
+    async def record_pending_avatar(self, campaign_id: str, actor_id: str, image_url: str, prompt: str | None = None) -> dict:
+        self._require_campaign(campaign_id)
+        player = self._players[campaign_id].get(actor_id)
+        if player is None:
+            raise KeyError(f"Unknown player in campaign: {actor_id}")
+        state = player.get("state", {})
+        if not isinstance(state, dict):
+            state = {}
+            player["state"] = state
+        state["pending_avatar_url"] = image_url.strip()
+        if prompt:
+            state["pending_avatar_prompt"] = prompt[:500]
+        return {"ok": True, "message": "Pending avatar recorded.", "actor_id": actor_id}
 
     async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict:
         self._require_campaign(campaign_id)

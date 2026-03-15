@@ -43,6 +43,7 @@
     Alpine.store("app", {
       debugMode: localStorage.getItem("debugMode") === "true",
       settingsOpen: false,
+      settingsTab: "llm",
       toggleDebugMode() {
         this.debugMode = !this.debugMode;
         localStorage.setItem("debugMode", this.debugMode ? "true" : "false");
@@ -81,6 +82,32 @@
       },
       settingsSaving: false,
       settingsStatus: { ok: null, message: "" },
+
+      /* Image settings panel state */
+      imageSettingsForm: {
+        image_backend: "none",
+        diffusers_host: "127.0.0.1",
+        diffusers_port: 8189,
+        diffusers_model: "",
+        diffusers_device: "cuda",
+        diffusers_dtype: "bf16",
+        diffusers_offload: "none",
+        diffusers_quantization: "none",
+        diffusers_vae_tiling: true,
+        diffusers_autostart: false,
+        comfyui_url: "http://127.0.0.1:8188",
+        comfyui_workflow_json: "",
+        image_width: 1024,
+        image_height: 1024,
+        image_steps: 20,
+        image_guidance_scale: 3.5,
+        image_cache_max_entries: 50,
+      },
+      imageSettingsSaving: false,
+      imageSettingsStatus: { ok: null, message: "" },
+      imageDaemonState: null,
+      imageDaemonLogs: "",
+      imageDaemonBusy: false,
 
       runtimeInfo: {
         gateway_backend: "unknown",
@@ -242,6 +269,11 @@
       portraitForm: { slug: "", image_url: "" },
       portraitStatus: "",
 
+      /* Avatar generation */
+      avatarGenPrompt: "",
+      avatarGenBusy: false,
+      avatarGenStatus: "",
+
       /* Scheduled SMS */
       scheduledSms: { thread: "", sender: "", recipient: "", message: "", delay_seconds: 30 },
       scheduledSmsStatus: "",
@@ -278,6 +310,7 @@
         await this.loadRuntime();
         await this.refreshCampaigns();
         await this.loadSettingsForm();
+        await this.loadImageSettingsForm();
         await this.loadOllamaModels();
         /* watch debug toggle to guard inspector tab */
         this.$watch("$store.app.debugMode", () => this.ensureValidInspectorTab());
@@ -339,12 +372,12 @@
         );
       },
 
-      /* Deduplicated actor list for the action bar dropdown */
+      /* Deduplicated actor list for the current campaign */
       uniqueActors() {
         const seen = new Set();
         const result = [];
         for (const c of this.campaigns) {
-          if (c.actor_id && !seen.has(c.actor_id)) {
+          if (c.id === this.selectedCampaignId && c.actor_id && !seen.has(c.actor_id)) {
             seen.add(c.actor_id);
             result.push(c.actor_id);
           }
@@ -459,6 +492,163 @@
           this.settingsStatus = { ok: false, message: "Failed: " + String(err) };
         }
         this.settingsSaving = false;
+      },
+
+      /* ---- Image settings methods ---- */
+      async loadImageSettingsForm() {
+        try {
+          const data = await this.api("/api/settings/image");
+          const f = this.imageSettingsForm;
+          f.image_backend = data.image_backend || "none";
+          f.diffusers_host = data.diffusers_host || "127.0.0.1";
+          f.diffusers_port = typeof data.diffusers_port === "number" ? data.diffusers_port : 8189;
+          f.diffusers_model = data.diffusers_model || "";
+          f.diffusers_device = data.diffusers_device || "cuda";
+          f.diffusers_dtype = data.diffusers_dtype || "bf16";
+          f.diffusers_offload = data.diffusers_offload || "none";
+          f.diffusers_quantization = data.diffusers_quantization || "none";
+          f.diffusers_vae_tiling = typeof data.diffusers_vae_tiling === "boolean" ? data.diffusers_vae_tiling : true;
+          f.diffusers_autostart = typeof data.diffusers_autostart === "boolean" ? data.diffusers_autostart : false;
+          f.comfyui_url = data.comfyui_url || "http://127.0.0.1:8188";
+          f.comfyui_workflow_json = data.comfyui_workflow_json || "";
+          f.image_width = typeof data.image_width === "number" ? data.image_width : 1024;
+          f.image_height = typeof data.image_height === "number" ? data.image_height : 1024;
+          f.image_steps = typeof data.image_steps === "number" ? data.image_steps : 20;
+          f.image_guidance_scale = typeof data.image_guidance_scale === "number" ? data.image_guidance_scale : 3.5;
+          f.image_cache_max_entries = typeof data.image_cache_max_entries === "number" ? data.image_cache_max_entries : 50;
+          this.imageDaemonState = data.daemon_state || null;
+          // Fetch recent logs when daemon is in error state
+          if (this.imageDaemonState === "error") {
+            try {
+              const logData = await this.api("/api/image/daemon/logs");
+              const lines = logData.logs || [];
+              this.imageDaemonLogs = lines.slice(-20).join("\n");
+            } catch (_logErr) {
+              this.imageDaemonLogs = "";
+            }
+          } else {
+            this.imageDaemonLogs = "";
+          }
+        } catch (_err) {
+          /* image settings endpoint may not exist */
+        }
+      },
+
+      async applyImageSettings() {
+        this.imageSettingsSaving = true;
+        this.imageSettingsStatus = { ok: null, message: "Applying..." };
+        try {
+          const f = this.imageSettingsForm;
+          const payload = {
+            image_backend: f.image_backend,
+            diffusers_host: f.diffusers_host,
+            diffusers_port: f.diffusers_port,
+            diffusers_model: f.diffusers_model || null,
+            diffusers_device: f.diffusers_device,
+            diffusers_dtype: f.diffusers_dtype,
+            diffusers_offload: f.diffusers_offload,
+            diffusers_quantization: f.diffusers_quantization,
+            diffusers_vae_tiling: f.diffusers_vae_tiling,
+            diffusers_autostart: f.diffusers_autostart,
+            comfyui_url: f.comfyui_url,
+            comfyui_workflow_json: f.comfyui_workflow_json || null,
+            image_width: f.image_width,
+            image_height: f.image_height,
+            image_steps: f.image_steps,
+            image_guidance_scale: f.image_guidance_scale,
+            image_cache_max_entries: f.image_cache_max_entries,
+          };
+          const result = await this.api("/api/settings/image", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          let msg = "Image settings applied.";
+          if (result.daemon_restarted) {
+            msg += " Daemon restarted with new settings.";
+          }
+          if (result.restart_required) {
+            msg += " Server restart required for some changes to take effect.";
+          }
+          this.imageSettingsStatus = { ok: true, message: msg };
+          await this.loadImageSettingsForm();
+        } catch (err) {
+          this.imageSettingsStatus = { ok: false, message: "Failed: " + String(err) };
+        }
+        this.imageSettingsSaving = false;
+      },
+
+      async startImageDaemon() {
+        this.imageDaemonBusy = true;
+        this.imageSettingsStatus = { ok: null, message: "Starting daemon..." };
+        try {
+          const result = await this.api("/api/image/daemon/start", { method: "POST" });
+          if (result.status === "error") {
+            this.imageSettingsStatus = { ok: false, message: "Daemon failed: " + (result.message || "unknown error") };
+          } else if (result.status === "already_running") {
+            this.imageSettingsStatus = { ok: true, message: "Daemon is already running." };
+          } else {
+            this.imageSettingsStatus = { ok: true, message: "Daemon started." };
+          }
+        } catch (err) {
+          this.imageSettingsStatus = { ok: false, message: "Start failed: " + String(err) };
+        }
+        await this.loadImageSettingsForm();
+        this.imageDaemonBusy = false;
+      },
+
+      async stopImageDaemon() {
+        this.imageDaemonBusy = true;
+        this.imageSettingsStatus = { ok: null, message: "Stopping daemon..." };
+        try {
+          const result = await this.api("/api/image/daemon/stop", { method: "POST" });
+          if (result.status === "already_stopped") {
+            this.imageSettingsStatus = { ok: true, message: "Daemon was already stopped." };
+          } else {
+            this.imageSettingsStatus = { ok: true, message: "Daemon stopped." };
+          }
+        } catch (err) {
+          this.imageSettingsStatus = { ok: false, message: "Stop failed: " + String(err) };
+        }
+        await this.loadImageSettingsForm();
+        this.imageDaemonBusy = false;
+      },
+
+      async generateImage(entry) {
+        if (entry._imgGenerating) return;
+        entry._imgGenerating = true;
+        entry._imgError = "";
+        entry._imgUrl = "";
+        try {
+          const result = await this.api("/api/image/generate", {
+            method: "POST",
+            body: JSON.stringify({ prompt: entry.text }),
+          });
+          const jobId = result.job_id;
+          if (!jobId) {
+            entry._imgError = result.detail || "No job ID returned.";
+            entry._imgGenerating = false;
+            return;
+          }
+          // Poll for completion
+          for (let i = 0; i < 120; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const status = await this.api(`/api/image/status/${encodeURIComponent(jobId)}`);
+            if (status.status === "completed") {
+              entry._imgUrl = status.image_url || "";
+              entry._imgGenerating = false;
+              return;
+            }
+            if (status.status === "failed" || status.status === "interrupted") {
+              entry._imgError = status.error || status.status;
+              entry._imgGenerating = false;
+              return;
+            }
+          }
+          entry._imgError = "Generation timed out.";
+        } catch (err) {
+          entry._imgError = String(err);
+        }
+        entry._imgGenerating = false;
       },
 
       resetError() {
@@ -1108,6 +1298,61 @@
           this.portraitStatus = data.ok ? `Portrait set for ${data.character_slug}.` : "Failed to set portrait.";
           if (data.ok) { this.portraitForm.slug = ""; this.portraitForm.image_url = ""; }
         } catch (error) { this.portraitStatus = "Error: " + String(error); }
+      },
+
+      /* ---- Avatar generation ---- */
+      async generateAvatar() {
+        const prompt = (this.avatarGenPrompt || "").trim();
+        if (!prompt || !this.selectedCampaignId) return;
+        const actorId = this.resolveMediaActorId();
+        this.avatarGenBusy = true;
+        this.avatarGenStatus = "Submitting...";
+        try {
+          // 1. Start generation
+          const gen = await this.api(`/api/campaigns/${this.selectedCampaignId}/media/avatar/generate`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actorId, prompt }),
+          });
+          const jobId = gen.job_id;
+          if (!jobId) {
+            this.avatarGenStatus = gen.detail || "No job ID returned.";
+            this.avatarGenBusy = false;
+            return;
+          }
+          // 2. Poll for completion
+          this.avatarGenStatus = "Generating...";
+          let imageUrl = "";
+          for (let i = 0; i < 120; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const status = await this.api(`/api/image/status/${encodeURIComponent(jobId)}`);
+            if (status.status === "completed") {
+              imageUrl = status.image_url || "";
+              break;
+            }
+            if (status.status === "failed" || status.status === "interrupted") {
+              this.avatarGenStatus = "Generation failed: " + (status.error || status.status);
+              this.avatarGenBusy = false;
+              return;
+            }
+          }
+          if (!imageUrl) {
+            this.avatarGenStatus = "Generation timed out.";
+            this.avatarGenBusy = false;
+            return;
+          }
+          // 3. Commit as pending avatar
+          this.avatarGenStatus = "Setting as pending avatar...";
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/media/avatar/commit`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actorId, image_url: imageUrl, prompt }),
+          });
+          this.avatarGenStatus = "Avatar generated! Review it below.";
+          this.avatarGenPrompt = "";
+          await this.loadPlayerState();
+        } catch (err) {
+          this.avatarGenStatus = "Error: " + String(err);
+        }
+        this.avatarGenBusy = false;
       },
 
       /* ---- Scheduled SMS ---- */
@@ -2154,7 +2399,7 @@
           const body = await this.api(
             `/api/campaigns/${this.selectedCampaignId}/player-state?actor_id=${encodeURIComponent(actor.trim())}`,
           );
-          this.playerData = body;
+          this.playerData = body.player_state || body;
           this.playerStateText = formatJson(body);
         } catch (error) {
           this.playerData = null;

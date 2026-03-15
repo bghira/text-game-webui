@@ -3271,6 +3271,29 @@ class TextGameEngineGateway(EngineGateway):
             },
         }
 
+    async def record_pending_avatar(self, campaign_id: str, actor_id: str, image_url: str, prompt: str | None = None) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id}")
+
+        ok = self._emulator.record_pending_avatar_image_for_campaign(
+            campaign_id, actor_id, image_url, avatar_prompt=prompt,
+        )
+        return {
+            "ok": bool(ok),
+            "message": "Pending avatar recorded." if ok else "Failed to record pending avatar.",
+            "actor_id": actor_id,
+        }
+
     async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)

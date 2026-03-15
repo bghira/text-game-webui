@@ -260,6 +260,10 @@
               <div class="scene-prompt-card" x-show="!$store.app.debugMode">
                 <span class="scene-prompt-icon">&#x1f3a8;</span>
                 <span class="scene-prompt-text" x-text="entry.text"></span>
+                <button type="button" class="scene-prompt-gen-btn"
+                  @click="generateImage(entry)"
+                  :disabled="entry._imgGenerating"
+                  x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <div class="turn-debug-card" x-show="$store.app.debugMode">
                 <header>
@@ -267,7 +271,17 @@
                   <small x-text="entry.at"></small>
                 </header>
                 <pre x-text="entry.text"></pre>
+                <button type="button" class="scene-prompt-gen-btn" style="margin-top:0.35rem;"
+                  @click="generateImage(entry)"
+                  :disabled="entry._imgGenerating"
+                  x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
+              <template x-if="entry._imgUrl">
+                <img class="scene-prompt-result" :src="entry._imgUrl" alt="Generated image" loading="lazy" />
+              </template>
+              <template x-if="entry._imgError">
+                <p class="scene-prompt-error" x-text="entry._imgError"></p>
+              </template>
             </div>
           </template>
           <template x-if="entry.type === 'dice'">
@@ -293,23 +307,50 @@
       <p x-show="turnStream.length === 0 && selectedCampaignId && !setupMode" class="empty">Type an action below to begin your adventure.</p>
     </div>
 
-    <!-- Action Bar (horizontal) -->
-    <form class="action-bar" @submit.prevent="submitTurn()">
-      <select x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
-        <template x-for="actor in uniqueActors()" :key="actor">
-          <option :value="actor" x-text="actor"></option>
-        </template>
-      </select>
-      <span class="action-prompt">&gt;</span>
-      <input
-        x-model="turnForm.action"
-        placeholder="What do you do?"
-        class="action-input"
-        required
-        id="action-input"
-      />
-      <button type="submit" :disabled="!selectedCampaignId || submitting" class="action-submit" :class="{ 'action-thinking': submitting }" x-text="submitting ? 'Thinking...' : 'Submit'"></button>
-    </form>
+    <!-- Character HUD + Action Bar -->
+    <div class="action-bar-wrapper">
+      <template x-if="playerData && playerData.state && playerData.state.avatar_url">
+        <img :src="playerData.state.avatar_url" :alt="(playerData.state.character_name || playerData.actor_id || '') + ' avatar'" class="action-bar-avatar" />
+      </template>
+      <div class="action-bar-column">
+        <div class="char-hud">
+          <div class="char-hud-top">
+            <strong class="char-hud-name" x-text="(playerData && playerData.state && playerData.state.character_name) || turnForm.actor_id || 'Unknown'"></strong>
+            <select x-show="uniqueActors().length > 1" x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
+              <template x-for="actor in uniqueActors()" :key="actor">
+                <option :value="actor" x-text="actor"></option>
+              </template>
+            </select>
+          </div>
+          <template x-if="playerData">
+            <div class="char-hud-stats">
+              <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
+              <div class="xp-bar-track char-hud-xp">
+                <div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div>
+              </div>
+              <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+            </div>
+          </template>
+          <template x-if="playerData && playerData.state && playerData.state.room_title">
+            <span class="char-hud-location" x-text="playerData.state.room_title"></span>
+          </template>
+        </div>
+        <form class="action-bar" @submit.prevent="submitTurn()">
+          <span class="action-prompt">&gt;</span>
+          <textarea
+            x-model="turnForm.action"
+            placeholder="What do you do?"
+            class="action-input"
+            required
+            id="action-input"
+            rows="1"
+            @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
+            @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
+          ></textarea>
+          <button type="submit" :disabled="!selectedCampaignId || submitting" class="action-submit" :class="{ 'action-thinking': submitting }" x-text="submitting ? 'Thinking...' : 'Submit'"></button>
+        </form>
+      </div>
+    </div>
 
     <p class="status" x-text="statusMessage"></p>
     <p class="error" x-show="errorMessage" x-text="errorMessage" @click="errorMessage = ''" title="Click to dismiss"></p>
@@ -450,6 +491,34 @@
                 </div>
               </div>
             </template>
+            <!-- Set Portrait -->
+            <details class="source-upload-details">
+              <summary>Set Portrait</summary>
+              <form class="stack compact" @submit.prevent="recordCharacterPortrait()">
+                <label>
+                  Character Slug
+                  <input x-model="portraitForm.slug" :placeholder="playerData.actor_id || 'character-slug'" />
+                </label>
+                <label>
+                  Image URL
+                  <input x-model="portraitForm.image_url" placeholder="https://..." />
+                </label>
+                <button type="submit" :disabled="!selectedCampaignId || !portraitForm.slug.trim() || !portraitForm.image_url.trim()">Set Portrait</button>
+                <p x-show="portraitStatus" x-text="portraitStatus" class="muted"></p>
+              </form>
+            </details>
+            <!-- Generate Avatar -->
+            <details class="source-upload-details">
+              <summary>Generate Avatar</summary>
+              <form class="stack compact" @submit.prevent="generateAvatar()">
+                <label>
+                  Avatar Prompt
+                  <textarea x-model="avatarGenPrompt" rows="2" placeholder="A portrait of a rugged adventurer with short brown hair, wearing leather armor..."></textarea>
+                </label>
+                <button type="submit" :disabled="!selectedCampaignId || !avatarGenPrompt.trim() || avatarGenBusy" x-text="avatarGenBusy ? avatarGenStatus : 'Generate Avatar'"></button>
+                <p x-show="avatarGenStatus && !avatarGenBusy" x-text="avatarGenStatus" class="muted"></p>
+              </form>
+            </details>
             <!-- Raw state (debug) -->
             <template x-if="$store.app.debugMode">
               <details>
@@ -1213,13 +1282,30 @@
 
   <!-- ====== SETTINGS DRAWER ====== -->
   <div class="settings-overlay" x-show="$store.app.settingsOpen" @click.self="$store.app.settingsOpen = false" @keydown.escape.window="$store.app.settingsOpen = false" x-cloak x-transition.opacity>
-    <aside class="settings-drawer">
+    <aside class="settings-drawer" role="dialog" aria-label="Settings">
       <div class="drawer-header">
-        <h2>LLM Settings</h2>
-        <button type="button" class="drawer-close" @click="$store.app.settingsOpen = false">&times;</button>
+        <h2 class="sr-only">Settings</h2>
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections"
+             @keydown.left.prevent="$store.app.settingsTab = $store.app.settingsTab === 'image' ? 'llm' : 'image'; $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
+             @keydown.right.prevent="$store.app.settingsTab = $store.app.settingsTab === 'llm' ? 'image' : 'llm'; $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
+          <button type="button" role="tab" id="settings-tab-llm" class="settings-tab"
+            :class="{ active: $store.app.settingsTab === 'llm' }"
+            :aria-selected="$store.app.settingsTab === 'llm'"
+            :tabindex="$store.app.settingsTab === 'llm' ? 0 : -1"
+            aria-controls="settings-panel-llm"
+            @click="$store.app.settingsTab = 'llm'">LLM</button>
+          <button type="button" role="tab" id="settings-tab-image" class="settings-tab"
+            :class="{ active: $store.app.settingsTab === 'image' }"
+            :aria-selected="$store.app.settingsTab === 'image'"
+            :tabindex="$store.app.settingsTab === 'image' ? 0 : -1"
+            aria-controls="settings-panel-image"
+            @click="$store.app.settingsTab = 'image'">Image</button>
+        </div>
+        <button type="button" class="drawer-close" @click="$store.app.settingsOpen = false" aria-label="Close settings">&times;</button>
       </div>
 
-      <div class="stack">
+      <!-- LLM Settings Panel -->
+      <div id="settings-panel-llm" role="tabpanel" aria-labelledby="settings-tab-llm" class="stack" x-show="$store.app.settingsTab === 'llm'">
         <template x-if="runtimeInfo.gateway_backend && runtimeInfo.gateway_backend !== 'tge'">
           <p class="settings-note" style="margin-top:0">Backend is <strong x-text="runtimeInfo.gateway_backend"></strong>. LLM settings only apply to the tge backend.</p>
         </template>
@@ -1298,6 +1384,146 @@
 
         <p class="settings-note">Settings apply until server restart.</p>
         <p class="settings-status" :class="settingsStatus.ok === false ? 'error' : 'status'" x-show="settingsStatus.message" x-text="settingsStatus.message"></p>
+      </div>
+
+      <!-- Image Settings Panel -->
+      <div id="settings-panel-image" role="tabpanel" aria-labelledby="settings-tab-image" class="stack" x-show="$store.app.settingsTab === 'image'">
+
+        <div class="settings-group">
+          <p class="settings-group-title">Backend</p>
+          <div class="stack compact">
+            <label>
+              Image Backend
+              <select x-model="imageSettingsForm.image_backend">
+                <option value="none">None (disabled)</option>
+                <option value="diffusers">Diffusers</option>
+                <option value="comfyui">ComfyUI</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <!-- Diffusers group -->
+        <div class="settings-group" x-show="imageSettingsForm.image_backend === 'diffusers'">
+          <p class="settings-group-title">Diffusers</p>
+          <div class="stack compact">
+            <label>
+              Host
+              <input x-model="imageSettingsForm.diffusers_host" placeholder="127.0.0.1" />
+            </label>
+            <label>
+              Port
+              <input type="number" x-model.number="imageSettingsForm.diffusers_port" min="1" max="65535" />
+            </label>
+            <label>
+              Model
+              <input x-model="imageSettingsForm.diffusers_model" placeholder="e.g. black-forest-labs/FLUX.1-dev" />
+            </label>
+            <label>
+              Device
+              <select x-model="imageSettingsForm.diffusers_device">
+                <option value="cpu">CPU</option>
+                <option value="cuda">CUDA</option>
+                <option value="rocm">ROCm</option>
+                <option value="mps">MPS</option>
+              </select>
+            </label>
+            <label>
+              Dtype
+              <select x-model="imageSettingsForm.diffusers_dtype">
+                <option value="f16">float16</option>
+                <option value="bf16">bfloat16</option>
+                <option value="f32">float32</option>
+              </select>
+            </label>
+            <label>
+              Offload
+              <select x-model="imageSettingsForm.diffusers_offload">
+                <option value="none">None</option>
+                <option value="model">Model offload</option>
+                <option value="sequential">Sequential offload</option>
+              </select>
+            </label>
+            <label>
+              Quantization
+              <select x-model="imageSettingsForm.diffusers_quantization">
+                <option value="none">None</option>
+                <option value="int8">INT8</option>
+                <option value="int4">INT4</option>
+              </select>
+            </label>
+            <label class="flag-toggle">
+              <input type="checkbox" x-model="imageSettingsForm.diffusers_vae_tiling" />
+              <span>VAE Tiling</span>
+            </label>
+            <label class="flag-toggle">
+              <input type="checkbox" x-model="imageSettingsForm.diffusers_autostart" />
+              <span>Autostart Daemon</span>
+            </label>
+
+            <div style="display:flex; align-items:center; gap:0.5rem; margin-top:0.25rem;">
+              <span style="font-size:0.82rem; font-weight:500; color:#3a4e46;">Daemon:</span>
+              <span style="font-size:0.82rem;" :style="imageDaemonState === 'error' ? 'color:var(--error);font-weight:500' : ''" x-text="imageDaemonState || 'not running'"></span>
+              <button type="button" @click="startImageDaemon()" :disabled="imageDaemonBusy" style="font-size:0.78rem; padding:0.25rem 0.55rem;">Start</button>
+              <button type="button" @click="stopImageDaemon()" :disabled="imageDaemonBusy" style="font-size:0.78rem; padding:0.25rem 0.55rem;">Stop</button>
+            </div>
+            <template x-if="imageDaemonState === 'error' && imageDaemonLogs">
+              <details>
+                <summary style="font-size:0.78rem; color:var(--error);">Daemon error logs</summary>
+                <pre style="font-size:0.72rem; max-height:160px; overflow:auto; margin-top:0.3rem; background:#fff8f8; border:1px solid #f0d0d0; border-radius:6px; padding:0.5rem;" x-text="imageDaemonLogs"></pre>
+              </details>
+            </template>
+          </div>
+        </div>
+
+        <!-- ComfyUI group -->
+        <div class="settings-group" x-show="imageSettingsForm.image_backend === 'comfyui'">
+          <p class="settings-group-title">ComfyUI</p>
+          <div class="stack compact">
+            <label>
+              URL
+              <input x-model="imageSettingsForm.comfyui_url" placeholder="http://127.0.0.1:8188" />
+            </label>
+            <label>
+              Workflow JSON
+              <textarea x-model="imageSettingsForm.comfyui_workflow_json" rows="4" placeholder="Paste ComfyUI workflow JSON here"></textarea>
+            </label>
+          </div>
+        </div>
+
+        <!-- Generation group -->
+        <div class="settings-group" x-show="imageSettingsForm.image_backend !== 'none'">
+          <p class="settings-group-title">Generation</p>
+          <div class="stack compact">
+            <label>
+              Width
+              <input type="number" x-model.number="imageSettingsForm.image_width" min="64" max="4096" step="64" />
+            </label>
+            <label>
+              Height
+              <input type="number" x-model.number="imageSettingsForm.image_height" min="64" max="4096" step="64" />
+            </label>
+            <label>
+              Steps
+              <input type="number" x-model.number="imageSettingsForm.image_steps" min="1" max="200" />
+            </label>
+            <label>
+              Guidance Scale: <strong x-text="Number(imageSettingsForm.image_guidance_scale).toFixed(1)"></strong>
+              <input type="range" min="0" max="20" step="0.5" x-model.number="imageSettingsForm.image_guidance_scale" />
+            </label>
+            <label>
+              Cache Max Entries
+              <input type="number" x-model.number="imageSettingsForm.image_cache_max_entries" min="0" max="10000" />
+            </label>
+          </div>
+        </div>
+
+        <div class="drawer-actions" style="grid-template-columns:1fr;">
+          <button type="button" @click="applyImageSettings()" :disabled="imageSettingsSaving" class="btn-primary">Apply Changes</button>
+        </div>
+
+        <p class="settings-note">Some changes require a server restart.</p>
+        <p class="settings-status" :class="imageSettingsStatus.ok === false ? 'error' : 'status'" x-show="imageSettingsStatus.message" x-text="imageSettingsStatus.message"></p>
       </div>
     </aside>
   </div>
