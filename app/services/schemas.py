@@ -39,6 +39,11 @@ class AvatarActionRequest(BaseModel):
     actor_id: str
 
 
+class AvatarGenerateRequest(BaseModel):
+    actor_id: str
+    prompt: str
+
+
 class RosterUpsertRequest(BaseModel):
     slug: str
     name: str | None = None

@@ -260,6 +260,10 @@
               <div class="scene-prompt-card" x-show="!$store.app.debugMode">
                 <span class="scene-prompt-icon">&#x1f3a8;</span>
                 <span class="scene-prompt-text" x-text="entry.text"></span>
+                <button type="button" class="scene-prompt-gen-btn"
+                  @click="generateImage(entry)"
+                  :disabled="entry._imgGenerating"
+                  x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <div class="turn-debug-card" x-show="$store.app.debugMode">
                 <header>
@@ -267,7 +271,17 @@
                   <small x-text="entry.at"></small>
                 </header>
                 <pre x-text="entry.text"></pre>
+                <button type="button" class="scene-prompt-gen-btn" style="margin-top:0.35rem;"
+                  @click="generateImage(entry)"
+                  :disabled="entry._imgGenerating"
+                  x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
+              <template x-if="entry._imgUrl">
+                <img class="scene-prompt-result" :src="entry._imgUrl" alt="Generated image" loading="lazy" />
+              </template>
+              <template x-if="entry._imgError">
+                <p class="scene-prompt-error" x-text="entry._imgError"></p>
+              </template>
             </div>
           </template>
           <template x-if="entry.type === 'dice'">
@@ -295,19 +309,25 @@
 
     <!-- Action Bar (horizontal) -->
     <form class="action-bar" @submit.prevent="submitTurn()">
+      <template x-if="playerData && playerData.state && playerData.state.avatar_url">
+        <img :src="playerData.state.avatar_url" :alt="(playerData.state.character_name || playerData.actor_id || '') + ' avatar'" class="action-bar-avatar" />
+      </template>
       <select x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
         <template x-for="actor in uniqueActors()" :key="actor">
           <option :value="actor" x-text="actor"></option>
         </template>
       </select>
       <span class="action-prompt">&gt;</span>
-      <input
+      <textarea
         x-model="turnForm.action"
         placeholder="What do you do?"
         class="action-input"
         required
         id="action-input"
-      />
+        rows="1"
+        @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
+        @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
+      ></textarea>
       <button type="submit" :disabled="!selectedCampaignId || submitting" class="action-submit" :class="{ 'action-thinking': submitting }" x-text="submitting ? 'Thinking...' : 'Submit'"></button>
     </form>
 
@@ -450,6 +470,34 @@
                 </div>
               </div>
             </template>
+            <!-- Set Portrait -->
+            <details class="source-upload-details">
+              <summary>Set Portrait</summary>
+              <form class="stack compact" @submit.prevent="recordCharacterPortrait()">
+                <label>
+                  Character Slug
+                  <input x-model="portraitForm.slug" :placeholder="playerData.actor_id || 'character-slug'" />
+                </label>
+                <label>
+                  Image URL
+                  <input x-model="portraitForm.image_url" placeholder="https://..." />
+                </label>
+                <button type="submit" :disabled="!selectedCampaignId || !portraitForm.slug.trim() || !portraitForm.image_url.trim()">Set Portrait</button>
+                <p x-show="portraitStatus" x-text="portraitStatus" class="muted"></p>
+              </form>
+            </details>
+            <!-- Generate Avatar -->
+            <details class="source-upload-details">
+              <summary>Generate Avatar</summary>
+              <form class="stack compact" @submit.prevent="generateAvatar()">
+                <label>
+                  Avatar Prompt
+                  <textarea x-model="avatarGenPrompt" rows="2" placeholder="A portrait of a rugged adventurer with short brown hair, wearing leather armor..."></textarea>
+                </label>
+                <button type="submit" :disabled="!selectedCampaignId || !avatarGenPrompt.trim() || avatarGenBusy" x-text="avatarGenBusy ? avatarGenStatus : 'Generate Avatar'"></button>
+                <p x-show="avatarGenStatus && !avatarGenBusy" x-text="avatarGenStatus" class="muted"></p>
+              </form>
+            </details>
             <!-- Raw state (debug) -->
             <template x-if="$store.app.debugMode">
               <details>
@@ -1213,17 +1261,30 @@
 
   <!-- ====== SETTINGS DRAWER ====== -->
   <div class="settings-overlay" x-show="$store.app.settingsOpen" @click.self="$store.app.settingsOpen = false" @keydown.escape.window="$store.app.settingsOpen = false" x-cloak x-transition.opacity>
-    <aside class="settings-drawer">
+    <aside class="settings-drawer" role="dialog" aria-label="Settings">
       <div class="drawer-header">
-        <div class="settings-tabs">
-          <button type="button" class="settings-tab" :class="{ active: $store.app.settingsTab === 'llm' }" @click="$store.app.settingsTab = 'llm'">LLM</button>
-          <button type="button" class="settings-tab" :class="{ active: $store.app.settingsTab === 'image' }" @click="$store.app.settingsTab = 'image'">Image</button>
+        <h2 class="sr-only">Settings</h2>
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections"
+             @keydown.left.prevent="$store.app.settingsTab = $store.app.settingsTab === 'image' ? 'llm' : 'image'; $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
+             @keydown.right.prevent="$store.app.settingsTab = $store.app.settingsTab === 'llm' ? 'image' : 'llm'; $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
+          <button type="button" role="tab" id="settings-tab-llm" class="settings-tab"
+            :class="{ active: $store.app.settingsTab === 'llm' }"
+            :aria-selected="$store.app.settingsTab === 'llm'"
+            :tabindex="$store.app.settingsTab === 'llm' ? 0 : -1"
+            aria-controls="settings-panel-llm"
+            @click="$store.app.settingsTab = 'llm'">LLM</button>
+          <button type="button" role="tab" id="settings-tab-image" class="settings-tab"
+            :class="{ active: $store.app.settingsTab === 'image' }"
+            :aria-selected="$store.app.settingsTab === 'image'"
+            :tabindex="$store.app.settingsTab === 'image' ? 0 : -1"
+            aria-controls="settings-panel-image"
+            @click="$store.app.settingsTab = 'image'">Image</button>
         </div>
-        <button type="button" class="drawer-close" @click="$store.app.settingsOpen = false">&times;</button>
+        <button type="button" class="drawer-close" @click="$store.app.settingsOpen = false" aria-label="Close settings">&times;</button>
       </div>
 
       <!-- LLM Settings Panel -->
-      <div class="stack" x-show="$store.app.settingsTab === 'llm'">
+      <div id="settings-panel-llm" role="tabpanel" aria-labelledby="settings-tab-llm" class="stack" x-show="$store.app.settingsTab === 'llm'">
         <template x-if="runtimeInfo.gateway_backend && runtimeInfo.gateway_backend !== 'tge'">
           <p class="settings-note" style="margin-top:0">Backend is <strong x-text="runtimeInfo.gateway_backend"></strong>. LLM settings only apply to the tge backend.</p>
         </template>
@@ -1305,7 +1366,7 @@
       </div>
 
       <!-- Image Settings Panel -->
-      <div class="stack" x-show="$store.app.settingsTab === 'image'">
+      <div id="settings-panel-image" role="tabpanel" aria-labelledby="settings-tab-image" class="stack" x-show="$store.app.settingsTab === 'image'">
 
         <div class="settings-group">
           <p class="settings-group-title">Backend</p>
@@ -1381,10 +1442,16 @@
 
             <div style="display:flex; align-items:center; gap:0.5rem; margin-top:0.25rem;">
               <span style="font-size:0.82rem; font-weight:500; color:#3a4e46;">Daemon:</span>
-              <span style="font-size:0.82rem;" x-text="imageDaemonState || 'not running'"></span>
-              <button type="button" @click="startImageDaemon()" :disabled="imageSettingsSaving" style="font-size:0.78rem; padding:0.25rem 0.55rem;">Start</button>
-              <button type="button" @click="stopImageDaemon()" :disabled="imageSettingsSaving" style="font-size:0.78rem; padding:0.25rem 0.55rem;">Stop</button>
+              <span style="font-size:0.82rem;" :style="imageDaemonState === 'error' ? 'color:var(--error);font-weight:500' : ''" x-text="imageDaemonState || 'not running'"></span>
+              <button type="button" @click="startImageDaemon()" :disabled="imageDaemonBusy" style="font-size:0.78rem; padding:0.25rem 0.55rem;">Start</button>
+              <button type="button" @click="stopImageDaemon()" :disabled="imageDaemonBusy" style="font-size:0.78rem; padding:0.25rem 0.55rem;">Stop</button>
             </div>
+            <template x-if="imageDaemonState === 'error' && imageDaemonLogs">
+              <details>
+                <summary style="font-size:0.78rem; color:var(--error);">Daemon error logs</summary>
+                <pre style="font-size:0.72rem; max-height:160px; overflow:auto; margin-top:0.3rem; background:#fff8f8; border:1px solid #f0d0d0; border-radius:6px; padding:0.5rem;" x-text="imageDaemonLogs"></pre>
+              </details>
+            </template>
           </div>
         </div>
 

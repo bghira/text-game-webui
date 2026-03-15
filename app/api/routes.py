@@ -21,6 +21,7 @@ from app.services.engine_gateway import FEATURES, EngineGateway
 from app.services.schemas import (
     AttributeSetRequest,
     AvatarActionRequest,
+    AvatarGenerateRequest,
     CampaignRuleUpdate,
     CampaignFlagsUpdate,
     CharacterPortraitRequest,
@@ -822,6 +823,80 @@ async def get_media(
     return {"media": data}
 
 
+@router.post("/campaigns/{campaign_id}/media/avatar/generate")
+async def generate_avatar(
+    campaign_id: str,
+    payload: AvatarGenerateRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    """Generate an avatar image from a prompt and set it as the pending avatar."""
+    settings = request.app.state.settings
+    backend = (settings.image_backend or "none").strip().lower()
+    if backend == "none":
+        raise HTTPException(status_code=400, detail="No image backend configured.")
+
+    # Generate the image
+    orchestrator = getattr(request.app.state, "gpu_orchestrator", None)
+    if orchestrator:
+        await orchestrator.before_image_generation()
+
+    if backend == "diffusers":
+        client = getattr(request.app.state, "diffusers_client", None)
+        if client is None:
+            raise HTTPException(status_code=400, detail="Diffusers client not initialized.")
+        result = await client.generate(
+            prompt=payload.prompt,
+            model_id=settings.diffusers_model,
+            width=settings.image_width,
+            height=settings.image_height,
+            steps=settings.image_steps,
+            guidance_scale=settings.image_guidance_scale,
+        )
+        job_id = result.get("job_id")
+        if not job_id:
+            raise HTTPException(status_code=500, detail="Image generation failed to start.")
+        return {"job_id": job_id, "status": "pending", "actor_id": payload.actor_id}
+    elif backend == "comfyui":
+        client = getattr(request.app.state, "comfyui_client", None)
+        if client is None:
+            raise HTTPException(status_code=400, detail="ComfyUI client not initialized.")
+        prompt_id = await client.queue_prompt(
+            prompt=payload.prompt,
+            width=settings.image_width,
+            height=settings.image_height,
+            steps=settings.image_steps,
+            cfg=settings.image_guidance_scale,
+        )
+        return {"job_id": prompt_id, "status": "pending", "backend": "comfyui", "actor_id": payload.actor_id}
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported image backend: {backend}")
+
+
+@router.post("/campaigns/{campaign_id}/media/avatar/commit")
+async def commit_avatar(
+    campaign_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    """After generation completes, commit the image as the pending avatar."""
+    body = await request.json()
+    actor_id = body.get("actor_id", "")
+    image_url = body.get("image_url", "")
+    prompt = body.get("prompt", "")
+    if not actor_id or not image_url:
+        raise HTTPException(status_code=400, detail="actor_id and image_url are required.")
+    try:
+        data = await gateway.record_pending_avatar(campaign_id, actor_id, image_url, prompt=prompt)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {"type": "media", "payload": {"action": "avatar_generated", "actor_id": actor_id, "image_url": image_url}},
+    )
+    return data
+
+
 @router.post("/campaigns/{campaign_id}/media/avatar/accept")
 async def accept_pending_avatar(
     campaign_id: str,
@@ -1455,15 +1530,55 @@ async def update_image_settings(
 
     persist_settings(settings)
 
-    # Settings that affect the wired-up media subsystem require a restart
-    _RESTART_KEYS = {
-        "image_backend", "diffusers_host", "diffusers_port", "diffusers_model",
+    # Diffusers daemon settings that can be hot-reloaded via daemon.restart()
+    _DIFFUSERS_DAEMON_KEYS = {
+        "diffusers_host", "diffusers_port", "diffusers_model",
         "diffusers_device", "diffusers_dtype", "diffusers_offload",
-        "diffusers_quantization", "diffusers_vae_tiling", "comfyui_url",
-        "comfyui_workflow_json",
+        "diffusers_quantization", "diffusers_vae_tiling",
     }
-    restart_required = bool(_RESTART_KEYS & set(updated))
-    return {"updated": updated, "restart_required": restart_required}
+    # Settings that still require a full server restart
+    _RESTART_KEYS = {"comfyui_url", "comfyui_workflow_json"}
+
+    restart_required = False
+    daemon_restarted = False
+    updated_set = set(updated)
+
+    # Hot-reload diffusers daemon if daemon keys changed
+    if updated_set & _DIFFUSERS_DAEMON_KEYS:
+        daemon = getattr(request.app.state, "diffusers_daemon", None)
+        if daemon is not None and daemon.state.value != "stopped":
+            # Map settings keys to daemon kwarg names (strip diffusers_ prefix)
+            kwargs = {}
+            for k in _DIFFUSERS_DAEMON_KEYS & updated_set:
+                daemon_key = k.replace("diffusers_", "")
+                kwargs[daemon_key] = getattr(settings, k)
+            await daemon.restart(**kwargs)
+            # Update client base_url too
+            client = getattr(request.app.state, "diffusers_client", None)
+            if client is not None:
+                client._base = daemon.base_url
+            daemon_restarted = True
+        elif daemon is not None:
+            # Daemon exists but stopped — just update its internal fields
+            for k in _DIFFUSERS_DAEMON_KEYS & updated_set:
+                daemon_key = k.replace("diffusers_", "")
+                attr = f"_{daemon_key}"
+                val = getattr(settings, k)
+                if daemon_key == "port":
+                    val = int(val)
+                setattr(daemon, attr, val)
+            client = getattr(request.app.state, "diffusers_client", None)
+            if client is not None:
+                client._base = daemon.base_url
+
+    # Backend switch or comfyui changes still need restart
+    if "image_backend" in updated_set or (updated_set & _RESTART_KEYS):
+        restart_required = True
+
+    result = {"updated": updated, "restart_required": restart_required}
+    if daemon_restarted:
+        result["daemon_restarted"] = True
+    return result
 
 
 @router.post("/image/daemon/start")

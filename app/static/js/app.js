@@ -106,6 +106,8 @@
       imageSettingsSaving: false,
       imageSettingsStatus: { ok: null, message: "" },
       imageDaemonState: null,
+      imageDaemonLogs: "",
+      imageDaemonBusy: false,
 
       runtimeInfo: {
         gateway_backend: "unknown",
@@ -266,6 +268,11 @@
       /* Character portrait */
       portraitForm: { slug: "", image_url: "" },
       portraitStatus: "",
+
+      /* Avatar generation */
+      avatarGenPrompt: "",
+      avatarGenBusy: false,
+      avatarGenStatus: "",
 
       /* Scheduled SMS */
       scheduledSms: { thread: "", sender: "", recipient: "", message: "", delay_seconds: 30 },
@@ -510,6 +517,18 @@
           f.image_guidance_scale = typeof data.image_guidance_scale === "number" ? data.image_guidance_scale : 3.5;
           f.image_cache_max_entries = typeof data.image_cache_max_entries === "number" ? data.image_cache_max_entries : 50;
           this.imageDaemonState = data.daemon_state || null;
+          // Fetch recent logs when daemon is in error state
+          if (this.imageDaemonState === "error") {
+            try {
+              const logData = await this.api("/api/image/daemon/logs");
+              const lines = logData.logs || [];
+              this.imageDaemonLogs = lines.slice(-20).join("\n");
+            } catch (_logErr) {
+              this.imageDaemonLogs = "";
+            }
+          } else {
+            this.imageDaemonLogs = "";
+          }
         } catch (_err) {
           /* image settings endpoint may not exist */
         }
@@ -544,6 +563,9 @@
             body: JSON.stringify(payload),
           });
           let msg = "Image settings applied.";
+          if (result.daemon_restarted) {
+            msg += " Daemon restarted with new settings.";
+          }
           if (result.restart_required) {
             msg += " Server restart required for some changes to take effect.";
           }
@@ -556,25 +578,77 @@
       },
 
       async startImageDaemon() {
+        this.imageDaemonBusy = true;
         this.imageSettingsStatus = { ok: null, message: "Starting daemon..." };
         try {
           const result = await this.api("/api/image/daemon/start", { method: "POST" });
-          this.imageDaemonState = result.state || "starting";
-          this.imageSettingsStatus = { ok: true, message: "Daemon start requested." };
+          if (result.status === "error") {
+            this.imageSettingsStatus = { ok: false, message: "Daemon failed: " + (result.message || "unknown error") };
+          } else if (result.status === "already_running") {
+            this.imageSettingsStatus = { ok: true, message: "Daemon is already running." };
+          } else {
+            this.imageSettingsStatus = { ok: true, message: "Daemon started." };
+          }
         } catch (err) {
           this.imageSettingsStatus = { ok: false, message: "Start failed: " + String(err) };
         }
+        await this.loadImageSettingsForm();
+        this.imageDaemonBusy = false;
       },
 
       async stopImageDaemon() {
+        this.imageDaemonBusy = true;
         this.imageSettingsStatus = { ok: null, message: "Stopping daemon..." };
         try {
           const result = await this.api("/api/image/daemon/stop", { method: "POST" });
-          this.imageDaemonState = result.state || "stopped";
-          this.imageSettingsStatus = { ok: true, message: "Daemon stopped." };
+          if (result.status === "already_stopped") {
+            this.imageSettingsStatus = { ok: true, message: "Daemon was already stopped." };
+          } else {
+            this.imageSettingsStatus = { ok: true, message: "Daemon stopped." };
+          }
         } catch (err) {
           this.imageSettingsStatus = { ok: false, message: "Stop failed: " + String(err) };
         }
+        await this.loadImageSettingsForm();
+        this.imageDaemonBusy = false;
+      },
+
+      async generateImage(entry) {
+        if (entry._imgGenerating) return;
+        entry._imgGenerating = true;
+        entry._imgError = "";
+        entry._imgUrl = "";
+        try {
+          const result = await this.api("/api/image/generate", {
+            method: "POST",
+            body: JSON.stringify({ prompt: entry.text }),
+          });
+          const jobId = result.job_id;
+          if (!jobId) {
+            entry._imgError = result.detail || "No job ID returned.";
+            entry._imgGenerating = false;
+            return;
+          }
+          // Poll for completion
+          for (let i = 0; i < 120; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const status = await this.api(`/api/image/status/${encodeURIComponent(jobId)}`);
+            if (status.status === "completed") {
+              entry._imgUrl = status.image_url || "";
+              entry._imgGenerating = false;
+              return;
+            }
+            if (status.status === "failed" || status.status === "interrupted") {
+              entry._imgError = status.error || status.status;
+              entry._imgGenerating = false;
+              return;
+            }
+          }
+          entry._imgError = "Generation timed out.";
+        } catch (err) {
+          entry._imgError = String(err);
+        }
+        entry._imgGenerating = false;
       },
 
       resetError() {
@@ -1224,6 +1298,61 @@
           this.portraitStatus = data.ok ? `Portrait set for ${data.character_slug}.` : "Failed to set portrait.";
           if (data.ok) { this.portraitForm.slug = ""; this.portraitForm.image_url = ""; }
         } catch (error) { this.portraitStatus = "Error: " + String(error); }
+      },
+
+      /* ---- Avatar generation ---- */
+      async generateAvatar() {
+        const prompt = (this.avatarGenPrompt || "").trim();
+        if (!prompt || !this.selectedCampaignId) return;
+        const actorId = this.resolveMediaActorId();
+        this.avatarGenBusy = true;
+        this.avatarGenStatus = "Submitting...";
+        try {
+          // 1. Start generation
+          const gen = await this.api(`/api/campaigns/${this.selectedCampaignId}/media/avatar/generate`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actorId, prompt }),
+          });
+          const jobId = gen.job_id;
+          if (!jobId) {
+            this.avatarGenStatus = gen.detail || "No job ID returned.";
+            this.avatarGenBusy = false;
+            return;
+          }
+          // 2. Poll for completion
+          this.avatarGenStatus = "Generating...";
+          let imageUrl = "";
+          for (let i = 0; i < 120; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const status = await this.api(`/api/image/status/${encodeURIComponent(jobId)}`);
+            if (status.status === "completed") {
+              imageUrl = status.image_url || "";
+              break;
+            }
+            if (status.status === "failed" || status.status === "interrupted") {
+              this.avatarGenStatus = "Generation failed: " + (status.error || status.status);
+              this.avatarGenBusy = false;
+              return;
+            }
+          }
+          if (!imageUrl) {
+            this.avatarGenStatus = "Generation timed out.";
+            this.avatarGenBusy = false;
+            return;
+          }
+          // 3. Commit as pending avatar
+          this.avatarGenStatus = "Setting as pending avatar...";
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/media/avatar/commit`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actorId, image_url: imageUrl, prompt }),
+          });
+          this.avatarGenStatus = "Avatar generated! Review it below.";
+          this.avatarGenPrompt = "";
+          await this.loadPlayerState();
+        } catch (err) {
+          this.avatarGenStatus = "Error: " + String(err);
+        }
+        this.avatarGenBusy = false;
       },
 
       /* ---- Scheduled SMS ---- */
@@ -2270,7 +2399,7 @@
           const body = await this.api(
             `/api/campaigns/${this.selectedCampaignId}/player-state?actor_id=${encodeURIComponent(actor.trim())}`,
           );
-          this.playerData = body;
+          this.playerData = body.player_state || body;
           this.playerStateText = formatJson(body);
         } catch (error) {
           this.playerData = null;

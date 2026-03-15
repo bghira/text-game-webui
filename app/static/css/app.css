@@ -563,6 +563,15 @@ button:disabled {
   opacity: 0.75;
 }
 
+.action-bar-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1.5px solid var(--line);
+  flex-shrink: 0;
+}
+
 .player-identity strong {
   display: block;
   font-size: 1rem;
@@ -863,6 +872,43 @@ button:disabled {
   line-height: 1.45;
   color: #5a6b62;
   font-style: italic;
+  flex: 1;
+}
+
+.scene-prompt-gen-btn {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+  background: var(--accent-soft);
+  border: 1px solid #b5ccc3;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  align-self: center;
+}
+
+.scene-prompt-gen-btn:hover:not(:disabled) {
+  background: #cce3dc;
+}
+
+.scene-prompt-gen-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scene-prompt-result {
+  display: block;
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  margin-top: 0.35rem;
+}
+
+.scene-prompt-error {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  color: var(--error);
 }
 
 /* Debug cards (summary, image_prompt, system events) */
@@ -917,13 +963,13 @@ pre {
 
 .action-bar {
   display: flex;
-  align-items: center;
-  gap: 0.4rem;
+  align-items: flex-end;
+  gap: 0.5rem;
   margin-bottom: 0.6rem;
   background: #fff;
   border: 1.5px solid var(--line);
   border-radius: var(--radius-md);
-  padding: 0.35rem 0.4rem 0.35rem 0.55rem;
+  padding: 0.6rem 0.6rem 0.6rem 0.75rem;
   box-shadow: var(--shadow-sm);
   transition: border-color var(--transition), box-shadow var(--transition);
 }
@@ -937,11 +983,12 @@ pre {
   width: auto;
   min-width: 110px;
   max-width: 170px;
-  font-size: 0.82rem;
+  font-size: 0.85rem;
   border: none;
   background: var(--accent-soft);
   border-radius: 6px;
-  padding: 0.4rem 0.5rem;
+  padding: 0.5rem 0.55rem;
+  align-self: flex-end;
 }
 
 .actor-select:focus {
@@ -953,21 +1000,30 @@ pre {
 .action-prompt {
   font-family: var(--mono);
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 1.1rem;
   color: var(--accent);
   flex-shrink: 0;
+  align-self: flex-end;
+  padding-bottom: 0.35rem;
 }
 
 .action-input {
   flex: 1;
-  font-size: 0.9rem;
+  font-size: 1rem;
   border: none;
   background: transparent;
-  padding: 0.4rem 0.3rem;
+  padding: 0.55rem 0.3rem;
+  resize: none;
+  overflow: hidden;
+  line-height: 1.4;
+  min-height: 1.4em;
+  max-height: 8em;
+  font-family: inherit;
 }
 
 .action-input:focus {
   box-shadow: none;
+  outline: none;
 }
 
 .action-submit {
@@ -976,8 +1032,9 @@ pre {
   color: #eff8f4;
   border-color: #224740;
   text-align: center;
-  padding: 0.55rem 1.25rem;
-  font-size: 0.88rem;
+  padding: 0.75rem 1.35rem;
+  font-size: 0.92rem;
+  align-self: flex-end;
   border-radius: var(--radius-sm);
 }
 

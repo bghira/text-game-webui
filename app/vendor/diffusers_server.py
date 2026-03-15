@@ -63,10 +63,10 @@ try:
     StructuredMultistep = sk_sampling.StructuredMultistep
     SKRAMPLE_AVAILABLE = True
     log.info("skrample available for custom samplers")
-except ImportError:
+except (ImportError, AttributeError):
     SKRAMPLE_AVAILABLE = False
     StructuredMultistep = None
-    log.warning("skrample not installed - custom samplers disabled")
+    log.warning("skrample not installed or incompatible - custom samplers disabled")
 
 
 class JobStatus(Enum):
@@ -565,6 +565,19 @@ class Job:
     params: dict = field(default_factory=dict)
 
 
+def _filter_pipeline_kwargs(pipeline, kwargs: dict) -> dict:
+    """Filter kwargs to only include parameters accepted by the pipeline's __call__."""
+    import inspect
+    try:
+        sig = inspect.signature(pipeline.__call__)
+    except (ValueError, TypeError):
+        return kwargs
+    params = sig.parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k in params}
+
+
 class DiffusersServer:
     """Server managing multiple diffusion pipelines."""
 
@@ -966,7 +979,7 @@ class DiffusersServer:
             if job is not None:
                 pipeline_kwargs["callback_on_step_end"] = self._make_progress_callback(job, num_steps)
 
-            output = pipeline(**pipeline_kwargs)
+            output = pipeline(**_filter_pipeline_kwargs(pipeline, pipeline_kwargs))
 
             return [self._encode_image(img) for img in output.images]
         finally:
@@ -1025,17 +1038,18 @@ class DiffusersServer:
         )
 
         try:
-            output = txt2img_pipeline(
-                prompt=params.get("prompt", ""),
-                negative_prompt=params.get("negative_prompt", ""),
-                width=params.get("width", 1024),
-                height=params.get("height", 1024),
-                num_inference_steps=txt2img_steps,
-                guidance_scale=params.get("guidance_scale", 7.5),
-                generator=generator,
-                output_type="pil",
-                callback_on_step_end=stage1_callback,
-            )
+            txt2img_kwargs = {
+                "prompt": params.get("prompt", ""),
+                "negative_prompt": params.get("negative_prompt", ""),
+                "width": params.get("width", 1024),
+                "height": params.get("height", 1024),
+                "num_inference_steps": txt2img_steps,
+                "guidance_scale": params.get("guidance_scale", 7.5),
+                "generator": generator,
+                "output_type": "pil",
+                "callback_on_step_end": stage1_callback,
+            }
+            output = txt2img_pipeline(**_filter_pipeline_kwargs(txt2img_pipeline, txt2img_kwargs))
         finally:
             # Restore original scheduler
             if original_scheduler is not None:
@@ -1107,7 +1121,7 @@ class DiffusersServer:
             log.info(f"Input image size: {scaled_image.size}, original: {original_size}")
 
             with torch.inference_mode():
-                qwen_output = qwen_pipeline(**qwen_inputs)
+                qwen_output = qwen_pipeline(**_filter_pipeline_kwargs(qwen_pipeline, qwen_inputs))
 
             layer_images = qwen_output.images[0] if qwen_output.images else []
             log.info(f"Stage 2 complete: {len(layer_images)} layers")
@@ -1167,7 +1181,7 @@ class DiffusersServer:
             if job is not None:
                 pipeline_kwargs["callback_on_step_end"] = self._make_progress_callback(job, num_steps)
 
-            output = pipeline(**pipeline_kwargs)
+            output = pipeline(**_filter_pipeline_kwargs(pipeline, pipeline_kwargs))
 
             return [self._encode_image(img) for img in output.images]
         finally:
@@ -1222,7 +1236,7 @@ class DiffusersServer:
             if job is not None:
                 pipeline_kwargs["callback_on_step_end"] = self._make_progress_callback(job, num_steps)
 
-            output = pipeline(**pipeline_kwargs)
+            output = pipeline(**_filter_pipeline_kwargs(pipeline, pipeline_kwargs))
 
             return [self._encode_image(img) for img in output.images]
         finally:
@@ -1290,7 +1304,7 @@ class DiffusersServer:
             log.info(f"Input image size: {inputs['image'].size}, mode: {inputs['image'].mode}, original: {original_size}")
 
             with torch.inference_mode():
-                output = pipeline(**inputs)
+                output = pipeline(**_filter_pipeline_kwargs(pipeline, inputs))
 
             # Output is list of layers
             layer_images = output.images[0] if output.images else []
