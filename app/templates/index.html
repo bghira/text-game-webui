@@ -4,69 +4,52 @@
 
   <!-- ====== SIDEBAR ====== -->
   <aside class="panel sidebar">
-    <h2>Campaigns</h2>
-    <form class="stack compact" @submit.prevent="createCampaign()">
-      <label>
-        Campaign Name
-        <input x-model="campaignForm.name" placeholder="New Campaign" required :disabled="campaignForm.creating" />
-      </label>
-      <label>
-        Your Character
-        <input x-model="campaignForm.actor_id" placeholder="your-character-name" required :disabled="campaignForm.creating" />
-      </label>
-
-      <!-- File upload zone -->
-      <div class="file-drop-zone" :class="{ 'drop-zone-disabled': campaignForm.creating }"
-           @dragover.prevent
-           @dragenter.prevent="$el._dragCount = ($el._dragCount || 0) + 1; $el.classList.add('drag-over')"
-           @dragleave="$el._dragCount = ($el._dragCount || 1) - 1; if (!$el._dragCount) $el.classList.remove('drag-over')"
-           @drop.prevent="$el._dragCount = 0; $el.classList.remove('drag-over'); if (!campaignForm.creating) handleFileDrop($event)">
-        <p class="drop-zone-text">Drop .txt / .md files here or <label class="file-pick-label">browse<input type="file" multiple accept=".txt,.md" @change="handleFileSelect($event)" class="sr-only" :disabled="campaignForm.creating" /></label></p>
-        <template x-if="campaignForm.files.length > 0">
-          <ul class="file-list">
-            <template x-for="(f, idx) in campaignForm.files" :key="f.file.name">
-              <li class="file-item" :class="'file-' + f.status">
-                <span class="file-name" x-text="f.file.name"></span>
-                <small x-text="(f.file.size / 1024).toFixed(1) + ' KB'"></small>
-                <span class="file-status-dot" :class="'dot-' + f.status"></span>
-                <button type="button" @click="removeUploadedFile(idx)" class="file-remove" :disabled="campaignForm.creating" :aria-label="'Remove ' + f.file.name">&times;</button>
-              </li>
-            </template>
-          </ul>
+    <!-- Campaign Selector -->
+    <div class="campaign-selector-row">
+      <select :value="selectedCampaignId || ''" @change="$event.target.value && selectCampaign($event.target.value)">
+        <option value="" disabled>Select campaign...</option>
+        <template x-for="campaign in campaigns" :key="campaign.id">
+          <option :value="campaign.id" x-text="campaign.name" :selected="selectedCampaignId === campaign.id"></option>
         </template>
-      </div>
-
-      <template x-if="campaignForm.files.length > 0">
-        <label class="flag-toggle">
-          <input type="checkbox" x-model="campaignForm.on_rails" :disabled="campaignForm.creating" />
-          <span>On Rails <small>(follow a structured storyline)</small></span>
-        </label>
-      </template>
-
-      <button type="submit" :disabled="campaignForm.creating">
-        <span x-show="!campaignForm.creating">+ New Campaign</span>
-        <span x-show="campaignForm.creating" x-text="campaignForm.createStatus || 'Creating...'"></span>
-      </button>
-    </form>
-
-    <div class="stack compact campaign-list">
-      <template x-for="campaign in campaigns" :key="campaign.id">
-        <button
-          type="button"
-          class="campaign-button"
-          :class="{ active: selectedCampaignId === campaign.id }"
-          @click="selectCampaign(campaign.id)"
-        >
-          <span x-text="campaign.name"></span>
-          <small x-text="campaign.actor_id"></small>
-        </button>
-      </template>
+      </select>
+      <button type="button" class="icon-btn" @click="$store.app.openModal('manageCampaigns')" title="Manage campaigns">&#x270E;</button>
+      <button type="button" class="icon-btn" @click="$store.app.openModal('newCampaign')" title="New campaign">+</button>
     </div>
-    <template x-if="selectedCampaignId">
-      <button type="button" @click="deleteCampaign()" class="btn-delete-campaign">Delete Campaign</button>
+
+    <!-- Quick Info -->
+    <template x-if="selectedCampaignId && playerData">
+      <div class="quick-info">
+        <div class="quick-info-top">
+          <template x-if="playerData.state && playerData.state.avatar_url">
+            <img :src="playerData.state.avatar_url" class="quick-info-avatar" alt="avatar" />
+          </template>
+          <div class="quick-info-details">
+            <span class="quick-info-name" x-text="(playerData.state && playerData.state.character_name) || turnForm.actor_id || 'Unknown'"></span>
+            <div class="quick-info-xp">
+              <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
+              <div class="xp-bar-track"><div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div></div>
+              <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+            </div>
+          </div>
+        </div>
+        <template x-if="playerData.state && playerData.state.room_title">
+          <span class="quick-info-room" x-text="playerData.state.room_title"></span>
+        </template>
+        <div class="quick-info-buttons">
+          <button type="button" @click="$store.app.openModal('playerSheet')">Character</button>
+          <button type="button" @click="$store.app.openModal('mapView')">Map</button>
+          <button type="button" @click="$store.app.openModal('campaignConfig')">Config</button>
+        </div>
+      </div>
     </template>
 
-    <h2>Windows</h2>
+    <!-- Game Time Widget -->
+    <div class="game-time-widget" x-show="gameTime && gameTime.day">
+      <span class="game-time-label" x-text="gameTime.date_label || ('Day ' + (gameTime.day||1) + ', ' + (gameTime.period||''))"></span>
+      <small class="game-time-clock" x-text="String(gameTime.hour||0).padStart(2,'0') + ':' + String(gameTime.minute||0).padStart(2,'0')"></small>
+    </div>
+
+    <h2>Rooms</h2>
     <div class="stack compact">
       <button type="button" @click="ensureSharedWindow()" :disabled="!selectedCampaignId">Shared Room</button>
       <div class="private-window-row">
@@ -91,12 +74,7 @@
           <span x-text="(row.metadata && row.metadata.label) || row.surface_key || row.id"></span>
         </button>
       </template>
-      <p x-show="sessionsList.length === 0 && selectedCampaignId" class="sidebar-hint">Click "Shared Room" to open a window.</p>
-    </div>
-
-    <div class="game-time-widget" x-show="gameTime && gameTime.day">
-      <span class="game-time-label" x-text="gameTime.date_label || ('Day ' + (gameTime.day||1) + ', ' + (gameTime.period||''))"></span>
-      <small class="game-time-clock" x-text="String(gameTime.hour||0).padStart(2,'0') + ':' + String(gameTime.minute||0).padStart(2,'0')"></small>
+      <p x-show="sessionsList.length === 0 && selectedCampaignId" class="sidebar-hint">Click "Shared Room" to open a room.</p>
     </div>
 
     <h2>Status</h2>
@@ -198,7 +176,7 @@
     <template x-if="campaigns.length === 0 && !selectedCampaignId">
       <div class="welcome-card">
         <h2>Create your first campaign</h2>
-        <p>Enter a campaign name and your character name in the sidebar, then click "+ New Campaign" to begin.</p>
+        <p>Click the "+" button in the sidebar to create a new campaign and begin your adventure.</p>
       </div>
     </template>
 
@@ -228,6 +206,12 @@
                 </template>
                 <small class="turn-time" x-text="entry.at"></small>
               </span>
+            </div>
+          </template>
+          <template x-if="entry.type === 'player'">
+            <div class="turn-player">
+              <span class="player-action-text" x-text="entry.text"></span>
+              <small class="turn-time" x-text="entry.at"></small>
             </div>
           </template>
           <template x-if="entry.type === 'notice'">
@@ -303,7 +287,7 @@
         </article>
       </template>
       <p x-show="turnStream.length === 0 && !selectedCampaignId" class="empty">No turns yet.</p>
-      <p x-show="turnStream.length === 0 && selectedCampaignId && setupMode" class="empty">Your campaign is ready. Open the <strong>Campaign</strong> tab below to start the setup wizard.</p>
+      <p x-show="turnStream.length === 0 && selectedCampaignId && setupMode" class="empty">Your campaign is ready for setup. Open <strong>Config</strong> from the sidebar to continue.</p>
       <p x-show="turnStream.length === 0 && selectedCampaignId && !setupMode" class="empty">Type an action below to begin your adventure.</p>
     </div>
 
@@ -355,7 +339,8 @@
     <p class="status" x-text="statusMessage"></p>
     <p class="error" x-show="errorMessage" x-text="errorMessage" @click="errorMessage = ''" title="Click to dismiss"></p>
 
-    <!-- Inspector Panel -->
+    <!-- Inspector Panel (debug mode only) -->
+    <template x-if="$store.app.debugMode">
     <div class="inspector-panel">
       <div class="tab-row">
         <button type="button" @click="inspectorTab = 'map'" :class="{ active: inspectorTab === 'map' }">Map</button>
@@ -1278,7 +1263,550 @@
         <pre x-text="debugText"></pre>
       </div>
     </div>
+    </template>
   </section>
+
+  <!-- ====== MODAL LAYER ====== -->
+  <template x-if="$store.app.modal">
+    <div class="modal-overlay" @click.self="$store.app.closeModal()" @keydown.escape.window="$store.app.closeModal()">
+
+      <!-- ---- Manage Campaigns Modal ---- -->
+      <template x-if="$store.app.modal === 'manageCampaigns'">
+        <div class="modal-panel">
+          <div class="modal-header">
+            <h3>Manage Campaigns</h3>
+            <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <template x-if="campaigns.length === 0">
+              <p class="muted">No campaigns yet. Click "+" to create one.</p>
+            </template>
+            <div class="campaign-manager-list">
+              <template x-for="campaign in campaigns" :key="campaign.id">
+                <div class="campaign-manager-row" :class="{ 'cm-active': selectedCampaignId === campaign.id }">
+                  <div class="cm-info">
+                    <span class="cm-name" x-text="campaign.name"></span>
+                    <span class="cm-actor" x-text="campaign.actor_id"></span>
+                  </div>
+                  <div class="cm-actions">
+                    <button type="button" @click="selectCampaign(campaign.id); $store.app.closeModal()">Select</button>
+                    <button type="button" class="cm-btn-delete" @click="deleteCampaignById(campaign.id)">Delete</button>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ---- Player Sheet Modal ---- -->
+      <template x-if="$store.app.modal === 'playerSheet'">
+        <div class="modal-panel modal-panel--md" x-init="loadPlayerState(); loadPlayerStatistics(); loadPlayerAttributes()">
+          <div class="modal-header">
+            <h3>Character Sheet</h3>
+            <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <template x-if="playerData">
+              <div class="player-card">
+                <div class="player-identity">
+                  <template x-if="playerData.state && playerData.state.avatar_url">
+                    <img :src="playerData.state.avatar_url" :alt="'Avatar of ' + ((playerData.state && playerData.state.character_name) || playerData.actor_id || 'character')" class="player-avatar" />
+                  </template>
+                  <div>
+                    <strong x-text="(playerData.state && playerData.state.character_name) || playerData.actor_id || 'Unknown'"></strong>
+                    <template x-if="playerData.state && playerData.state.room_title">
+                      <span class="player-location" x-text="playerData.state.room_title"></span>
+                    </template>
+                  </div>
+                </div>
+                <div class="xp-row">
+                  <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
+                  <div class="xp-bar-track"><div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div></div>
+                  <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+                </div>
+                <template x-if="playerStats">
+                  <div class="player-stats-row">
+                    <span class="stat-pill" x-show="typeof playerStats.messages_sent === 'number'">&#x1f4ac; <span x-text="playerStats.messages_sent"></span> msgs</span>
+                    <span class="stat-pill" x-show="typeof playerStats.timers_averted === 'number'">&#x2705; <span x-text="playerStats.timers_averted"></span> averted</span>
+                    <span class="stat-pill" x-show="typeof playerStats.timers_missed === 'number'">&#x274c; <span x-text="playerStats.timers_missed"></span> missed</span>
+                    <span class="stat-pill" x-show="typeof playerStats.attention_hours === 'number'">&#x23f1; <span x-text="Number(playerStats.attention_hours).toFixed(1)"></span>h</span>
+                  </div>
+                </template>
+                <template x-if="playerAttributes && playerAttributes.attributes && Object.keys(playerAttributes.attributes).length > 0">
+                  <div class="player-attributes">
+                    <div class="attr-header">
+                      <strong>Attributes</strong>
+                      <small x-text="playerAttributes.points_available + ' / ' + playerAttributes.total_points + ' pts available'"></small>
+                    </div>
+                    <div class="attr-grid">
+                      <template x-for="[name, val] in Object.entries(playerAttributes.attributes)" :key="name">
+                        <div class="attr-row">
+                          <span class="attr-name" x-text="name"></span>
+                          <div class="attr-bar-track"><div class="attr-bar-fill" :style="'width:' + Math.min(100, (val / (playerAttributes.max_attribute_value || 20)) * 100) + '%'"></div></div>
+                          <span class="attr-value" x-text="val"></span>
+                        </div>
+                      </template>
+                    </div>
+                    <template x-if="playerAttributes.points_available > 0">
+                      <form class="attr-set-form" @submit.prevent="setPlayerAttribute()">
+                        <input x-model="attributeForm.attribute" placeholder="attribute" class="attr-input" />
+                        <input x-model.number="attributeForm.value" type="number" min="0" :max="playerAttributes.max_attribute_value || 20" class="attr-input attr-input-num" />
+                        <button type="submit">Set</button>
+                      </form>
+                    </template>
+                  </div>
+                </template>
+                <template x-if="playerAttributes">
+                  <div class="level-up-row">
+                    <span class="xp-needed" x-text="'Next level: ' + (playerAttributes.xp_needed_for_next || '?') + ' XP'"></span>
+                    <button type="button" @click="levelUpPlayer()" :disabled="!playerAttributes || (playerAttributes.xp || 0) < (playerAttributes.xp_needed_for_next || 999999)" class="btn-level-up">Level Up</button>
+                  </div>
+                </template>
+                <template x-if="playerData.state && playerData.state.room_description">
+                  <p class="player-room-desc" x-text="playerData.state.room_description"></p>
+                </template>
+                <template x-if="playerData.inventory && playerData.inventory.length > 0">
+                  <div class="player-inventory">
+                    <strong>Inventory</strong>
+                    <ul>
+                      <template x-for="item in playerData.inventory" :key="item">
+                        <li x-text="typeof item === 'string' ? item : (item.name || item.item || JSON.stringify(item))"></li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+                <template x-if="playerData.state && playerData.state.pending_avatar_url">
+                  <div class="pending-avatar">
+                    <p>Pending Avatar:</p>
+                    <img :src="playerData.state.pending_avatar_url" :alt="'Pending avatar'" class="player-avatar pending" />
+                    <div class="inline-actions">
+                      <button type="button" @click="acceptPendingAvatar()">Accept</button>
+                      <button type="button" @click="declinePendingAvatar()">Decline</button>
+                    </div>
+                  </div>
+                </template>
+                <details class="source-upload-details">
+                  <summary>Set Portrait</summary>
+                  <form class="stack compact" @submit.prevent="recordCharacterPortrait()">
+                    <label>Character Slug<input x-model="portraitForm.slug" :placeholder="playerData.actor_id || 'character-slug'" /></label>
+                    <label>Image URL<input x-model="portraitForm.image_url" placeholder="https://..." /></label>
+                    <button type="submit" :disabled="!selectedCampaignId || !portraitForm.slug.trim() || !portraitForm.image_url.trim()">Set Portrait</button>
+                    <p x-show="portraitStatus" x-text="portraitStatus" class="muted"></p>
+                  </form>
+                </details>
+                <details class="source-upload-details">
+                  <summary>Generate Avatar</summary>
+                  <form class="stack compact" @submit.prevent="generateAvatar()">
+                    <label>Avatar Prompt<textarea x-model="avatarGenPrompt" rows="2" placeholder="A portrait of a rugged adventurer..."></textarea></label>
+                    <button type="submit" :disabled="!selectedCampaignId || !avatarGenPrompt.trim() || avatarGenBusy" x-text="avatarGenBusy ? avatarGenStatus : 'Generate Avatar'"></button>
+                    <p x-show="avatarGenStatus && !avatarGenBusy" x-text="avatarGenStatus" class="muted"></p>
+                  </form>
+                </details>
+              </div>
+            </template>
+            <template x-if="!playerData">
+              <p class="muted">Select a campaign and actor to view player state.</p>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- ---- Map View Modal ---- -->
+      <template x-if="$store.app.modal === 'mapView'">
+        <div class="modal-panel modal-panel--lg" x-init="loadMap()">
+          <div class="modal-header">
+            <h3>Map</h3>
+            <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <button type="button" @click="loadMap()" :disabled="!selectedCampaignId" style="margin-bottom:0.5rem;">Refresh Map</button>
+            <pre x-text="mapText"></pre>
+          </div>
+        </div>
+      </template>
+
+      <!-- ---- Campaign Config Modal ---- -->
+      <template x-if="$store.app.modal === 'campaignConfig'">
+        <div class="modal-panel modal-panel--lg" x-init="loadCampaignFlags(); loadCampaignPersona(); loadSourceMaterials(); loadCampaignRules(); loadSceneImages(); loadLiteraryStyles()">
+          <div class="modal-header">
+            <h3>Campaign Config</h3>
+            <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div class="config-tabs">
+              <button type="button" class="config-tab" :class="{ active: campaignConfigTab === 'general' }" @click="campaignConfigTab = 'general'">General</button>
+              <button type="button" class="config-tab" :class="{ active: campaignConfigTab === 'narrator' }" @click="campaignConfigTab = 'narrator'">Narrator</button>
+              <button type="button" class="config-tab" :class="{ active: campaignConfigTab === 'source' }" @click="campaignConfigTab = 'source'">Source Material</button>
+              <button type="button" class="config-tab" :class="{ active: campaignConfigTab === 'rules' }" @click="campaignConfigTab = 'rules'">Rules</button>
+            </div>
+
+            <!-- General sub-tab -->
+            <div x-show="campaignConfigTab === 'general'" class="stack">
+              <template x-if="setupMode">
+                <div class="setup-wizard">
+                  <div class="setup-wizard-header">
+                    <h4>Campaign Setup</h4>
+                    <span class="setup-phase-badge" x-text="setupPhase || 'starting'"></span>
+                  </div>
+                  <template x-if="!setupPhase || setupPhase === 'none'">
+                    <div class="setup-start-controls">
+                      <p>This campaign is ready for guided setup.</p>
+                      <label class="flag-toggle">
+                        <input type="checkbox" x-model="setupOnRails" />
+                        <span>On Rails <small>(follow a structured storyline)</small></span>
+                      </label>
+                      <details class="setup-attachment-details">
+                        <summary>Attach Reference Text</summary>
+                        <textarea x-model="setupAttachmentText" rows="4" placeholder="Paste lore, setting notes, or a story premise..."></textarea>
+                      </details>
+                      <button type="button" @click="startCampaignSetup()" :disabled="!selectedCampaignId" class="btn-setup-start">Begin Setup</button>
+                    </div>
+                  </template>
+                  <template x-if="setupPhase && setupPhase !== 'none' && setupPhase !== 'completed'">
+                    <div class="setup-conversation">
+                      <template x-if="setupResponse">
+                        <div class="setup-response-card"><p x-text="setupResponse"></p></div>
+                      </template>
+                      <form class="setup-message-form" @submit.prevent="sendSetupMessage()">
+                        <input x-model="setupMessage" placeholder="Your response..." :disabled="setupSending" class="setup-message-input" />
+                        <button type="submit" :disabled="!setupMessage.trim() || setupSending">
+                          <span x-show="!setupSending">Send</span>
+                          <span x-show="setupSending">...</span>
+                        </button>
+                      </form>
+                    </div>
+                  </template>
+                  <template x-if="setupPhase === 'completed'">
+                    <div class="setup-complete-card"><p>Setup complete! Submit your first action to begin playing.</p></div>
+                  </template>
+                </div>
+              </template>
+
+              <div class="campaign-flags">
+                <h4>Campaign Flags</h4>
+                <label class="flag-toggle">
+                  <input type="checkbox" :checked="campaignFlags.guardrails" @change="setCampaignFlag('guardrails', $event.target.checked)" :disabled="!selectedCampaignId" />
+                  <span>Guardrails <small>(content safety)</small></span>
+                </label>
+                <label class="flag-toggle">
+                  <input type="checkbox" :checked="campaignFlags.on_rails" @change="setCampaignFlag('on_rails', $event.target.checked)" :disabled="!selectedCampaignId" />
+                  <span>On Rails <small>(story outline progression)</small></span>
+                </label>
+                <label class="flag-toggle">
+                  <input type="checkbox" :checked="campaignFlags.timed_events" @change="setCampaignFlag('timed_events', $event.target.checked)" :disabled="!selectedCampaignId" />
+                  <span>Timed Events</span>
+                </label>
+                <label>
+                  Difficulty
+                  <select :value="campaignFlags.difficulty" @change="setCampaignFlag('difficulty', $event.target.value)" :disabled="!selectedCampaignId">
+                    <option value="easy">Easy</option>
+                    <option value="normal">Normal</option>
+                    <option value="hard">Hard</option>
+                    <option value="brutal">Brutal</option>
+                  </select>
+                </label>
+                <label>
+                  Speed Multiplier
+                  <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input type="range" min="0.1" max="5" step="0.1" :value="campaignFlags.speed_multiplier" @change="setCampaignFlag('speed_multiplier', parseFloat($event.target.value))" :disabled="!selectedCampaignId" style="flex:1" />
+                    <span x-text="Number(campaignFlags.speed_multiplier || 1).toFixed(1)" style="min-width:2rem; text-align:right;"></span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <!-- Narrator sub-tab -->
+            <div x-show="campaignConfigTab === 'narrator'" class="stack">
+              <div class="campaign-persona">
+                <h4>Narrator Persona</h4>
+                <template x-if="campaignPersona">
+                  <div>
+                    <p class="persona-text" x-text="campaignPersona"></p>
+                    <small class="persona-source" x-text="'Source: ' + (campaignPersonaSource || 'default')"></small>
+                  </div>
+                </template>
+                <template x-if="!campaignPersona">
+                  <p class="muted">Using default narrator persona.</p>
+                </template>
+                <form class="stack compact" @submit.prevent="setCampaignPersona()" style="margin-top:0.5rem;">
+                  <textarea x-model="personaEditText" rows="3" placeholder="Describe the narrator voice (max 140 chars)" maxlength="140"></textarea>
+                  <div style="display:flex; gap:0.5rem; align-items:center;">
+                    <button type="submit" :disabled="!selectedCampaignId || !personaEditText.trim()">Save Persona</button>
+                    <small x-text="(personaEditText || '').length + '/140'"></small>
+                  </div>
+                </form>
+              </div>
+
+              <template x-if="Object.keys(literaryStyles).length > 0">
+                <div class="literary-styles-panel">
+                  <h4>Literary Styles</h4>
+                  <div class="literary-styles-list">
+                    <template x-for="[name, profile] in Object.entries(literaryStyles)" :key="name">
+                      <details class="literary-style-item">
+                        <summary x-text="name"></summary>
+                        <p class="literary-style-profile" x-text="typeof profile === 'string' ? profile : JSON.stringify(profile, null, 2)"></p>
+                      </details>
+                    </template>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="Object.keys(sceneImages).length > 0">
+                <div class="scene-images-panel">
+                  <h4>Scene Images</h4>
+                  <div class="scene-images-grid">
+                    <template x-for="[room, url] in Object.entries(sceneImages)" :key="room">
+                      <div class="scene-image-card">
+                        <img :src="url" :alt="'Scene: ' + room" loading="lazy" />
+                        <small x-text="room"></small>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <!-- Source Material sub-tab -->
+            <div x-show="campaignConfigTab === 'source'" class="stack">
+              <div class="source-material">
+                <h4>Source Material</h4>
+                <button type="button" @click="loadSourceMaterials()" :disabled="!selectedCampaignId" style="margin-bottom:0.35rem;">Refresh</button>
+                <template x-if="sourceMaterials.length > 0">
+                  <ul class="source-docs-list">
+                    <template x-for="doc in sourceMaterials" :key="doc.document_key">
+                      <li>
+                        <strong x-text="doc.document_label || doc.document_key"></strong>
+                        <span x-text="'(' + (doc.format || 'generic') + ', ' + (doc.chunk_count || 0) + ' chunks)'"></span>
+                      </li>
+                    </template>
+                  </ul>
+                </template>
+                <template x-if="sourceMaterials.length === 0">
+                  <p class="muted">No source materials uploaded.</p>
+                </template>
+
+                <details class="source-upload-details">
+                  <summary>Upload Source Material</summary>
+                  <form class="stack compact" @submit.prevent="ingestSourceMaterial()">
+                    <label>Label (optional)<input x-model="sourceUpload.label" placeholder="My Rulebook" /></label>
+                    <label>
+                      Format
+                      <select x-model="sourceUpload.format">
+                        <option value="">Auto-detect</option>
+                        <option value="story">Story / Prose</option>
+                        <option value="rulebook">Rulebook</option>
+                        <option value="generic">Generic / Notes</option>
+                      </select>
+                    </label>
+                    <label>Text Content<textarea x-model="sourceUpload.text" rows="6" placeholder="Paste source material here..."></textarea></label>
+                    <label class="checkbox-label"><input type="checkbox" x-model="sourceUpload.replace" /> Replace existing document</label>
+                    <button type="submit" :disabled="!selectedCampaignId || !sourceUpload.text.trim()">Upload</button>
+                    <p x-show="sourceUploadStatus" x-text="sourceUploadStatus" class="muted"></p>
+                  </form>
+                </details>
+
+                <details class="source-upload-details">
+                  <summary>Search Source Material</summary>
+                  <form class="stack compact" @submit.prevent="searchSourceMaterial()">
+                    <div class="source-search-row">
+                      <input x-model="sourceSearchQuery" placeholder="Search query..." class="source-search-input" />
+                      <input x-model="sourceSearchDocKey" placeholder="Doc key (optional)" class="source-search-dockey" />
+                      <button type="submit" :disabled="!selectedCampaignId || !sourceSearchQuery.trim() || sourceSearching">Search</button>
+                    </div>
+                  </form>
+                  <template x-if="sourceSearchResults.length > 0">
+                    <div class="source-search-results">
+                      <template x-for="(hit, idx) in sourceSearchResults" :key="idx">
+                        <div class="source-search-hit">
+                          <div class="source-hit-header">
+                            <small x-text="hit.document_label || hit.document_key"></small>
+                            <small class="source-hit-score" x-text="'score: ' + hit.score"></small>
+                          </div>
+                          <p class="source-hit-text" x-text="hit.text"></p>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </details>
+
+                <details class="source-upload-details">
+                  <summary>Upload with Digest</summary>
+                  <form class="stack compact" @submit.prevent="ingestWithDigest()">
+                    <label>Label<input x-model="digestUpload.label" placeholder="Story of the Northern Realms" required /></label>
+                    <label>
+                      Format
+                      <select x-model="digestUpload.format">
+                        <option value="">Auto-detect</option>
+                        <option value="story">Story / Prose</option>
+                        <option value="rulebook">Rulebook</option>
+                        <option value="generic">Generic / Notes</option>
+                      </select>
+                    </label>
+                    <label class="flag-toggle"><input type="checkbox" x-model="digestUpload.replace" /><span>Replace existing document</span></label>
+                    <label>Text Content<textarea x-model="digestUpload.text" rows="6" placeholder="Paste source material here..."></textarea></label>
+                    <button type="submit" :disabled="!selectedCampaignId || !digestUpload.text.trim() || !digestUpload.label.trim() || digestUploading">
+                      <span x-show="!digestUploading">Upload with Digest</span>
+                      <span x-show="digestUploading">Processing...</span>
+                    </button>
+                    <p x-show="digestUploadStatus" x-text="digestUploadStatus" class="muted"></p>
+                  </form>
+                </details>
+
+                <details class="source-upload-details">
+                  <summary>Browse Source Keys</summary>
+                  <div class="stack compact">
+                    <button type="button" @click="browseSourceKeys()" :disabled="!selectedCampaignId">Load Keys</button>
+                    <template x-if="sourceBrowseKeys.length > 0">
+                      <ul class="source-docs-list">
+                        <template x-for="key in sourceBrowseKeys" :key="key"><li x-text="key"></li></template>
+                      </ul>
+                    </template>
+                    <template x-if="sourceBrowseKeys.length === 0">
+                      <p class="muted">No source keys found.</p>
+                    </template>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <!-- Rules sub-tab -->
+            <div x-show="campaignConfigTab === 'rules'" class="stack">
+              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                <button type="button" @click="loadCampaignRules()" :disabled="!selectedCampaignId">Refresh</button>
+                <input x-model="campaignRuleLookupKey" placeholder="Rule key" />
+                <button type="button" @click="loadCampaignRules(campaignRuleLookupKey.trim())" :disabled="!selectedCampaignId || !campaignRuleLookupKey.trim()">Load Rule</button>
+              </div>
+              <template x-if="campaignRules.length > 0">
+                <ul class="source-docs-list">
+                  <template x-for="rule in campaignRules" :key="rule.key">
+                    <li><button type="button" @click="loadCampaignRules(rule.key)" x-text="rule.key"></button></li>
+                  </template>
+                </ul>
+              </template>
+              <template x-if="campaignRules.length === 0">
+                <p class="muted">No campaign rules stored.</p>
+              </template>
+              <template x-if="selectedCampaignRule">
+                <pre x-text="selectedCampaignRule.key + ': ' + selectedCampaignRule.value"></pre>
+              </template>
+              <form class="stack compact" @submit.prevent="saveCampaignRule()">
+                <label>Key<input x-model="campaignRuleForm.key" placeholder="CAMPAIGN-RULE" /></label>
+                <label>Rule<textarea x-model="campaignRuleForm.value" rows="4" placeholder="Rule text..."></textarea></label>
+                <label>
+                  Mode
+                  <select x-model="campaignRuleForm.mode">
+                    <option value="add">Add Only</option>
+                    <option value="upsert">Upsert</option>
+                  </select>
+                </label>
+                <button type="submit" :disabled="!selectedCampaignId || !campaignRuleForm.key.trim() || !campaignRuleForm.value.trim()">Save Rule</button>
+                <p x-show="campaignRuleStatus" x-text="campaignRuleStatus" class="muted"></p>
+              </form>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ---- New Campaign Wizard Modal ---- -->
+      <template x-if="$store.app.modal === 'newCampaign'">
+        <div class="modal-panel modal-panel--md">
+          <div class="modal-header">
+            <h3>New Campaign</h3>
+            <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+
+            <!-- Step indicator -->
+            <div class="wizard-step-indicator">
+              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'info', done: ['creating','setup','complete'].includes(newCampaignWizard.step) }">1</span>
+              <span class="wizard-step-line" :class="{ done: ['creating','setup','complete'].includes(newCampaignWizard.step) }"></span>
+              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'creating', done: ['setup','complete'].includes(newCampaignWizard.step) }">2</span>
+              <span class="wizard-step-line" :class="{ done: ['setup','complete'].includes(newCampaignWizard.step) }"></span>
+              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'setup', done: newCampaignWizard.step === 'complete' }">3</span>
+              <span class="wizard-step-line" :class="{ done: newCampaignWizard.step === 'complete' }"></span>
+              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'complete' }">4</span>
+            </div>
+
+            <!-- Step 1: Info -->
+            <template x-if="newCampaignWizard.step === 'info'">
+              <form class="stack compact" @submit.prevent="wizardCreateCampaign()">
+                <label>Campaign Name<input x-model="newCampaignWizard.name" placeholder="New Campaign" required /></label>
+                <label>Your Character<input x-model="newCampaignWizard.actor_id" placeholder="your-character-name" required /></label>
+                <div class="file-drop-zone"
+                     @dragover.prevent
+                     @dragenter.prevent="$el._dragCount = ($el._dragCount || 0) + 1; $el.classList.add('drag-over')"
+                     @dragleave="$el._dragCount = ($el._dragCount || 1) - 1; if (!$el._dragCount) $el.classList.remove('drag-over')"
+                     @drop.prevent="$el._dragCount = 0; $el.classList.remove('drag-over'); handleWizardFileDrop($event)">
+                  <p class="drop-zone-text">Drop .txt / .md files here or <label class="file-pick-label">browse<input type="file" multiple accept=".txt,.md" @change="handleWizardFileSelect($event)" class="sr-only" /></label></p>
+                  <template x-if="newCampaignWizard.files.length > 0">
+                    <ul class="file-list">
+                      <template x-for="(f, idx) in newCampaignWizard.files" :key="f.file.name">
+                        <li class="file-item" :class="'file-' + f.status">
+                          <span class="file-name" x-text="f.file.name"></span>
+                          <small x-text="(f.file.size / 1024).toFixed(1) + ' KB'"></small>
+                          <span class="file-status-dot" :class="'dot-' + f.status"></span>
+                          <button type="button" @click="removeWizardFile(idx)" class="file-remove" :aria-label="'Remove ' + f.file.name">&times;</button>
+                        </li>
+                      </template>
+                    </ul>
+                  </template>
+                </div>
+                <template x-if="newCampaignWizard.files.length > 0">
+                  <label class="flag-toggle">
+                    <input type="checkbox" x-model="newCampaignWizard.on_rails" />
+                    <span>On Rails <small>(follow a structured storyline)</small></span>
+                  </label>
+                </template>
+                <button type="submit" class="btn-primary" style="text-align:center;">Create Campaign</button>
+              </form>
+            </template>
+
+            <!-- Step 2: Creating -->
+            <template x-if="newCampaignWizard.step === 'creating'">
+              <div class="wizard-creating">
+                <div class="spinner"></div>
+                <p x-text="newCampaignWizard.createStatus || 'Creating...'"></p>
+              </div>
+            </template>
+
+            <!-- Step 3: Setup -->
+            <template x-if="newCampaignWizard.step === 'setup'">
+              <div>
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.5rem;">
+                  <h4 style="margin:0; font-size:0.84rem; color:var(--accent);">Setup Wizard</h4>
+                  <span class="setup-phase-badge" x-text="newCampaignWizard.setupPhase || 'starting'"></span>
+                </div>
+                <div class="wizard-setup-conversation" id="wizard-conversation">
+                  <template x-for="(msg, idx) in newCampaignWizard.setupMessages" :key="idx">
+                    <div class="wizard-msg" :class="msg.role === 'narrator' ? 'wizard-msg-narrator' : 'wizard-msg-player'" x-text="msg.text"></div>
+                  </template>
+                </div>
+                <form class="setup-message-form" @submit.prevent="wizardSendSetupMessage()">
+                  <input x-model="newCampaignWizard.setupMessage" placeholder="Your response..." :disabled="newCampaignWizard.setupSending" class="setup-message-input" />
+                  <button type="submit" :disabled="!newCampaignWizard.setupMessage.trim() || newCampaignWizard.setupSending">
+                    <span x-show="!newCampaignWizard.setupSending">Send</span>
+                    <span x-show="newCampaignWizard.setupSending">...</span>
+                  </button>
+                </form>
+              </div>
+            </template>
+
+            <!-- Step 4: Complete -->
+            <template x-if="newCampaignWizard.step === 'complete'">
+              <div class="wizard-complete">
+                <h3>Your world has been created!</h3>
+                <p>The campaign setup is complete. Start playing by submitting your first action.</p>
+                <button type="button" class="btn-primary" @click="wizardFinish()" style="text-align:center;">Start Playing</button>
+              </div>
+            </template>
+
+          </div>
+        </div>
+      </template>
+
+    </div>
+  </template>
 
   <!-- ====== SETTINGS DRAWER ====== -->
   <div class="settings-overlay" x-show="$store.app.settingsOpen" @click.self="$store.app.settingsOpen = false" @keydown.escape.window="$store.app.settingsOpen = false" x-cloak x-transition.opacity>

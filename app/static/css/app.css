@@ -125,7 +125,7 @@ body {
   grid-template-columns: 280px 1fr;
   gap: 1.1rem;
   padding: 1.1rem;
-  min-height: calc(100vh - 58px);
+  height: calc(100vh - 58px);
 }
 
 .panel {
@@ -694,7 +694,7 @@ button:disabled {
 .main-column {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .section-head {
@@ -746,7 +746,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   padding: 0.75rem;
-  height: calc(100vh - 380px);
+  flex: 1;
   min-height: 200px;
   overflow: auto;
   background: #fffcf6;
@@ -787,6 +787,7 @@ button:disabled {
   font-size: 0.9rem;
   line-height: 1.6;
   color: var(--ink);
+  white-space: pre-wrap;
 }
 
 .narrator-text.streaming::after {
@@ -818,6 +819,28 @@ button:disabled {
 .turn-time {
   color: #8a9990;
   font-size: 0.7rem;
+}
+
+/* Player action card */
+.turn-player {
+  background: #e5e2db;
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.7rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.55rem;
+}
+
+.player-action-text {
+  font-size: 0.8rem;
+  color: #3a4a42;
+  line-height: 1.4;
+  font-style: italic;
+}
+
+.turn-type-player {
+  padding: 0.15rem 0;
 }
 
 /* Notice card */
@@ -2074,6 +2097,428 @@ details summary {
 .dot-error { background: var(--error); }
 .file-remove { background: none; border: none; color: #7a8a80; cursor: pointer; font-size: 1.1rem; padding: 0 0.25rem; }
 .file-remove:hover { color: var(--error); }
+
+/* ---- Modal System ---- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: modalOverlayIn 150ms ease;
+}
+
+@keyframes modalOverlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 40px rgba(31, 40, 37, 0.15);
+  width: 90vw;
+  max-width: 440px;
+  max-height: 85vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  animation: modalFadeIn 200ms ease;
+}
+
+.modal-panel--md { max-width: 600px; }
+.modal-panel--lg { max-width: 780px; }
+
+@keyframes modalFadeIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 1.4rem;
+  cursor: pointer;
+  color: #6a7a70;
+  padding: 0.15rem 0.35rem;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+}
+
+.modal-close:hover {
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.modal-body {
+  padding: 1rem 1.1rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-footer {
+  padding: 0.75rem 1.1rem;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+/* ---- Campaign Selector (sidebar top) ---- */
+
+.campaign-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+
+.campaign-selector-row select {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.84rem;
+  padding: 0.45rem 0.55rem;
+}
+
+.campaign-selector-row .icon-btn {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.5rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+  line-height: 1;
+  color: #5a7268;
+  flex-shrink: 0;
+}
+
+.campaign-selector-row .icon-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: #9cb8ad;
+}
+
+/* ---- Quick Info Area ---- */
+
+.quick-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.55rem 0.65rem;
+  background: linear-gradient(135deg, var(--accent-soft) 0%, #e8f0ec 100%);
+  border: 1px solid #b5ccc3;
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.75rem;
+}
+
+.quick-info-top {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.quick-info-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1.5px solid var(--line);
+  flex-shrink: 0;
+}
+
+.quick-info-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.quick-info-name {
+  font-weight: 600;
+  font-size: 0.88rem;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quick-info-xp {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.15rem;
+}
+
+.quick-info-xp .xp-level {
+  font-size: 0.72rem;
+}
+
+.quick-info-xp .xp-bar-track {
+  width: 60px;
+  height: 5px;
+}
+
+.quick-info-xp .xp-value {
+  font-size: 0.68rem;
+}
+
+.quick-info-room {
+  font-size: 0.78rem;
+  color: #5a7268;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quick-info-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.3rem;
+}
+
+.quick-info-buttons button {
+  text-align: center;
+  font-size: 0.76rem;
+  padding: 0.3rem 0.35rem;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.quick-info-buttons button:hover {
+  background: var(--accent-soft);
+  border-color: #9cb8ad;
+}
+
+/* ---- Campaign Manager Modal ---- */
+
+.campaign-manager-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.campaign-manager-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  background: #f8f6f1;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.campaign-manager-row.cm-active {
+  border-color: var(--accent);
+  border-left: 3px solid var(--accent);
+}
+
+.campaign-manager-row .cm-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.campaign-manager-row .cm-name {
+  display: block;
+  font-weight: 500;
+  font-size: 0.88rem;
+}
+
+.campaign-manager-row .cm-actor {
+  display: block;
+  font-size: 0.74rem;
+  color: #5a7268;
+}
+
+.campaign-manager-row .cm-actions {
+  display: flex;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.campaign-manager-row .cm-actions button {
+  font-size: 0.76rem;
+  padding: 0.25rem 0.55rem;
+  text-align: center;
+}
+
+.cm-btn-delete {
+  background: transparent;
+  border: 1px solid #ef9a9a;
+  color: #c62828;
+}
+
+.cm-btn-delete:hover {
+  background: #fce4ec;
+}
+
+/* ---- Campaign Config Modal Sub-tabs ---- */
+
+.config-tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.85rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.45rem;
+}
+
+.config-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  color: #6a7a70;
+}
+
+.config-tab:hover {
+  color: var(--ink);
+}
+
+.config-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ---- New Campaign Wizard ---- */
+
+.wizard-step-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.85rem;
+}
+
+.wizard-step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 2px solid var(--line);
+  color: #6a7a70;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.wizard-step-dot.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.wizard-step-dot.done {
+  border-color: #3a8a5c;
+  background: #3a8a5c;
+  color: #fff;
+}
+
+.wizard-step-line {
+  flex: 1;
+  height: 2px;
+  background: var(--line);
+}
+
+.wizard-step-line.done {
+  background: #3a8a5c;
+}
+
+.wizard-creating {
+  text-align: center;
+  padding: 2rem 1rem;
+}
+
+.wizard-creating .spinner {
+  display: inline-block;
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 0.75rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.wizard-creating p {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #5a7268;
+}
+
+.wizard-setup-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 400px;
+  overflow-y: auto;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem;
+  background: #fffcf6;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.wizard-msg {
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  max-width: 85%;
+}
+
+.wizard-msg-narrator {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  align-self: flex-start;
+}
+
+.wizard-msg-player {
+  background: var(--accent-soft);
+  border: 1px solid #b5ccc3;
+  align-self: flex-end;
+}
+
+.wizard-complete {
+  text-align: center;
+  padding: 2rem 1rem;
+}
+
+.wizard-complete h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+  color: var(--accent);
+}
+
+.wizard-complete p {
+  margin: 0 0 1rem;
+  font-size: 0.88rem;
+  color: #5a7268;
+}
 
 /* ---- Responsive ---- */
 
