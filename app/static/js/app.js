@@ -11,9 +11,13 @@
     return new Date().toISOString();
   }
 
+  function stripTrailingInventory(text) {
+    return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
+  }
+
   function normalizeTurnNarration(payload) {
     if (payload.narration && payload.narration.trim().length > 0) {
-      return payload.narration;
+      return stripTrailingInventory(payload.narration);
     }
     if (Object.keys(payload.state_update || {}).length > 0 || Object.keys(payload.player_state_update || {}).length > 0) {
       return "[No narration returned. State updates were applied.]";
@@ -44,9 +48,16 @@
       debugMode: localStorage.getItem("debugMode") === "true",
       settingsOpen: false,
       settingsTab: "llm",
+      modal: null,
       toggleDebugMode() {
         this.debugMode = !this.debugMode;
         localStorage.setItem("debugMode", this.debugMode ? "true" : "false");
+      },
+      openModal(name) {
+        this.modal = name;
+      },
+      closeModal() {
+        this.modal = null;
       },
     });
   });
@@ -302,6 +313,26 @@
       campaignPersonaSource: "",
       personaEditText: "",
 
+      /* Campaign config modal sub-tab */
+      campaignConfigTab: "general",
+
+      /* New campaign wizard state */
+      newCampaignWizard: {
+        step: "info",
+        name: "",
+        actor_id: "",
+        files: [],
+        on_rails: false,
+        createStatus: "",
+        campaignId: null,
+        setupPhase: null,
+        setupResponse: "",
+        setupMessages: [],
+        setupMessage: "",
+        setupSending: false,
+        setupAttachmentText: "",
+      },
+
       /* Game time (extracted from turn state_update) */
       gameTime: {},
       campaignSummary: "",
@@ -314,12 +345,17 @@
         await this.loadOllamaModels();
         /* watch debug toggle to guard inspector tab */
         this.$watch("$store.app.debugMode", () => this.ensureValidInspectorTab());
+        /* reset wizard when opening new campaign modal */
+        this.$watch("$store.app.modal", (val) => {
+          if (val === "newCampaign") this.resetNewCampaignWizard();
+        });
 
         // Restore persisted campaign selection
+        // Read both before selectCampaign — it clears selectedSessionId from localStorage
         const savedCampaignId = localStorage.getItem("selectedCampaignId");
+        const savedSessionId = localStorage.getItem("selectedSessionId");
         if (savedCampaignId && this.campaigns.some(c => c.id === savedCampaignId)) {
           await this.selectCampaign(savedCampaignId);
-          const savedSessionId = localStorage.getItem("selectedSessionId");
           if (savedSessionId && this.sessionsList.some(s => s.id === savedSessionId)) {
             this.selectSession(savedSessionId);
           } else {
@@ -345,7 +381,7 @@
             const meta = turn.meta || {};
             const entry = {
               id: counter,
-              type: "narrator",
+              type: turn.kind === "player" ? "player" : "narrator",
               at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
               text: turn.content || "[No content]",
               meta: {},
@@ -368,7 +404,7 @@
           return this.turnStream;
         }
         return this.turnStream.filter(
-          (entry) => entry.type === "narrator" || entry.type === "notice" || entry.type === "image_prompt" || entry.type === "dice"
+          (entry) => entry.type === "narrator" || entry.type === "player" || entry.type === "notice" || entry.type === "image_prompt" || entry.type === "dice"
         );
       },
 
@@ -1175,20 +1211,7 @@
             this.setupMode = false;
             this.setupPhase = null;
             this.pushStream("notice", "Campaign setup completed!", { setup: true });
-            /* Reload campaign data after setup completion */
-            await Promise.all([
-              this.loadMap(),
-              this.loadPlayerState(),
-              this.loadPlayerStatistics(),
-              this.loadPlayerAttributes(),
-              this.loadDebugSnapshot(),
-              this.loadCampaignFlags(),
-              this.loadStoryState(),
-              this.loadCampaignPersona(),
-              this.loadSceneImages(),
-              this.loadLiteraryStyles(),
-              this.loadSourceMaterials(),
-            ]);
+            await this._reloadCampaignData();
           }
         } catch (error) {
           this.errorMessage = String(error);
@@ -1961,6 +1984,11 @@
             session_id: this.selectedSessionId || null,
           };
 
+          /* Record the player's action in the stream */
+          if (payload.action) {
+            this.pushStream("player", payload.action, { actor_id: payload.actor_id });
+          }
+
           if (!this.runtimeInfo.streaming_supported) {
             /* Non-streaming fallback (original path) */
             const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/turns`, {
@@ -2526,6 +2554,225 @@
         } catch (error) {
           this.errorMessage = String(error);
         }
+      },
+
+      /* ---- Extracted helper to reload all campaign data ---- */
+      async _reloadCampaignData() {
+        await Promise.all([
+          this.loadMap(),
+          this.loadPlayerState(),
+          this.loadPlayerStatistics(),
+          this.loadPlayerAttributes(),
+          this.loadDebugSnapshot(),
+          this.loadCampaignFlags(),
+          this.loadStoryState(),
+          this.loadCampaignPersona(),
+          this.loadSceneImages(),
+          this.loadLiteraryStyles(),
+          this.loadSourceMaterials(),
+        ]);
+      },
+
+      /* ---- Delete campaign by ID (allows deleting non-selected campaigns) ---- */
+      async deleteCampaignById(id) {
+        if (!id) return;
+        if (!confirm("Delete this campaign and all its data? This cannot be undone.")) return;
+        this.resetError();
+        try {
+          await this.api(`/api/campaigns/${id}`, { method: "DELETE" });
+          this.statusMessage = "Campaign deleted.";
+          if (this.selectedCampaignId === id) {
+            if (this.socket) {
+              this.socket._deliberateClose = true;
+              this.socket.close();
+              this.socket = null;
+            }
+            if (this.socketReconnectTimer) {
+              clearTimeout(this.socketReconnectTimer);
+              this.socketReconnectTimer = null;
+            }
+            this.selectedCampaignId = null;
+            localStorage.removeItem("selectedCampaignId");
+            localStorage.removeItem("selectedSessionId");
+            this.turnStream = [];
+          }
+          await this.refreshCampaigns();
+        } catch (error) { this.errorMessage = String(error); }
+      },
+
+      /* ---- New Campaign Wizard methods ---- */
+      resetNewCampaignWizard() {
+        this.newCampaignWizard = {
+          step: "info",
+          name: "",
+          actor_id: "",
+          files: [],
+          on_rails: false,
+          createStatus: "",
+          campaignId: null,
+          setupPhase: null,
+          setupResponse: "",
+          setupMessages: [],
+          setupMessage: "",
+          setupSending: false,
+          setupAttachmentText: "",
+        };
+      },
+
+      handleWizardFileSelect(event) {
+        this._addWizardFiles(Array.from(event.target.files || []));
+        event.target.value = "";
+      },
+
+      handleWizardFileDrop(event) {
+        this._addWizardFiles(Array.from(event.dataTransfer.files || []));
+      },
+
+      _addWizardFiles(files) {
+        const w = this.newCampaignWizard;
+        const existing = new Set(w.files.map(f => f.file.name));
+        for (const file of files) {
+          if (existing.has(file.name)) continue;
+          const ext = file.name.includes(".") ? "." + file.name.split(".").pop().toLowerCase() : "";
+          if (!this._allowedFileExtensions.includes(ext)) continue;
+          existing.add(file.name);
+          const entry = { file, text: "", status: "reading", _ready: null };
+          entry._ready = new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => { entry.text = e.target.result; entry.status = "ready"; resolve(); };
+            reader.onerror = () => { entry.status = "error"; reject(new Error("Failed to read " + file.name)); };
+            reader.readAsText(file);
+          });
+          w.files.push(entry);
+        }
+      },
+
+      removeWizardFile(index) {
+        this.newCampaignWizard.files.splice(index, 1);
+      },
+
+      async wizardCreateCampaign() {
+        const w = this.newCampaignWizard;
+        if (!w.name.trim() || !w.actor_id.trim()) return;
+        w.step = "creating";
+        w.createStatus = "Creating campaign...";
+        try {
+          const body = await this.api("/api/campaigns", {
+            method: "POST",
+            body: JSON.stringify({
+              namespace: this.campaignForm.namespace || "default",
+              name: w.name.trim(),
+              actor_id: w.actor_id.trim(),
+            }),
+          });
+          const campaign = body.campaign;
+          w.campaignId = campaign.id;
+          await this.refreshCampaigns();
+          await this.selectCampaign(campaign.id);
+          await this.ensureSharedWindow();
+
+          // Ingest files
+          const allTexts = [];
+          if (w.files.length > 0) {
+            w.createStatus = "Reading files...";
+            await Promise.allSettled(w.files.map(f => f._ready));
+            for (let i = 0; i < w.files.length; i++) {
+              const f = w.files[i];
+              if (!f.text || !f.text.trim()) continue;
+              f.status = "uploading";
+              w.createStatus = `Ingesting ${i + 1}/${w.files.length}: ${f.file.name}...`;
+              try {
+                await this.api(`/api/campaigns/${campaign.id}/source-materials/digest`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    text: f.text,
+                    document_label: f.file.name.replace(/\.[^.]+$/, ""),
+                    format: null,
+                    replace_document: true,
+                  }),
+                });
+                f.status = "done";
+                allTexts.push(f.text);
+              } catch (err) {
+                f.status = "error";
+                console.warn("Digest ingest failed for", f.file.name, err);
+              }
+            }
+          }
+
+          // Always start setup wizard
+          w.createStatus = "Starting setup wizard...";
+          await this.wizardStartSetup(allTexts);
+        } catch (error) {
+          this.errorMessage = String(error);
+          w.step = "info";
+        }
+      },
+
+      async wizardStartSetup(allTexts) {
+        const w = this.newCampaignWizard;
+        try {
+          const payload = {
+            actor_id: w.actor_id.trim(),
+            on_rails: w.on_rails,
+            attachment_text: (allTexts && allTexts.length > 0)
+              ? allTexts.join("\n\n---\n\n")
+              : ((w.setupAttachmentText || "").trim() || null),
+          };
+          const result = await this.api(`/api/campaigns/${w.campaignId}/setup/start`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          w.setupPhase = result.setup_phase || null;
+          w.setupResponse = result.message || "";
+          if (w.setupResponse) {
+            w.setupMessages.push({ role: "narrator", text: w.setupResponse });
+          }
+          w.step = "setup";
+        } catch (error) {
+          this.errorMessage = String(error);
+          w.step = "info";
+        }
+      },
+
+      async wizardSendSetupMessage() {
+        const w = this.newCampaignWizard;
+        if (!w.campaignId || !w.setupMessage.trim()) return;
+        w.setupSending = true;
+        const userMsg = w.setupMessage.trim();
+        w.setupMessages.push({ role: "player", text: userMsg });
+        w.setupMessage = "";
+        try {
+          const result = await this.api(`/api/campaigns/${w.campaignId}/setup/message`, {
+            method: "POST",
+            body: JSON.stringify({
+              actor_id: w.actor_id.trim(),
+              message: userMsg,
+            }),
+          });
+          w.setupResponse = result.message || "";
+          w.setupPhase = result.setup_phase || null;
+          if (w.setupResponse) {
+            w.setupMessages.push({ role: "narrator", text: w.setupResponse });
+          }
+          if (result.completed) {
+            w.step = "complete";
+            await this._reloadCampaignData();
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          w.setupSending = false;
+        }
+      },
+
+      wizardFinish() {
+        this.$store.app.closeModal();
+        this.resetNewCampaignWizard();
+        this.$nextTick(() => {
+          const input = document.getElementById("action-input");
+          if (input) input.focus();
+        });
       },
 
       async loadMedia() {
