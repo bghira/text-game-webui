@@ -64,7 +64,7 @@
       turnStream: [],
       sessionsList: [],
       submitting: false,
-      _lastSubmitAt: 0,
+      _submittingTurn: false,
       _streamingNarration: "",
 
       /* Settings panel state */
@@ -1546,7 +1546,7 @@
           }
           if (payload.type === "turn" && payload.payload) {
             /* Suppress echo: if we just submitted a turn, skip the WS echo to avoid duplicates */
-            const isOwnEcho = this._lastSubmitAt && (Date.now() - this._lastSubmitAt) < 3000
+            const isOwnEcho = this._submittingTurn
               && payload.actor_id === (this.turnForm.actor_id || "").trim();
             if (!isOwnEcho) {
               normalizeTurnNotices(payload.payload).forEach((notice) => {
@@ -1707,6 +1707,7 @@
         }
         if (this.submitting) return;
         this.submitting = true;
+        this._submittingTurn = true;
         this.statusMessage = "Submitting turn...";
         try {
           const payload = {
@@ -1721,7 +1722,6 @@
               method: "POST",
               body: JSON.stringify(payload),
             });
-            this._lastSubmitAt = Date.now();
             normalizeTurnNotices(body).forEach((notice) => {
               this.pushStream("notice", notice, { notice });
             });
@@ -1761,7 +1761,6 @@
               }
             }
             this.turnForm.action = "";
-            setTimeout(() => { this._lastSubmitAt = 0; }, 4000);
             if (body.state_update && body.state_update.game_time) {
               this.gameTime = body.state_update.game_time;
             }
@@ -1779,11 +1778,6 @@
               _streaming: true,
             });
             this._scrollStream();
-
-            /* Mark submit timestamp BEFORE the fetch so the WS echo
-               suppression is active when the server publishes the turn
-               event (which happens before SSE bytes arrive). */
-            this._lastSubmitAt = Date.now();
 
             const resp = await fetch(`/api/campaigns/${this.selectedCampaignId}/turns/stream`, {
               method: "POST",
@@ -1836,10 +1830,6 @@
             }
 
             this.turnForm.action = "";
-            /* Reset echo suppression after a generous window — the LLM call
-               can be slow so we refresh the timestamp and give it 5 extra seconds. */
-            this._lastSubmitAt = Date.now();
-            setTimeout(() => { this._lastSubmitAt = 0; }, 5000);
           }
 
           await Promise.all([
@@ -1861,6 +1851,7 @@
         } catch (error) {
           this.errorMessage = String(error);
         } finally {
+          this._submittingTurn = false;
           this.submitting = false;
         }
       },
