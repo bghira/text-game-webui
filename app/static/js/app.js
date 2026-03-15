@@ -43,6 +43,7 @@
     Alpine.store("app", {
       debugMode: localStorage.getItem("debugMode") === "true",
       settingsOpen: false,
+      settingsTab: "llm",
       toggleDebugMode() {
         this.debugMode = !this.debugMode;
         localStorage.setItem("debugMode", this.debugMode ? "true" : "false");
@@ -81,6 +82,30 @@
       },
       settingsSaving: false,
       settingsStatus: { ok: null, message: "" },
+
+      /* Image settings panel state */
+      imageSettingsForm: {
+        image_backend: "none",
+        diffusers_host: "127.0.0.1",
+        diffusers_port: 8189,
+        diffusers_model: "",
+        diffusers_device: "cuda",
+        diffusers_dtype: "bf16",
+        diffusers_offload: "none",
+        diffusers_quantization: "none",
+        diffusers_vae_tiling: true,
+        diffusers_autostart: false,
+        comfyui_url: "http://127.0.0.1:8188",
+        comfyui_workflow_json: "",
+        image_width: 1024,
+        image_height: 1024,
+        image_steps: 20,
+        image_guidance_scale: 3.5,
+        image_cache_max_entries: 50,
+      },
+      imageSettingsSaving: false,
+      imageSettingsStatus: { ok: null, message: "" },
+      imageDaemonState: null,
 
       runtimeInfo: {
         gateway_backend: "unknown",
@@ -278,6 +303,7 @@
         await this.loadRuntime();
         await this.refreshCampaigns();
         await this.loadSettingsForm();
+        await this.loadImageSettingsForm();
         await this.loadOllamaModels();
         /* watch debug toggle to guard inspector tab */
         this.$watch("$store.app.debugMode", () => this.ensureValidInspectorTab());
@@ -459,6 +485,96 @@
           this.settingsStatus = { ok: false, message: "Failed: " + String(err) };
         }
         this.settingsSaving = false;
+      },
+
+      /* ---- Image settings methods ---- */
+      async loadImageSettingsForm() {
+        try {
+          const data = await this.api("/api/settings/image");
+          const f = this.imageSettingsForm;
+          f.image_backend = data.image_backend || "none";
+          f.diffusers_host = data.diffusers_host || "127.0.0.1";
+          f.diffusers_port = typeof data.diffusers_port === "number" ? data.diffusers_port : 8189;
+          f.diffusers_model = data.diffusers_model || "";
+          f.diffusers_device = data.diffusers_device || "cuda";
+          f.diffusers_dtype = data.diffusers_dtype || "bf16";
+          f.diffusers_offload = data.diffusers_offload || "none";
+          f.diffusers_quantization = data.diffusers_quantization || "none";
+          f.diffusers_vae_tiling = typeof data.diffusers_vae_tiling === "boolean" ? data.diffusers_vae_tiling : true;
+          f.diffusers_autostart = typeof data.diffusers_autostart === "boolean" ? data.diffusers_autostart : false;
+          f.comfyui_url = data.comfyui_url || "http://127.0.0.1:8188";
+          f.comfyui_workflow_json = data.comfyui_workflow_json || "";
+          f.image_width = typeof data.image_width === "number" ? data.image_width : 1024;
+          f.image_height = typeof data.image_height === "number" ? data.image_height : 1024;
+          f.image_steps = typeof data.image_steps === "number" ? data.image_steps : 20;
+          f.image_guidance_scale = typeof data.image_guidance_scale === "number" ? data.image_guidance_scale : 3.5;
+          f.image_cache_max_entries = typeof data.image_cache_max_entries === "number" ? data.image_cache_max_entries : 50;
+          this.imageDaemonState = data.daemon_state || null;
+        } catch (_err) {
+          /* image settings endpoint may not exist */
+        }
+      },
+
+      async applyImageSettings() {
+        this.imageSettingsSaving = true;
+        this.imageSettingsStatus = { ok: null, message: "Applying..." };
+        try {
+          const f = this.imageSettingsForm;
+          const payload = {
+            image_backend: f.image_backend,
+            diffusers_host: f.diffusers_host,
+            diffusers_port: f.diffusers_port,
+            diffusers_model: f.diffusers_model || null,
+            diffusers_device: f.diffusers_device,
+            diffusers_dtype: f.diffusers_dtype,
+            diffusers_offload: f.diffusers_offload,
+            diffusers_quantization: f.diffusers_quantization,
+            diffusers_vae_tiling: f.diffusers_vae_tiling,
+            diffusers_autostart: f.diffusers_autostart,
+            comfyui_url: f.comfyui_url,
+            comfyui_workflow_json: f.comfyui_workflow_json || null,
+            image_width: f.image_width,
+            image_height: f.image_height,
+            image_steps: f.image_steps,
+            image_guidance_scale: f.image_guidance_scale,
+            image_cache_max_entries: f.image_cache_max_entries,
+          };
+          const result = await this.api("/api/settings/image", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          let msg = "Image settings applied.";
+          if (result.restart_required) {
+            msg += " Server restart required for some changes to take effect.";
+          }
+          this.imageSettingsStatus = { ok: true, message: msg };
+          await this.loadImageSettingsForm();
+        } catch (err) {
+          this.imageSettingsStatus = { ok: false, message: "Failed: " + String(err) };
+        }
+        this.imageSettingsSaving = false;
+      },
+
+      async startImageDaemon() {
+        this.imageSettingsStatus = { ok: null, message: "Starting daemon..." };
+        try {
+          const result = await this.api("/api/image/daemon/start", { method: "POST" });
+          this.imageDaemonState = result.state || "starting";
+          this.imageSettingsStatus = { ok: true, message: "Daemon start requested." };
+        } catch (err) {
+          this.imageSettingsStatus = { ok: false, message: "Start failed: " + String(err) };
+        }
+      },
+
+      async stopImageDaemon() {
+        this.imageSettingsStatus = { ok: null, message: "Stopping daemon..." };
+        try {
+          const result = await this.api("/api/image/daemon/stop", { method: "POST" });
+          this.imageDaemonState = result.state || "stopped";
+          this.imageSettingsStatus = { ok: true, message: "Daemon stopped." };
+        } catch (err) {
+          this.imageSettingsStatus = { ok: false, message: "Stop failed: " + String(err) };
+        }
       },
 
       resetError() {

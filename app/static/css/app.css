@@ -1132,6 +1132,32 @@ pre {
   color: var(--ink);
 }
 
+.settings-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.settings-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.92rem;
+  cursor: pointer;
+  color: #6a7a70;
+  transition: color var(--transition), border-color var(--transition);
+}
+
+.settings-tab:hover {
+  color: var(--ink);
+}
+
+.settings-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
 .drawer-close {
   background: none;
   border: none;
