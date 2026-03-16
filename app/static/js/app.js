@@ -28,8 +28,9 @@
       .replace(/>/g, "&gt;");
     // **bold**
     s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    // *italic*
+    // *italic* and _italic_
     s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
+    s = s.replace(/(^|[\s>])_(.+?)_([\s<.,!?]|$)/gm, "$1<em>$2</em>$3");
     // newlines
     s = s.replace(/\n/g, "<br>");
     return s;
