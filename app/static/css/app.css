@@ -404,6 +404,25 @@ button:disabled {
   background: var(--accent-soft); color: var(--accent);
   padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.68rem;
 }
+.gpu-missing-tool {
+  padding: 0.3rem 0;
+}
+.gpu-missing-tool small {
+  display: block;
+  font-size: 0.72rem;
+  color: #8a6d3b;
+  line-height: 1.4;
+}
+.gpu-missing-hint {
+  color: #6a7a70 !important;
+  margin-top: 0.15rem;
+}
+.gpu-missing-hint code {
+  background: var(--accent-soft);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+}
 
 .sidebar-hint {
   margin: 0;

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import platform
+from pathlib import Path
 import plistlib
 import re
 import shutil
@@ -1404,12 +1405,42 @@ def _query_mps_stats() -> dict | None:
     }
 
 
+def _detect_amd_gpu_without_rocm_smi() -> dict | None:
+    """Check /sys/class/drm for AMD GPUs (vendor 0x1002) when rocm-smi is absent."""
+    try:
+        drm = Path("/sys/class/drm")
+        if not drm.is_dir():
+            return None
+        for card in sorted(drm.iterdir()):
+            vendor_file = card / "device" / "vendor"
+            if not vendor_file.is_file():
+                continue
+            vendor = vendor_file.read_text().strip()
+            if vendor == "0x1002":
+                name = "AMD GPU"
+                name_file = card / "device" / "product_name"
+                if name_file.is_file():
+                    name = _normalize_gpu_name(name_file.read_text().strip()) or name
+                return {
+                    "name": name,
+                    "utilization_pct": None,
+                    "vram_used_bytes": None,
+                    "vram_total_bytes": None,
+                    "temp_c": None,
+                    "missing_tool": "rocm-smi",
+                }
+    except Exception:
+        pass
+    return None
+
+
 def _query_gpu_stats() -> dict | None:
     for probe in (_query_nvidia_smi, _query_rocm_smi, _query_mps_stats):
         result = probe()
         if result:
             return result
-    return None
+    # No stats tool found — check if AMD hardware is present anyway
+    return _detect_amd_gpu_without_rocm_smi()
 
 
 def _query_ollama_ps(base_url: str) -> list[dict]:

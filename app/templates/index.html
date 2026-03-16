@@ -110,6 +110,13 @@
           <span>GPU</span>
           <small x-show="gpuStats.gpu.name" x-text="gpuStats.gpu.name"></small>
         </div>
+        <template x-if="gpuStats.gpu.missing_tool">
+          <div class="gpu-missing-tool">
+            <small x-text="gpuStats.gpu.missing_tool + ' is not installed — GPU stats unavailable.'"></small>
+            <small class="gpu-missing-hint">Install via your distro package manager (e.g. <code>rocm-smi</code>).</small>
+          </div>
+        </template>
+        <template x-if="!gpuStats.gpu.missing_tool">
         <div class="gpu-stats-bars">
           <template x-if="gpuStats.gpu.utilization_pct != null">
             <div class="gpu-stat-row">
@@ -145,6 +152,7 @@
             </div>
           </template>
         </div>
+        </template>
         <template x-if="gpuStats.ollama_models.length > 0">
           <div class="gpu-model-list">
             <template x-for="m in gpuStats.ollama_models" :key="m.name">
