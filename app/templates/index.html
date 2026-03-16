@@ -246,7 +246,7 @@
                 <span class="scene-prompt-text" x-text="entry.text"></span>
                 <button type="button" class="scene-prompt-gen-btn"
                   @click="generateImage(entry)"
-                  :disabled="entry._imgGenerating || submitting"
+                  :disabled="entry._imgGenerating || submitting || imageGenerating"
                   x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <div class="turn-debug-card" x-show="$store.app.debugMode">
@@ -257,7 +257,7 @@
                 <pre x-text="entry.text"></pre>
                 <button type="button" class="scene-prompt-gen-btn" style="margin-top:0.35rem;"
                   @click="generateImage(entry)"
-                  :disabled="entry._imgGenerating || submitting"
+                  :disabled="entry._imgGenerating || submitting || imageGenerating"
                   x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <template x-if="entry._imgUrl">
@@ -615,10 +615,12 @@
               <label>
                 Difficulty
                 <select :value="campaignFlags.difficulty" @change="setCampaignFlag('difficulty', $event.target.value)" :disabled="!selectedCampaignId">
+                  <option value="story">Story</option>
                   <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
                   <option value="normal">Normal</option>
                   <option value="hard">Hard</option>
-                  <option value="brutal">Brutal</option>
+                  <option value="impossible">Impossible</option>
                 </select>
               </label>
               <label>

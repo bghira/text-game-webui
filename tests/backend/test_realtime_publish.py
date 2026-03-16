@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 
@@ -164,3 +165,55 @@ def test_stream_turn_publishes_media_event_for_look(client):
     assert res.status_code == 200
 
     assert _published_types(publish) == ["turn", "media", "timers"]
+
+
+def test_web_timer_effects_port_publishes_timed_event():
+    """WebTimerEffectsPort.emit_timed_event should publish via RealtimeHub."""
+    from app.main import WebTimerEffectsPort
+
+    hub_publish = AsyncMock()
+
+    class FakeHub:
+        publish = hub_publish
+
+    port = WebTimerEffectsPort(FakeHub())
+
+    asyncio.get_event_loop().run_until_complete(
+        port.emit_timed_event(
+            campaign_id="campaign-42",
+            channel_id="ch-1",
+            actor_id="dale-denton",
+            narration="A rumbling sound echoes through the cave.",
+        )
+    )
+
+    hub_publish.assert_awaited_once()
+    call_args = hub_publish.await_args
+    assert call_args.args[0] == "campaign-42"
+    payload = call_args.args[1]
+    assert payload["type"] == "timed_event"
+    assert payload["actor_id"] == "dale-denton"
+    assert payload["payload"]["narration"] == "A rumbling sound echoes through the cave."
+    assert payload["payload"]["actor_id"] == "dale-denton"
+
+
+def test_web_timer_effects_port_edit_timer_line_is_noop():
+    """edit_timer_line should be a no-op (web UI has no editable messages)."""
+    from app.main import WebTimerEffectsPort
+
+    hub_publish = AsyncMock()
+
+    class FakeHub:
+        publish = hub_publish
+
+    port = WebTimerEffectsPort(FakeHub())
+
+    asyncio.get_event_loop().run_until_complete(
+        port.edit_timer_line(
+            channel_id="ch-1",
+            message_id="msg-1",
+            replacement="updated text",
+        )
+    )
+
+    hub_publish.assert_not_awaited()

@@ -16,11 +16,6 @@
   }
 
   /**
-   * Replace Discord-style timestamps (<t:EPOCH:R>, <t:EPOCH:F>, <t:EPOCH>)
-   * with human-readable text.  :R → relative countdown, :F → full date,
-   * bare → short date-time.
-   */
-  /**
    * Lightweight markdown→HTML: **bold**, *italic*, newlines→<br>.
    * Input is escaped first to avoid XSS when used with x-html.
    */
@@ -40,6 +35,11 @@
     return s;
   }
 
+  /**
+   * Replace Discord-style timestamps (<t:EPOCH:R>, <t:EPOCH:F>, <t:EPOCH>)
+   * with human-readable text.  :R → relative countdown, :F → full date,
+   * bare → short date-time.
+   */
   function renderDiscordTimestamps(text) {
     return text.replace(/<t:(\d+)(?::([a-zA-Z]))?>/g, (_match, epoch, style) => {
       const date = new Date(Number(epoch) * 1000);
@@ -126,7 +126,7 @@
       submitting: false,
       _submittingTurn: false,
       _streamingNarration: "",
-      imageGenerating: false,
+      imageGenerating: 0,
 
       /* Settings panel state */
       ollamaModels: [],
@@ -707,7 +707,7 @@
         entry._imgGenerating = true;
         entry._imgError = "";
         entry._imgUrl = "";
-        this.imageGenerating = true;
+        this.imageGenerating++;
         try {
           const result = await this.api("/api/image/generate", {
             method: "POST",
@@ -717,7 +717,7 @@
           if (!jobId) {
             entry._imgError = result.detail || "No job ID returned.";
             entry._imgGenerating = false;
-            this.imageGenerating = false;
+            this.imageGenerating = Math.max(0, this.imageGenerating - 1);
             return;
           }
           // Poll for completion
@@ -727,13 +727,13 @@
             if (status.status === "completed") {
               entry._imgUrl = status.image_url || "";
               entry._imgGenerating = false;
-              this.imageGenerating = false;
+              this.imageGenerating = Math.max(0, this.imageGenerating - 1);
               return;
             }
             if (status.status === "failed" || status.status === "interrupted") {
               entry._imgError = status.error || status.status;
               entry._imgGenerating = false;
-              this.imageGenerating = false;
+              this.imageGenerating = Math.max(0, this.imageGenerating - 1);
               return;
             }
           }
@@ -742,7 +742,7 @@
           entry._imgError = String(err);
         }
         entry._imgGenerating = false;
-        this.imageGenerating = false;
+        this.imageGenerating = Math.max(0, this.imageGenerating - 1);
       },
 
       resetError() {
@@ -1391,7 +1391,7 @@
         }
         const actorId = this.resolveMediaActorId();
         this.avatarGenBusy = true;
-        this.imageGenerating = true;
+        this.imageGenerating++;
         this.avatarGenStatus = "Submitting...";
         try {
           // 1. Start generation
@@ -1403,7 +1403,7 @@
           if (!jobId) {
             this.avatarGenStatus = gen.detail || "No job ID returned.";
             this.avatarGenBusy = false;
-            this.imageGenerating = false;
+            this.imageGenerating = Math.max(0, this.imageGenerating - 1);
             return;
           }
           // 2. Poll for completion
@@ -1419,14 +1419,14 @@
             if (status.status === "failed" || status.status === "interrupted") {
               this.avatarGenStatus = "Generation failed: " + (status.error || status.status);
               this.avatarGenBusy = false;
-              this.imageGenerating = false;
+              this.imageGenerating = Math.max(0, this.imageGenerating - 1);
               return;
             }
           }
           if (!imageUrl) {
             this.avatarGenStatus = "Generation timed out.";
             this.avatarGenBusy = false;
-            this.imageGenerating = false;
+            this.imageGenerating = Math.max(0, this.imageGenerating - 1);
             return;
           }
           // 3. Commit as pending avatar
@@ -1442,7 +1442,7 @@
           this.avatarGenStatus = "Error: " + String(err);
         }
         this.avatarGenBusy = false;
-        this.imageGenerating = false;
+        this.imageGenerating = Math.max(0, this.imageGenerating - 1);
       },
 
       /* ---- Scheduled SMS ---- */
