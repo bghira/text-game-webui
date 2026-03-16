@@ -9,10 +9,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.api.routes import router as api_router
+from app.api.themes import router as themes_router, settings_router as theme_settings_router
 from app.api.ws import router as ws_router
 from app.media.image_cache import ImageCache
 from app.realtime.hub import RealtimeHub
 from app.services.gateway_factory import build_gateway
+from app.services.theme_service import ThemeService
 from app.settings import Settings, load_persisted_settings
 from app.ui.routes import router as ui_router
 
@@ -175,6 +177,7 @@ def create_app() -> FastAPI:
     app.state.gateway_backend = backend
     app.state.realtime = RealtimeHub()
     app.state.templates = Jinja2Templates(directory=str(app_dir / "templates"))
+    app.state.theme_service = ThemeService()
 
     app.mount("/static", StaticFiles(directory=str(app_dir / "static")), name="static")
     app.mount("/media", StaticFiles(directory=str(app_dir / "media")), name="media")
@@ -189,6 +192,8 @@ def create_app() -> FastAPI:
         log.info("Timer effects port injected into gateway")
 
     app.include_router(api_router)
+    app.include_router(themes_router)
+    app.include_router(theme_settings_router)
     app.include_router(ws_router)
     app.include_router(ui_router)
     return app

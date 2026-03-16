@@ -98,6 +98,8 @@
       settingsOpen: false,
       settingsTab: "llm",
       modal: null,
+      theme: localStorage.getItem("theme") || "light",
+      themes: [],
       toggleDebugMode() {
         this.debugMode = !this.debugMode;
         localStorage.setItem("debugMode", this.debugMode ? "true" : "false");
@@ -108,7 +110,38 @@
       closeModal() {
         this.modal = null;
       },
+      async loadThemes() {
+        try {
+          const res = await fetch("/api/themes");
+          if (res.ok) this.themes = await res.json();
+        } catch (_) {}
+      },
+      applyTheme(name) {
+        this.theme = name;
+        localStorage.setItem("theme", name);
+        document.documentElement.setAttribute("data-theme", name);
+        // Enable/disable custom CSS link for non-builtin themes
+        const customLink = document.getElementById("custom-theme-css");
+        if (customLink) {
+          const builtins = ["light", "dark"];
+          if (!builtins.includes(name)) {
+            customLink.href = "/api/themes/" + encodeURIComponent(name) + "/theme.css";
+            customLink.disabled = false;
+          } else {
+            customLink.href = "";
+            customLink.disabled = true;
+          }
+        }
+        // Persist to server
+        fetch("/api/settings/theme", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ theme: name }),
+        }).catch(function() {});
+      },
     });
+    // Load themes on init
+    Alpine.store("app").loadThemes();
   });
 
   window.textGameApp = function textGameApp() {

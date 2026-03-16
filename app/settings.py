@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 # Keys that can be persisted to the webui_kv table.
 _PERSISTABLE_KEYS = frozenset({
+    "theme",
     "tge_completion_mode",
     "tge_llm_base_url",
     "tge_llm_api_key",
@@ -109,6 +110,7 @@ def persist_settings(settings: Settings) -> None:
 
 
 class Settings(BaseModel):
+    theme: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_THEME", "light"))
     app_name: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_APP_NAME", "text-game-webui"))
     debug: bool = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DEBUG", "1") in {"1", "true", "True"})
     host: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_HOST", "0.0.0.0"))

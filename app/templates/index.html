@@ -1858,8 +1858,8 @@
       <div class="drawer-header">
         <h2 class="sr-only">Settings</h2>
         <div class="settings-tabs" role="tablist" aria-label="Settings sections"
-             @keydown.left.prevent="$store.app.settingsTab = $store.app.settingsTab === 'image' ? 'llm' : 'image'; $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
-             @keydown.right.prevent="$store.app.settingsTab = $store.app.settingsTab === 'llm' ? 'image' : 'llm'; $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
+             @keydown.left.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i-1+3)%3]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
+             @keydown.right.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i+1)%3]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
           <button type="button" role="tab" id="settings-tab-llm" class="settings-tab"
             :class="{ active: $store.app.settingsTab === 'llm' }"
             :aria-selected="$store.app.settingsTab === 'llm'"
@@ -1872,6 +1872,12 @@
             :tabindex="$store.app.settingsTab === 'image' ? 0 : -1"
             aria-controls="settings-panel-image"
             @click="$store.app.settingsTab = 'image'">Image</button>
+          <button type="button" role="tab" id="settings-tab-appearance" class="settings-tab"
+            :class="{ active: $store.app.settingsTab === 'appearance' }"
+            :aria-selected="$store.app.settingsTab === 'appearance'"
+            :tabindex="$store.app.settingsTab === 'appearance' ? 0 : -1"
+            aria-controls="settings-panel-appearance"
+            @click="$store.app.settingsTab = 'appearance'">Appearance</button>
         </div>
         <button type="button" class="drawer-close" @click="$store.app.settingsOpen = false" aria-label="Close settings">&times;</button>
       </div>
@@ -2096,6 +2102,24 @@
 
         <p class="settings-note">Some changes require a server restart.</p>
         <p class="settings-status" :class="imageSettingsStatus.ok === false ? 'error' : 'status'" x-show="imageSettingsStatus.message" x-text="imageSettingsStatus.message"></p>
+      </div>
+
+      <!-- Appearance Settings Panel -->
+      <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" class="stack" x-show="$store.app.settingsTab === 'appearance'">
+        <div class="settings-group">
+          <p class="settings-group-title">Theme</p>
+          <div class="stack compact">
+            <label>
+              Color Theme
+              <select :value="$store.app.theme" @change="$store.app.applyTheme($event.target.value)">
+                <template x-for="t in $store.app.themes" :key="t.value">
+                  <option :value="t.value" x-text="t.label" :selected="t.value === $store.app.theme"></option>
+                </template>
+              </select>
+            </label>
+            <p class="settings-note" style="margin-top:0">Choose a color theme for the interface. Custom themes can be installed via pip or placed in <code style="font-size:0.76rem;">~/.text-game-webui/themes/</code>.</p>
+          </div>
+        </div>
       </div>
     </aside>
   </div>

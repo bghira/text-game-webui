@@ -624,3 +624,95 @@ export function applyOllamaModels(
 
   return { ollamaModels, settingsForm };
 }
+
+/* ---- Theme helpers ---- */
+
+export type ThemeEntry = {
+  value: string;
+  label: string;
+  description: string;
+  source: string;
+};
+
+export type ThemeState = {
+  theme: string;
+  themes: ThemeEntry[];
+};
+
+export function initThemeState(initial?: string): ThemeState {
+  return {
+    theme: initial || "light",
+    themes: [],
+  };
+}
+
+export async function loadThemesFlow(
+  fetcher: FetchLike,
+): Promise<{ calls: string[]; themes: ThemeEntry[] }> {
+  const calls: string[] = [];
+  calls.push("/api/themes");
+  const themes = (await fetcher("/api/themes")) as ThemeEntry[];
+  return { calls, themes };
+}
+
+export async function applyThemeFlow(
+  fetcher: FetchLike,
+  state: ThemeState,
+  themeName: string,
+): Promise<{ calls: string[]; state: ThemeState }> {
+  const calls: string[] = [];
+
+  // Validate theme exists in loaded list
+  if (!state.themes.some((t) => t.value === themeName)) {
+    return { calls, state };
+  }
+
+  // Update local state
+  const newState: ThemeState = { ...state, theme: themeName };
+
+  // POST to server
+  calls.push("/api/settings/theme");
+  await fetcher("/api/settings/theme", {
+    method: "POST",
+    body: JSON.stringify({ theme: themeName }),
+  });
+
+  return { calls, state: newState };
+}
+
+export async function getThemeSettingFlow(
+  fetcher: FetchLike,
+): Promise<{ calls: string[]; theme: string }> {
+  const calls: string[] = [];
+  calls.push("/api/settings/theme");
+  const body = (await fetcher("/api/settings/theme")) as { theme: string };
+  return { calls, theme: body.theme };
+}
+
+export async function themeFullFlow(
+  fetcher: FetchLike,
+  targetTheme: string,
+): Promise<{ calls: string[]; state: ThemeState }> {
+  const calls: string[] = [];
+
+  // 1. Load current setting
+  const settingResult = await getThemeSettingFlow(fetcher);
+  calls.push(...settingResult.calls);
+
+  // 2. Load available themes
+  const listResult = await loadThemesFlow(fetcher);
+  calls.push(...listResult.calls);
+
+  // 3. Initialize state
+  let state: ThemeState = {
+    theme: settingResult.theme,
+    themes: listResult.themes,
+  };
+
+  // 4. Apply the target theme
+  const applyResult = await applyThemeFlow(fetcher, state, targetTheme);
+  calls.push(...applyResult.calls);
+  state = applyResult.state;
+
+  return { calls, state };
+}
