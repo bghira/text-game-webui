@@ -20,20 +20,20 @@
     <template x-if="selectedCampaignId && playerData">
       <div class="quick-info">
         <div class="quick-info-top">
-          <template x-if="playerData.state && playerData.state.avatar_url">
-            <img :src="playerData.state.avatar_url" class="quick-info-avatar" alt="avatar" />
+          <template x-if="playerData?.state?.avatar_url">
+            <img :src="playerData?.state?.avatar_url" class="quick-info-avatar" alt="avatar" />
           </template>
           <div class="quick-info-details">
-            <span class="quick-info-name" x-text="(playerData.state && playerData.state.character_name) || turnForm.actor_id || 'Unknown'"></span>
+            <span class="quick-info-name" x-text="resolveCharacterName()"></span>
             <div class="quick-info-xp">
-              <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
-              <div class="xp-bar-track"><div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div></div>
-              <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+              <span class="xp-level">Lv <span x-text="playerData?.level || 1"></span></span>
+              <div class="xp-bar-track"><div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData?.xp || 0) % 100)) + '%'"></div></div>
+              <span class="xp-value" x-text="(playerData?.xp || 0) + ' XP'"></span>
             </div>
           </div>
         </div>
-        <template x-if="playerData.state && playerData.state.room_title">
-          <span class="quick-info-room" x-text="playerData.state.room_title"></span>
+        <template x-if="playerData?.state?.room_title">
+          <span class="quick-info-room" x-text="playerData?.state?.room_title"></span>
         </template>
         <div class="quick-info-buttons">
           <button type="button" @click="$store.app.openModal('playerSheet')">Character</button>
@@ -246,7 +246,7 @@
                 <span class="scene-prompt-text" x-text="entry.text"></span>
                 <button type="button" class="scene-prompt-gen-btn"
                   @click="generateImage(entry)"
-                  :disabled="entry._imgGenerating"
+                  :disabled="entry._imgGenerating || submitting || imageGenerating"
                   x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <div class="turn-debug-card" x-show="$store.app.debugMode">
@@ -257,7 +257,7 @@
                 <pre x-text="entry.text"></pre>
                 <button type="button" class="scene-prompt-gen-btn" style="margin-top:0.35rem;"
                   @click="generateImage(entry)"
-                  :disabled="entry._imgGenerating"
+                  :disabled="entry._imgGenerating || submitting || imageGenerating"
                   x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <template x-if="entry._imgUrl">
@@ -293,13 +293,13 @@
 
     <!-- Character HUD + Action Bar -->
     <div class="action-bar-wrapper">
-      <template x-if="playerData && playerData.state && playerData.state.avatar_url">
-        <img :src="playerData.state.avatar_url" :alt="(playerData.state.character_name || playerData.actor_id || '') + ' avatar'" class="action-bar-avatar" />
+      <template x-if="playerData?.state?.avatar_url">
+        <img :src="playerData?.state?.avatar_url" :alt="resolveCharacterName('') + ' avatar'" class="action-bar-avatar" />
       </template>
       <div class="action-bar-column">
         <div class="char-hud">
           <div class="char-hud-top">
-            <strong class="char-hud-name" x-text="(playerData && playerData.state && playerData.state.character_name) || turnForm.actor_id || 'Unknown'"></strong>
+            <strong class="char-hud-name" x-text="resolveCharacterName()"></strong>
             <select x-show="uniqueActors().length > 1" x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
               <template x-for="actor in uniqueActors()" :key="actor">
                 <option :value="actor" x-text="actor"></option>
@@ -315,8 +315,8 @@
               <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
             </div>
           </template>
-          <template x-if="playerData && playerData.state && playerData.state.room_title">
-            <span class="char-hud-location" x-text="playerData.state.room_title"></span>
+          <template x-if="playerData?.state?.room_title">
+            <span class="char-hud-location" x-text="playerData?.state?.room_title"></span>
           </template>
         </div>
         <form class="action-bar" @submit.prevent="submitTurn()">
@@ -331,7 +331,7 @@
             @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
             @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
           ></textarea>
-          <button type="submit" :disabled="!selectedCampaignId || submitting" class="action-submit" :class="{ 'action-thinking': submitting }" x-text="submitting ? 'Thinking...' : 'Submit'"></button>
+          <button type="submit" :disabled="!selectedCampaignId || submitting || imageGenerating" class="action-submit" :class="{ 'action-thinking': submitting || imageGenerating }" x-text="submitting ? 'Thinking...' : (imageGenerating ? 'Generating...' : 'Submit')"></button>
         </form>
       </div>
     </div>
@@ -389,13 +389,13 @@
           <div class="player-card">
             <!-- Avatar + Identity -->
             <div class="player-identity">
-              <template x-if="playerData.state && playerData.state.avatar_url">
-                <img :src="playerData.state.avatar_url" :alt="'Avatar of ' + ((playerData.state && playerData.state.character_name) || playerData.actor_id || 'character')" class="player-avatar" />
+              <template x-if="playerData?.state?.avatar_url">
+                <img :src="playerData?.state?.avatar_url" :alt="'Avatar of ' + resolveCharacterName('character')" class="player-avatar" />
               </template>
               <div>
-                <strong x-text="(playerData.state && playerData.state.character_name) || playerData.actor_id || 'Unknown'"></strong>
-                <template x-if="playerData.state && playerData.state.room_title">
-                  <span class="player-location" x-text="playerData.state.room_title"></span>
+                <strong x-text="resolveCharacterName()"></strong>
+                <template x-if="playerData?.state?.room_title">
+                  <span class="player-location" x-text="playerData?.state?.room_title"></span>
                 </template>
               </div>
             </div>
@@ -410,34 +410,34 @@
             <!-- Statistics -->
             <template x-if="playerStats">
               <div class="player-stats-row">
-                <span class="stat-pill" x-show="typeof playerStats.messages_sent === 'number'">&#x1f4ac; <span x-text="playerStats.messages_sent"></span> msgs</span>
-                <span class="stat-pill" x-show="typeof playerStats.timers_averted === 'number'">&#x2705; <span x-text="playerStats.timers_averted"></span> averted</span>
-                <span class="stat-pill" x-show="typeof playerStats.timers_missed === 'number'">&#x274c; <span x-text="playerStats.timers_missed"></span> missed</span>
-                <span class="stat-pill" x-show="typeof playerStats.attention_hours === 'number'">&#x23f1; <span x-text="Number(playerStats.attention_hours).toFixed(1)"></span>h</span>
+                <span class="stat-pill" x-show="typeof playerStats?.messages_sent === 'number'">&#x1f4ac; <span x-text="playerStats?.messages_sent"></span> msgs</span>
+                <span class="stat-pill" x-show="typeof playerStats?.timers_averted === 'number'">&#x2705; <span x-text="playerStats?.timers_averted"></span> averted</span>
+                <span class="stat-pill" x-show="typeof playerStats?.timers_missed === 'number'">&#x274c; <span x-text="playerStats?.timers_missed"></span> missed</span>
+                <span class="stat-pill" x-show="typeof playerStats?.attention_hours === 'number'">&#x23f1; <span x-text="Number(playerStats?.attention_hours || 0).toFixed(1)"></span>h</span>
               </div>
             </template>
             <!-- Attributes -->
-            <template x-if="playerAttributes && playerAttributes.attributes && Object.keys(playerAttributes.attributes).length > 0">
+            <template x-if="playerAttributes?.attributes && Object.keys(playerAttributes?.attributes || {}).length > 0">
               <div class="player-attributes">
                 <div class="attr-header">
                   <strong>Attributes</strong>
-                  <small x-text="playerAttributes.points_available + ' / ' + playerAttributes.total_points + ' pts available'"></small>
+                  <small x-text="(playerAttributes?.points_available || 0) + ' / ' + (playerAttributes?.total_points || 0) + ' pts available'"></small>
                 </div>
                 <div class="attr-grid">
-                  <template x-for="[name, val] in Object.entries(playerAttributes.attributes)" :key="name">
+                  <template x-for="[name, val] in Object.entries(playerAttributes?.attributes || {})" :key="name">
                     <div class="attr-row">
                       <span class="attr-name" x-text="name"></span>
                       <div class="attr-bar-track">
-                        <div class="attr-bar-fill" :style="'width:' + Math.min(100, (val / (playerAttributes.max_attribute_value || 20)) * 100) + '%'"></div>
+                        <div class="attr-bar-fill" :style="'width:' + Math.min(100, (val / (playerAttributes?.max_attribute_value || 20)) * 100) + '%'"></div>
                       </div>
                       <span class="attr-value" x-text="val"></span>
                     </div>
                   </template>
                 </div>
-                <template x-if="playerAttributes.points_available > 0">
+                <template x-if="playerAttributes?.points_available > 0">
                   <form class="attr-set-form" @submit.prevent="setPlayerAttribute()">
                     <input x-model="attributeForm.attribute" placeholder="attribute" class="attr-input" />
-                    <input x-model.number="attributeForm.value" type="number" min="0" :max="playerAttributes.max_attribute_value || 20" class="attr-input attr-input-num" />
+                    <input x-model.number="attributeForm.value" type="number" min="0" :max="playerAttributes?.max_attribute_value || 20" class="attr-input attr-input-num" />
                     <button type="submit">Set</button>
                   </form>
                 </template>
@@ -446,30 +446,30 @@
             <!-- Level Up -->
             <template x-if="playerAttributes">
               <div class="level-up-row">
-                <span class="xp-needed" x-text="'Next level: ' + (playerAttributes.xp_needed_for_next || '?') + ' XP'"></span>
-                <button type="button" @click="levelUpPlayer()" :disabled="!playerAttributes || (playerAttributes.xp || 0) < (playerAttributes.xp_needed_for_next || 999999)" class="btn-level-up">Level Up</button>
+                <span class="xp-needed" x-text="'Next level: ' + (playerAttributes?.xp_needed_for_next || '?') + ' XP'"></span>
+                <button type="button" @click="levelUpPlayer()" :disabled="!playerAttributes || (playerAttributes?.xp || 0) < (playerAttributes?.xp_needed_for_next || 999999)" class="btn-level-up">Level Up</button>
               </div>
             </template>
             <!-- Location -->
-            <template x-if="playerData.state && playerData.state.room_description">
-              <p class="player-room-desc" x-text="playerData.state.room_description"></p>
+            <template x-if="playerData?.state?.room_description">
+              <p class="player-room-desc" x-text="playerData?.state?.room_description"></p>
             </template>
             <!-- Inventory -->
-            <template x-if="playerData.inventory && playerData.inventory.length > 0">
+            <template x-if="playerData?.inventory?.length > 0">
               <div class="player-inventory">
                 <strong>Inventory</strong>
                 <ul>
-                  <template x-for="item in playerData.inventory" :key="item">
+                  <template x-for="(item, idx) in (playerData?.inventory || [])" :key="idx">
                     <li x-text="typeof item === 'string' ? item : (item.name || item.item || JSON.stringify(item))"></li>
                   </template>
                 </ul>
               </div>
             </template>
             <!-- Pending Avatar -->
-            <template x-if="playerData.state && playerData.state.pending_avatar_url">
+            <template x-if="playerData?.state?.pending_avatar_url">
               <div class="pending-avatar">
                 <p>Pending Avatar:</p>
-                <img :src="playerData.state.pending_avatar_url" :alt="'Pending avatar preview for ' + ((playerData.state && playerData.state.character_name) || playerData.actor_id || 'character')" class="player-avatar pending" />
+                <img :src="playerData?.state?.pending_avatar_url" :alt="'Pending avatar preview for ' + resolveCharacterName('character')" class="player-avatar pending" />
                 <div class="inline-actions">
                   <button type="button" @click="acceptPendingAvatar()">Accept</button>
                   <button type="button" @click="declinePendingAvatar()">Decline</button>
@@ -615,10 +615,12 @@
               <label>
                 Difficulty
                 <select :value="campaignFlags.difficulty" @change="setCampaignFlag('difficulty', $event.target.value)" :disabled="!selectedCampaignId">
+                  <option value="story">Story</option>
                   <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
                   <option value="normal">Normal</option>
                   <option value="hard">Hard</option>
-                  <option value="brutal">Brutal</option>
+                  <option value="impossible">Impossible</option>
                 </select>
               </label>
               <label>
@@ -1310,13 +1312,13 @@
             <template x-if="playerData">
               <div class="player-card">
                 <div class="player-identity">
-                  <template x-if="playerData.state && playerData.state.avatar_url">
-                    <img :src="playerData.state.avatar_url" :alt="'Avatar of ' + ((playerData.state && playerData.state.character_name) || playerData.actor_id || 'character')" class="player-avatar" />
+                  <template x-if="playerData?.state?.avatar_url">
+                    <img :src="playerData?.state?.avatar_url" :alt="'Avatar of ' + resolveCharacterName('character')" class="player-avatar" />
                   </template>
                   <div>
-                    <strong x-text="(playerData.state && playerData.state.character_name) || playerData.actor_id || 'Unknown'"></strong>
-                    <template x-if="playerData.state && playerData.state.room_title">
-                      <span class="player-location" x-text="playerData.state.room_title"></span>
+                    <strong x-text="resolveCharacterName()"></strong>
+                    <template x-if="playerData?.state?.room_title">
+                      <span class="player-location" x-text="playerData?.state?.room_title"></span>
                     </template>
                   </div>
                 </div>
@@ -1327,31 +1329,31 @@
                 </div>
                 <template x-if="playerStats">
                   <div class="player-stats-row">
-                    <span class="stat-pill" x-show="typeof playerStats.messages_sent === 'number'">&#x1f4ac; <span x-text="playerStats.messages_sent"></span> msgs</span>
-                    <span class="stat-pill" x-show="typeof playerStats.timers_averted === 'number'">&#x2705; <span x-text="playerStats.timers_averted"></span> averted</span>
-                    <span class="stat-pill" x-show="typeof playerStats.timers_missed === 'number'">&#x274c; <span x-text="playerStats.timers_missed"></span> missed</span>
-                    <span class="stat-pill" x-show="typeof playerStats.attention_hours === 'number'">&#x23f1; <span x-text="Number(playerStats.attention_hours).toFixed(1)"></span>h</span>
+                    <span class="stat-pill" x-show="typeof playerStats?.messages_sent === 'number'">&#x1f4ac; <span x-text="playerStats?.messages_sent"></span> msgs</span>
+                    <span class="stat-pill" x-show="typeof playerStats?.timers_averted === 'number'">&#x2705; <span x-text="playerStats?.timers_averted"></span> averted</span>
+                    <span class="stat-pill" x-show="typeof playerStats?.timers_missed === 'number'">&#x274c; <span x-text="playerStats?.timers_missed"></span> missed</span>
+                    <span class="stat-pill" x-show="typeof playerStats?.attention_hours === 'number'">&#x23f1; <span x-text="Number(playerStats?.attention_hours || 0).toFixed(1)"></span>h</span>
                   </div>
                 </template>
-                <template x-if="playerAttributes && playerAttributes.attributes && Object.keys(playerAttributes.attributes).length > 0">
+                <template x-if="playerAttributes?.attributes && Object.keys(playerAttributes?.attributes || {}).length > 0">
                   <div class="player-attributes">
                     <div class="attr-header">
                       <strong>Attributes</strong>
-                      <small x-text="playerAttributes.points_available + ' / ' + playerAttributes.total_points + ' pts available'"></small>
+                      <small x-text="(playerAttributes?.points_available || 0) + ' / ' + (playerAttributes?.total_points || 0) + ' pts available'"></small>
                     </div>
                     <div class="attr-grid">
-                      <template x-for="[name, val] in Object.entries(playerAttributes.attributes)" :key="name">
+                      <template x-for="[name, val] in Object.entries(playerAttributes?.attributes || {})" :key="name">
                         <div class="attr-row">
                           <span class="attr-name" x-text="name"></span>
-                          <div class="attr-bar-track"><div class="attr-bar-fill" :style="'width:' + Math.min(100, (val / (playerAttributes.max_attribute_value || 20)) * 100) + '%'"></div></div>
+                          <div class="attr-bar-track"><div class="attr-bar-fill" :style="'width:' + Math.min(100, (val / (playerAttributes?.max_attribute_value || 20)) * 100) + '%'"></div></div>
                           <span class="attr-value" x-text="val"></span>
                         </div>
                       </template>
                     </div>
-                    <template x-if="playerAttributes.points_available > 0">
+                    <template x-if="playerAttributes?.points_available > 0">
                       <form class="attr-set-form" @submit.prevent="setPlayerAttribute()">
                         <input x-model="attributeForm.attribute" placeholder="attribute" class="attr-input" />
-                        <input x-model.number="attributeForm.value" type="number" min="0" :max="playerAttributes.max_attribute_value || 20" class="attr-input attr-input-num" />
+                        <input x-model.number="attributeForm.value" type="number" min="0" :max="playerAttributes?.max_attribute_value || 20" class="attr-input attr-input-num" />
                         <button type="submit">Set</button>
                       </form>
                     </template>
@@ -1359,27 +1361,27 @@
                 </template>
                 <template x-if="playerAttributes">
                   <div class="level-up-row">
-                    <span class="xp-needed" x-text="'Next level: ' + (playerAttributes.xp_needed_for_next || '?') + ' XP'"></span>
-                    <button type="button" @click="levelUpPlayer()" :disabled="!playerAttributes || (playerAttributes.xp || 0) < (playerAttributes.xp_needed_for_next || 999999)" class="btn-level-up">Level Up</button>
+                    <span class="xp-needed" x-text="'Next level: ' + (playerAttributes?.xp_needed_for_next || '?') + ' XP'"></span>
+                    <button type="button" @click="levelUpPlayer()" :disabled="!playerAttributes || (playerAttributes?.xp || 0) < (playerAttributes?.xp_needed_for_next || 999999)" class="btn-level-up">Level Up</button>
                   </div>
                 </template>
-                <template x-if="playerData.state && playerData.state.room_description">
-                  <p class="player-room-desc" x-text="playerData.state.room_description"></p>
+                <template x-if="playerData?.state?.room_description">
+                  <p class="player-room-desc" x-text="playerData?.state?.room_description"></p>
                 </template>
-                <template x-if="playerData.inventory && playerData.inventory.length > 0">
+                <template x-if="playerData?.inventory?.length > 0">
                   <div class="player-inventory">
                     <strong>Inventory</strong>
                     <ul>
-                      <template x-for="item in playerData.inventory" :key="item">
+                      <template x-for="(item, idx) in (playerData?.inventory || [])" :key="idx">
                         <li x-text="typeof item === 'string' ? item : (item.name || item.item || JSON.stringify(item))"></li>
                       </template>
                     </ul>
                   </div>
                 </template>
-                <template x-if="playerData.state && playerData.state.pending_avatar_url">
+                <template x-if="playerData?.state?.pending_avatar_url">
                   <div class="pending-avatar">
                     <p>Pending Avatar:</p>
-                    <img :src="playerData.state.pending_avatar_url" :alt="'Pending avatar'" class="player-avatar pending" />
+                    <img :src="playerData?.state?.pending_avatar_url" :alt="'Pending avatar'" class="player-avatar pending" />
                     <div class="inline-actions">
                       <button type="button" @click="acceptPendingAvatar()">Accept</button>
                       <button type="button" @click="declinePendingAvatar()">Decline</button>
@@ -1487,25 +1489,42 @@
                 <h4>Campaign Flags</h4>
                 <label class="flag-toggle">
                   <input type="checkbox" :checked="campaignFlags.guardrails" @change="setCampaignFlag('guardrails', $event.target.checked)" :disabled="!selectedCampaignId" />
-                  <span>Guardrails <small>(content safety)</small></span>
+                  <span>Guardrails</span>
                 </label>
+                <small class="flag-hint">Filters graphic violence and sexual content from narration. Disable for darker or mature-themed campaigns.</small>
+
                 <label class="flag-toggle">
                   <input type="checkbox" :checked="campaignFlags.on_rails" @change="setCampaignFlag('on_rails', $event.target.checked)" :disabled="!selectedCampaignId" />
-                  <span>On Rails <small>(story outline progression)</small></span>
+                  <span>On Rails</span>
                 </label>
+                <small class="flag-hint">Narrator follows a chapter-by-chapter plot outline generated during setup. Disable for full sandbox.</small>
+
                 <label class="flag-toggle">
                   <input type="checkbox" :checked="campaignFlags.timed_events" @change="setCampaignFlag('timed_events', $event.target.checked)" :disabled="!selectedCampaignId" />
                   <span>Timed Events</span>
                 </label>
+                <small class="flag-hint">Lets the narrator schedule real-time countdowns. If you don't act before one expires, the event fires on its own (e.g. a guard patrol arriving, a bomb detonating).</small>
+
                 <label>
                   Difficulty
                   <select :value="campaignFlags.difficulty" @change="setCampaignFlag('difficulty', $event.target.value)" :disabled="!selectedCampaignId">
+                    <option value="story">Story</option>
                     <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
                     <option value="normal">Normal</option>
                     <option value="hard">Hard</option>
-                    <option value="brutal">Brutal</option>
+                    <option value="impossible">Impossible</option>
                   </select>
                 </label>
+                <small class="flag-hint" x-text="{
+                  story: 'Dream mode. Defaults to success, softens failure states, keeps progress flowing even after weak or vague actions.',
+                  easy: 'Forgiving and player-favoring. Allows broad creative actions, mild consequences, helpful affordances when underspecified.',
+                  medium: 'Balanced challenge with lenient interpretation. Plausible actions required, but frequent partial successes and recovery paths.',
+                  normal: 'Standard difficulty. Fair consequences, reasonable challenge.',
+                  hard: 'Demands strong grounding. Enforces constraints, resources, and consequences; failed or risky actions cost something.',
+                  impossible: 'Unforgiving. Resources scarce, NPCs self-interested, mistakes have lasting consequences. Movement restricted to listed exits.',
+                }[campaignFlags.difficulty || 'normal'] || ''"></small>
+
                 <label>
                   Speed Multiplier
                   <div style="display: flex; align-items: center; gap: 0.5rem;">
@@ -1513,13 +1532,15 @@
                     <span x-text="Number(campaignFlags.speed_multiplier || 1).toFixed(1)" style="min-width:2rem; text-align:right;"></span>
                   </div>
                 </label>
+                <small class="flag-hint">Scales how many in-game hours pass per turn. Crank it up for travel montages, lower it for tense scenes.</small>
               </div>
             </div>
 
             <!-- Narrator sub-tab -->
             <div x-show="campaignConfigTab === 'narrator'" class="stack">
               <div class="campaign-persona">
-                <h4>Narrator Persona</h4>
+                <h4>Character Persona</h4>
+                <small class="flag-hint" style="margin-left:0;">Describes your character's demeanour, voice, and visible style. The narrator and NPCs use this to portray how others perceive and react to you. Max 140 characters, capped at 18 words in prompts.</small>
                 <template x-if="campaignPersona">
                   <div>
                     <p class="persona-text" x-text="campaignPersona"></p>
@@ -1527,10 +1548,10 @@
                   </div>
                 </template>
                 <template x-if="!campaignPersona">
-                  <p class="muted">Using default narrator persona.</p>
+                  <p class="muted">Using default persona.</p>
                 </template>
                 <form class="stack compact" @submit.prevent="setCampaignPersona()" style="margin-top:0.5rem;">
-                  <textarea x-model="personaEditText" rows="3" placeholder="Describe the narrator voice (max 140 chars)" maxlength="140"></textarea>
+                  <textarea x-model="personaEditText" rows="3" placeholder="e.g. A wiry, fast-talking rogue with a crooked grin and ink-stained fingers" maxlength="140"></textarea>
                   <div style="display:flex; gap:0.5rem; align-items:center;">
                     <button type="submit" :disabled="!selectedCampaignId || !personaEditText.trim()">Save Persona</button>
                     <small x-text="(personaEditText || '').length + '/140'"></small>
@@ -1541,6 +1562,7 @@
               <template x-if="Object.keys(literaryStyles).length > 0">
                 <div class="literary-styles-panel">
                   <h4>Literary Styles</h4>
+                  <small class="flag-hint" style="margin-left:0;">Genre profiles extracted from source material during setup. These guide the narrator's prose style. Read-only.</small>
                   <div class="literary-styles-list">
                     <template x-for="[name, profile] in Object.entries(literaryStyles)" :key="name">
                       <details class="literary-style-item">
@@ -1555,6 +1577,7 @@
               <template x-if="Object.keys(sceneImages).length > 0">
                 <div class="scene-images-panel">
                   <h4>Scene Images</h4>
+                  <small class="flag-hint" style="margin-left:0;">Generated artwork cached per room. These are created when the narrator provides image prompts during play.</small>
                   <div class="scene-images-grid">
                     <template x-for="[room, url] in Object.entries(sceneImages)" :key="room">
                       <div class="scene-image-card">
@@ -1569,6 +1592,7 @@
 
             <!-- Source Material sub-tab -->
             <div x-show="campaignConfigTab === 'source'" class="stack">
+              <p class="tab-explainer">The narrator already has access to turn history and in-scope memories. Source material extends that with external lore &mdash; world-building docs, rulebooks, or backstory you paste in. The engine chunks and indexes the text so the narrator can retrieve relevant passages during play.</p>
               <div class="source-material">
                 <h4>Source Material</h4>
                 <button type="button" @click="loadSourceMaterials()" :disabled="!selectedCampaignId" style="margin-bottom:0.35rem;">Refresh</button>
@@ -1588,6 +1612,7 @@
 
                 <details class="source-upload-details">
                   <summary>Upload Source Material</summary>
+                  <small class="flag-hint" style="margin-left:0;">Stores text verbatim as indexed chunks. Best for factual references, stat blocks, and short lore entries. Format matters: <em>Rulebook</em> stores as retrievable key-value facts, <em>Story</em> preserves narrative flow, <em>Generic</em> is a catch-all.</small>
                   <form class="stack compact" @submit.prevent="ingestSourceMaterial()">
                     <label>Label (optional)<input x-model="sourceUpload.label" placeholder="My Rulebook" /></label>
                     <label>
@@ -1608,6 +1633,7 @@
 
                 <details class="source-upload-details">
                   <summary>Search Source Material</summary>
+                  <small class="flag-hint" style="margin-left:0;">Test what the narrator will actually retrieve for a given query. Useful for checking that your uploaded material is indexed and reachable.</small>
                   <form class="stack compact" @submit.prevent="searchSourceMaterial()">
                     <div class="source-search-row">
                       <input x-model="sourceSearchQuery" placeholder="Search query..." class="source-search-input" />
@@ -1632,6 +1658,7 @@
 
                 <details class="source-upload-details">
                   <summary>Upload with Digest</summary>
+                  <small class="flag-hint" style="margin-left:0;">Runs the text through the LLM to produce a condensed narrative summary before indexing. Better recall for long-form prose, but costs an extra generation pass. For story-format docs, also extracts literary style profiles. Rulebook-format docs skip the digest and store chunks directly.</small>
                   <form class="stack compact" @submit.prevent="ingestWithDigest()">
                     <label>Label<input x-model="digestUpload.label" placeholder="Story of the Northern Realms" required /></label>
                     <label>
@@ -1672,6 +1699,7 @@
 
             <!-- Rules sub-tab -->
             <div x-show="campaignConfigTab === 'rules'" class="stack">
+              <p class="tab-explainer">Rule <em>keys</em> are always listed to the narrator, but the full rule text is only loaded when the narrator explicitly requests it by key. This keeps the context window lean while still letting you define hard constraints. Use uppercase keys with hyphens. <strong>Add</strong> fails if the key already exists; <strong>Upsert</strong> overwrites it. Good keys are self-descriptive so the narrator knows when to request them (e.g. MAGIC-SYSTEM, COMBAT-RULES, FACTION-POLITICS).</p>
               <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
                 <button type="button" @click="loadCampaignRules()" :disabled="!selectedCampaignId">Refresh</button>
                 <input x-model="campaignRuleLookupKey" placeholder="Rule key" />
@@ -1710,7 +1738,7 @@
 
       <!-- ---- New Campaign Wizard Modal ---- -->
       <template x-if="$store.app.modal === 'newCampaign'">
-        <div class="modal-panel modal-panel--md">
+        <div class="modal-panel modal-panel--lg">
           <div class="modal-header">
             <h3>New Campaign</h3>
             <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
@@ -1719,11 +1747,11 @@
 
             <!-- Step indicator -->
             <div class="wizard-step-indicator">
-              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'info', done: ['creating','setup','complete'].includes(newCampaignWizard.step) }">1</span>
-              <span class="wizard-step-line" :class="{ done: ['creating','setup','complete'].includes(newCampaignWizard.step) }"></span>
-              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'creating', done: ['setup','complete'].includes(newCampaignWizard.step) }">2</span>
-              <span class="wizard-step-line" :class="{ done: ['setup','complete'].includes(newCampaignWizard.step) }"></span>
-              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'setup', done: newCampaignWizard.step === 'complete' }">3</span>
+              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'info', done: ['creating','setup','finalizing','complete'].includes(newCampaignWizard.step) }">1</span>
+              <span class="wizard-step-line" :class="{ done: ['creating','setup','finalizing','complete'].includes(newCampaignWizard.step) }"></span>
+              <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'creating', done: ['setup','finalizing','complete'].includes(newCampaignWizard.step) }">2</span>
+              <span class="wizard-step-line" :class="{ done: ['setup','finalizing','complete'].includes(newCampaignWizard.step) }"></span>
+              <span class="wizard-step-dot" :class="{ active: ['setup','finalizing'].includes(newCampaignWizard.step), done: newCampaignWizard.step === 'complete' }">3</span>
               <span class="wizard-step-line" :class="{ done: newCampaignWizard.step === 'complete' }"></span>
               <span class="wizard-step-dot" :class="{ active: newCampaignWizard.step === 'complete' }">4</span>
             </div>
@@ -1779,7 +1807,7 @@
                 </div>
                 <div class="wizard-setup-conversation" id="wizard-conversation">
                   <template x-for="(msg, idx) in newCampaignWizard.setupMessages" :key="idx">
-                    <div class="wizard-msg" :class="msg.role === 'narrator' ? 'wizard-msg-narrator' : 'wizard-msg-player'" x-text="msg.text"></div>
+                    <div class="wizard-msg" :class="msg.role === 'narrator' ? 'wizard-msg-narrator' : 'wizard-msg-player'" x-html="renderSimpleMarkdown(msg.text)"></div>
                   </template>
                 </div>
                 <form class="setup-message-form" @submit.prevent="wizardSendSetupMessage()">
@@ -1789,6 +1817,14 @@
                     <span x-show="newCampaignWizard.setupSending">...</span>
                   </button>
                 </form>
+              </div>
+            </template>
+
+            <!-- Step 3b: Finalizing -->
+            <template x-if="newCampaignWizard.step === 'finalizing'">
+              <div class="wizard-creating">
+                <div class="spinner"></div>
+                <p>Building your world...</p>
               </div>
             </template>
 

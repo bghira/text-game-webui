@@ -674,6 +674,13 @@ button:disabled {
   border-radius: var(--radius-sm);
   padding: 0.65rem;
   font-size: 0.84rem;
+  text-align: center;
+}
+
+.pending-avatar .player-avatar.pending {
+  width: 50%;
+  height: auto;
+  border-radius: var(--radius-md);
 }
 
 .pending-avatar p {
@@ -2396,6 +2403,25 @@ details summary {
   font-weight: 500;
 }
 
+.tab-explainer {
+  color: #7a8a80;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  margin: 0 0 0.6rem 0;
+  padding: 0.45rem 0.6rem;
+  background: #f5f2ec;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid #c8c2b6;
+}
+
+.flag-hint {
+  display: block;
+  color: #8a9590;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  margin: -0.15rem 0 0.55rem 1.65rem;
+}
+
 /* ---- New Campaign Wizard ---- */
 
 .wizard-step-indicator {
@@ -2472,7 +2498,8 @@ details summary {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  max-height: 400px;
+  min-height: 120px;
+  max-height: 55vh;
   overflow-y: auto;
   margin-bottom: 0.75rem;
   padding: 0.5rem;
