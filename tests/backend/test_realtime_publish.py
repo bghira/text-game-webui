@@ -13,11 +13,13 @@ def _create_campaign(client, name="Realtime Test", actor_id="dale-denton"):
     return res.json()["campaign"]
 
 
-def _published_types(mock: AsyncMock) -> list[str]:
+def _published_types(mock: AsyncMock, *, exclude: frozenset[str] = frozenset()) -> list[str]:
     types: list[str] = []
     for call in mock.await_args_list:
         payload = call.args[1]
-        types.append(str(payload.get("type")))
+        t = str(payload.get("type"))
+        if t not in exclude:
+            types.append(t)
     return types
 
 
@@ -148,7 +150,7 @@ def test_stream_turn_publishes_realtime_events(client):
     assert res.status_code == 200
 
     # Even though it's streaming, realtime events must be published
-    assert _published_types(publish) == ["turn", "timers"]
+    assert _published_types(publish, exclude=frozenset({"turn_progress"})) == ["turn", "timers"]
 
 
 def test_stream_turn_publishes_media_event_for_look(client):
@@ -164,7 +166,7 @@ def test_stream_turn_publishes_media_event_for_look(client):
     )
     assert res.status_code == 200
 
-    assert _published_types(publish) == ["turn", "media", "timers"]
+    assert _published_types(publish, exclude=frozenset({"turn_progress"})) == ["turn", "media", "timers"]
 
 
 def test_web_timer_effects_port_publishes_timed_event():

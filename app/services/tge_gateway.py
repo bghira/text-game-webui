@@ -310,7 +310,7 @@ class DeterministicLLM:
             "date_label": f"Day {day}, {period.title()}",
         }
 
-    async def complete_turn(self, context) -> LLMTurnOutput:
+    async def complete_turn(self, context, *, progress=None) -> LLMTurnOutput:
         action = (context.action or "").strip()
         lowered = action.lower()
         current_time = context.campaign_state.get("game_time", {}) if isinstance(context.campaign_state, dict) else {}
@@ -2758,13 +2758,41 @@ class TextGameEngineGateway(EngineGateway):
 
         yield {"event": "phase", "data": {"phase": "generating"}}
 
-        narration = await self._emulator.play_action(
-            campaign_id=campaign_id,
-            actor_id=request.actor_id,
-            action=request.action,
-            session_id=session_id,
-            manage_claim=True,
-        )
+        progress_queue: asyncio.Queue = asyncio.Queue()
+        _SENTINEL = None
+
+        async def on_progress(phase, detail=None):
+            await progress_queue.put({"event": "phase", "data": {"phase": phase, **(detail or {})}})
+
+        result_box: dict = {"narration": None, "error": None}
+
+        async def _run():
+            try:
+                result_box["narration"] = await self._emulator.play_action(
+                    campaign_id=campaign_id,
+                    actor_id=request.actor_id,
+                    action=request.action,
+                    session_id=session_id,
+                    manage_claim=True,
+                    progress=on_progress,
+                )
+            except Exception as exc:
+                result_box["error"] = exc
+            finally:
+                await progress_queue.put(_SENTINEL)
+
+        asyncio.create_task(_run())
+
+        while True:
+            event = await progress_queue.get()
+            if event is _SENTINEL:
+                break
+            yield event
+
+        if result_box["error"] is not None:
+            raise result_box["error"]
+
+        narration = result_box["narration"]
         notices = self._emulator.pop_turn_ephemeral_notices(
             campaign_id,
             request.actor_id,

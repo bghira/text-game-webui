@@ -2045,6 +2045,9 @@
             this.loadTimers();
             this.loadRecentTurns();
           }
+          if (payload.type === "turn_progress" && payload.payload && this.submitting) {
+            this.statusMessage = this._turnProgressLabel(payload.payload.phase, payload.payload);
+          }
         };
         this.socket.onerror = () => {
           this.diagnostics.ws_state = "error";
@@ -2075,6 +2078,42 @@
           const stream = document.getElementById("turn-stream");
           if (stream) stream.scrollTop = stream.scrollHeight;
         });
+      },
+
+      _turnProgressLabel(phase, detail) {
+        const labels = {
+          starting: "Starting turn...",
+          thinking: "Thinking...",
+          generating: "Generating...",
+          writing: "Writing response...",
+          narrating: "Streaming narration...",
+          refining: "Refining response...",
+        };
+        if (phase === "tool_call" && detail && detail.tool) {
+          const toolLabels = {
+            memory_search: "Searching memories...",
+            memory_terms: "Browsing memory index...",
+            memory_turn: "Recalling turn details...",
+            memory_store: "Storing memory...",
+            source_browse: "Browsing sources...",
+            sms_list: "Checking messages...",
+            sms_read: "Reading messages...",
+            sms_write: "Sending message...",
+            sms_schedule: "Scheduling message...",
+            story_outline: "Reviewing story outline...",
+            plot_plan: "Planning plot...",
+            chapter_plan: "Planning chapter...",
+            consequence_log: "Logging consequences...",
+            recent_turns: "Reviewing recent turns...",
+            autobiography_append: "Updating character bio...",
+            autobiography_update: "Updating character bio...",
+            autobiography_compress: "Compressing character bio...",
+            name_generate: "Generating names...",
+            communication_rules: "Checking communication rules...",
+          };
+          return toolLabels[detail.tool] || `Using ${detail.tool.replace(/_/g, " ")}...`;
+        }
+        return labels[phase] || (phase.charAt(0).toUpperCase() + phase.slice(1).replace(/_/g, " ") + "...");
       },
 
       _handleStreamEvent(eventType, data, streamEntryId) {
