@@ -1,17 +1,16 @@
 # text-game-webui
 
-Web UI shell for `text-game-engine`.
+Web UI shell for [bghira/text-game-engine](https://github.com/bghira/text-game-engine)
+
+<img width="440" alt="image" src="https://github.com/user-attachments/assets/35358b9d-b064-4322-bd03-2e380b8499d0" />
+
 
 ## Current status
-- FastAPI app with server-rendered UI (`Jinja2` + `HTMX` + `Alpine`).
-- Adapter-driven backend surface.
-- Runtime-selectable gateway backend:
-  - `inmemory` (default)
-  - `tge` (uses local `text-game-engine` installation + SQLite)
-- Realtime campaign stream via websocket (`/ws/campaigns/{campaign_id}`).
-- Inspector surfaces for sessions/map/timers/calendar/roster (including upsert/remove actions)/player state+inventory/media status+avatar actions/memory/SMS/debug snapshot.
+- Multiple LLM backends (Claude Code, Codex, OpenAI API, Ollama)
 - Image generation for scene images and character avatars via local Diffusers daemon or external ComfyUI server.
 - Campaign creation with document upload (`.txt`/`.md` drag-and-drop), automatic source-material digest, and setup wizard auto-start.
+  - Allows uploading a TV show or movie episode script or something to create an interactive game from it
+- Multiplayer capable, but no security / auth
 - State restoration: selected campaign and session persist to `localStorage` and restore on refresh, with turn stream hydrated from history.
 - Runtime checks endpoint for gateway/database/LLM probe status (`GET /api/runtime/checks`).
   - Supports explicit probe override: `GET /api/runtime/checks?probe_llm=true`.
@@ -19,15 +18,18 @@ Web UI shell for `text-game-engine`.
 ## Local run
 ```bash
 git clone https://github.com/bghira/text-game-webui
+git clone https://github.com/bghira/text-game-engine
 cd text-game-webui
 python -m venv .venv
 source .venv/bin/activate
+pip install -e '../text-game-engine[cuda,image]' # or rocm/apple instead of cuda for AMD/Apple
 pip install -e '.[dev]'
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
-
-## Use text-game-engine backend
-Install `text-game-engine` into the same environment and set backend env vars:
+<details>
+<summary>
+  To configure via backend env vars
+</summary>
 
 ```bash
 pip install -e ../text-game-engine
@@ -35,8 +37,12 @@ export TEXT_GAME_WEBUI_GATEWAY_BACKEND=tge
 export TEXT_GAME_WEBUI_TGE_DATABASE_URL='sqlite+pysqlite:///./text-game-webui.db'
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
 ```
+</details>
 
+<details>
+<summary>
 Optional: use an OpenAI-compatible model endpoint for full model-driven turns/tool calls:
+</summary>
 
 ```bash
 export TEXT_GAME_WEBUI_TGE_COMPLETION_MODE=openai
@@ -50,8 +56,12 @@ export TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS=8
 # one-off manual probe
 curl 'http://127.0.0.1:8080/api/runtime/checks?probe_llm=true'
 ```
+</details>
 
+<details>
+<summary>
 Optional: use native Ollama for full model-driven turns/tool calls:
+</summary>
 
 ```bash
 export TEXT_GAME_WEBUI_TGE_COMPLETION_MODE=ollama
@@ -66,6 +76,7 @@ export TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS=8
 # one-off manual probe
 curl 'http://127.0.0.1:8080/api/runtime/checks?probe_llm=true'
 ```
+</details>
 
 The runtime panel will show `Mode: ollama`, the active model, base URL, and configured keep-alive value.
 
