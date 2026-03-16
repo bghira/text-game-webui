@@ -15,9 +15,57 @@
     return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
   }
 
+  /**
+   * Replace Discord-style timestamps (<t:EPOCH:R>, <t:EPOCH:F>, <t:EPOCH>)
+   * with human-readable text.  :R → relative countdown, :F → full date,
+   * bare → short date-time.
+   */
+  /**
+   * Lightweight markdown→HTML: **bold**, *italic*, newlines→<br>.
+   * Input is escaped first to avoid XSS when used with x-html.
+   */
+  function renderSimpleMarkdown(text) {
+    if (!text) return "";
+    // Escape HTML entities first
+    let s = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    // **bold**
+    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    // *italic*
+    s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
+    // newlines
+    s = s.replace(/\n/g, "<br>");
+    return s;
+  }
+
+  function renderDiscordTimestamps(text) {
+    return text.replace(/<t:(\d+)(?::([a-zA-Z]))?>/g, (_match, epoch, style) => {
+      const date = new Date(Number(epoch) * 1000);
+      if (style === "R") {
+        const diffMs = date.getTime() - Date.now();
+        const absSec = Math.abs(Math.round(diffMs / 1000));
+        const mins = Math.floor(absSec / 60);
+        const secs = absSec % 60;
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        let label = "";
+        if (h > 0) label = `${h}h ${m}m`;
+        else if (m > 0) label = `${m}m ${secs}s`;
+        else label = `${secs}s`;
+        return diffMs > 0 ? `in ${label}` : `${label} ago`;
+      }
+      if (style === "F") {
+        return date.toLocaleString();
+      }
+      return date.toLocaleString();
+    });
+  }
+
   function normalizeTurnNarration(payload) {
     if (payload.narration && payload.narration.trim().length > 0) {
-      return stripTrailingInventory(payload.narration);
+      return renderDiscordTimestamps(stripTrailingInventory(payload.narration));
     }
     if (Object.keys(payload.state_update || {}).length > 0 || Object.keys(payload.player_state_update || {}).length > 0) {
       return "[No narration returned. State updates were applied.]";
@@ -78,6 +126,7 @@
       submitting: false,
       _submittingTurn: false,
       _streamingNarration: "",
+      imageGenerating: false,
 
       /* Settings panel state */
       ollamaModels: [],
@@ -383,7 +432,7 @@
               id: counter,
               type: turn.kind === "player" ? "player" : "narrator",
               at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
-              text: turn.content || "[No content]",
+              text: renderDiscordTimestamps(stripTrailingInventory(turn.content || "[No content]")),
               meta: {},
             };
             if (meta.game_time) {
@@ -651,9 +700,14 @@
 
       async generateImage(entry) {
         if (entry._imgGenerating) return;
+        if (this.submitting) {
+          this.statusMessage = "Wait for the current turn to finish before generating images.";
+          return;
+        }
         entry._imgGenerating = true;
         entry._imgError = "";
         entry._imgUrl = "";
+        this.imageGenerating = true;
         try {
           const result = await this.api("/api/image/generate", {
             method: "POST",
@@ -663,6 +717,7 @@
           if (!jobId) {
             entry._imgError = result.detail || "No job ID returned.";
             entry._imgGenerating = false;
+            this.imageGenerating = false;
             return;
           }
           // Poll for completion
@@ -672,11 +727,13 @@
             if (status.status === "completed") {
               entry._imgUrl = status.image_url || "";
               entry._imgGenerating = false;
+              this.imageGenerating = false;
               return;
             }
             if (status.status === "failed" || status.status === "interrupted") {
               entry._imgError = status.error || status.status;
               entry._imgGenerating = false;
+              this.imageGenerating = false;
               return;
             }
           }
@@ -685,6 +742,7 @@
           entry._imgError = String(err);
         }
         entry._imgGenerating = false;
+        this.imageGenerating = false;
       },
 
       resetError() {
@@ -1327,8 +1385,13 @@
       async generateAvatar() {
         const prompt = (this.avatarGenPrompt || "").trim();
         if (!prompt || !this.selectedCampaignId) return;
+        if (this.submitting) {
+          this.avatarGenStatus = "Wait for the current turn to finish.";
+          return;
+        }
         const actorId = this.resolveMediaActorId();
         this.avatarGenBusy = true;
+        this.imageGenerating = true;
         this.avatarGenStatus = "Submitting...";
         try {
           // 1. Start generation
@@ -1340,6 +1403,7 @@
           if (!jobId) {
             this.avatarGenStatus = gen.detail || "No job ID returned.";
             this.avatarGenBusy = false;
+            this.imageGenerating = false;
             return;
           }
           // 2. Poll for completion
@@ -1355,12 +1419,14 @@
             if (status.status === "failed" || status.status === "interrupted") {
               this.avatarGenStatus = "Generation failed: " + (status.error || status.status);
               this.avatarGenBusy = false;
+              this.imageGenerating = false;
               return;
             }
           }
           if (!imageUrl) {
             this.avatarGenStatus = "Generation timed out.";
             this.avatarGenBusy = false;
+            this.imageGenerating = false;
             return;
           }
           // 3. Commit as pending avatar
@@ -1376,6 +1442,7 @@
           this.avatarGenStatus = "Error: " + String(err);
         }
         this.avatarGenBusy = false;
+        this.imageGenerating = false;
       },
 
       /* ---- Scheduled SMS ---- */
@@ -1741,8 +1808,8 @@
           this.turnForm.actor_id = selected.actor_id;
         }
         if (this.turnForm.actor_id) {
-          this.mediaActions.actor_id = this.mediaActions.actor_id || this.turnForm.actor_id;
-          this.rosterActions.slug = this.rosterActions.slug || this.turnForm.actor_id;
+          this.mediaActions.actor_id = this.turnForm.actor_id;
+          this.rosterActions.slug = this.turnForm.actor_id;
           this.rosterActions.player = true;
         }
         await Promise.all([
@@ -1871,6 +1938,14 @@
             this.pushStream("roster", formatJson(payload.payload));
             this.rosterText = formatJson(payload.payload);
           }
+          if (payload.type === "timed_event" && payload.payload) {
+            const narration = payload.payload.narration || "";
+            if (narration) {
+              this.pushStream("narrator", renderDiscordTimestamps(stripTrailingInventory(narration)), { timed_event: true });
+            }
+            this.loadTimers();
+            this.loadRecentTurns();
+          }
         };
         this.socket.onerror = () => {
           this.diagnostics.ws_state = "error";
@@ -1974,6 +2049,10 @@
           return;
         }
         if (this.submitting) return;
+        if (this.imageGenerating) {
+          this.errorMessage = "Wait for image generation to finish before submitting a turn.";
+          return;
+        }
         this.submitting = true;
         this._submittingTurn = true;
         this.statusMessage = "Submitting turn...";
@@ -2120,6 +2199,9 @@
             this.loadStoryState(),
             this.loadSceneImages(),
           ]);
+          /* Rebuild the turn stream from server history to recover any
+             entries lost during async side-effects while in-flight. */
+          this.populateTurnStreamFromHistory();
           this.statusMessage = "Turn submitted.";
         } catch (error) {
           this.errorMessage = String(error);
@@ -2729,6 +2811,7 @@
             w.setupMessages.push({ role: "narrator", text: w.setupResponse });
           }
           w.step = "setup";
+          this._scrollWizardConversation();
         } catch (error) {
           this.errorMessage = String(error);
           w.step = "info";
@@ -2742,6 +2825,7 @@
         const userMsg = w.setupMessage.trim();
         w.setupMessages.push({ role: "player", text: userMsg });
         w.setupMessage = "";
+        this._scrollWizardConversation();
         try {
           const result = await this.api(`/api/campaigns/${w.campaignId}/setup/message`, {
             method: "POST",
@@ -2754,10 +2838,12 @@
           w.setupPhase = result.setup_phase || null;
           if (w.setupResponse) {
             w.setupMessages.push({ role: "narrator", text: w.setupResponse });
+            this._scrollWizardConversation();
           }
           if (result.completed) {
-            w.step = "complete";
+            w.step = "finalizing";
             await this._reloadCampaignData();
+            w.step = "complete";
           }
         } catch (error) {
           this.errorMessage = String(error);
@@ -2799,6 +2885,28 @@
           throw new Error("Actor id is required for avatar actions.");
         }
         return actor;
+      },
+
+      renderSimpleMarkdown(text) {
+        return renderSimpleMarkdown(text);
+      },
+
+      _scrollWizardConversation() {
+        this.$nextTick(() => {
+          const el = document.getElementById("wizard-conversation");
+          if (el) el.scrollTop = el.scrollHeight;
+        });
+      },
+
+      resolveCharacterName(fallback) {
+        const cn = this.playerData?.state?.character_name;
+        if (!cn) return fallback || this.turnForm.actor_id || "Unknown";
+        if (typeof cn === "object" && cn.name) return cn.name;
+        const s = String(cn);
+        // Handle Python dict repr like "{'name': 'Samwise Gamgee', 'role': '...'}"
+        const m = s.match(/'name'\s*:\s*'([^']+)'/);
+        if (m) return m[1];
+        return s;
       },
 
       async acceptPendingAvatar() {

@@ -30,10 +30,13 @@ try:
     )
     from text_game_engine.persistence.sqlalchemy.models import (
         Campaign,
+        Embedding,
+        InflightTurn,
         MediaRef,
         OutboxEvent,
         Player,
         Session as GameSession,
+        Snapshot,
         Timer,
         Turn,
     )
@@ -3126,6 +3129,10 @@ class TextGameEngineGateway(EngineGateway):
         state = self._parse_json(player.state_json, {})
         if not isinstance(state, dict):
             state = {}
+        # Normalise character_name if it was stored as a dict
+        _cn = state.get("character_name")
+        if isinstance(_cn, dict):
+            state["character_name"] = str(_cn.get("name") or "").strip() or str(_cn)
         inventory = state.get("inventory", [])
         if not isinstance(inventory, list):
             inventory = []
@@ -4240,12 +4247,15 @@ class TextGameEngineGateway(EngineGateway):
                 raise KeyError(f"Unknown campaign: {campaign_id}")
             name = campaign.name
             # Delete all related data
+            session.query(Embedding).filter(Embedding.campaign_id == campaign_id).delete()
+            session.query(Snapshot).filter(Snapshot.campaign_id == campaign_id).delete()
             session.query(Turn).filter(Turn.campaign_id == campaign_id).delete()
             session.query(Timer).filter(Timer.campaign_id == campaign_id).delete()
-            session.query(GameSession).filter(GameSession.campaign_id == campaign_id).delete()
-            session.query(Player).filter(Player.campaign_id == campaign_id).delete()
-            session.query(MediaRef).filter(MediaRef.campaign_id == campaign_id).delete()
+            session.query(InflightTurn).filter(InflightTurn.campaign_id == campaign_id).delete()
             session.query(OutboxEvent).filter(OutboxEvent.campaign_id == campaign_id).delete()
+            session.query(GameSession).filter(GameSession.campaign_id == campaign_id).delete()
+            session.query(MediaRef).filter(MediaRef.campaign_id == campaign_id).delete()
+            session.query(Player).filter(Player.campaign_id == campaign_id).delete()
             session.delete(campaign)
             session.commit()
         return {"ok": True, "deleted_campaign_id": campaign_id, "name": name}
@@ -4257,3 +4267,11 @@ class TextGameEngineGateway(EngineGateway):
         usage site before calling into it.
         """
         self._emulator._media_port = media_port
+
+    def set_timer_effects_port(self, port: object) -> None:
+        """Inject a TimerEffectsPort implementation after construction.
+
+        Safe because ZorkEmulator null-checks ``_timer_effects_port``
+        before calling into it.
+        """
+        self._emulator._timer_effects_port = port

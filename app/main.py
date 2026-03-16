@@ -128,6 +128,41 @@ def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
             await _autostart()
 
 
+class WebTimerEffectsPort:
+    """Implements TimerEffectsPort by publishing events through the RealtimeHub."""
+
+    def __init__(self, realtime_hub: RealtimeHub) -> None:
+        self._hub = realtime_hub
+
+    async def edit_timer_line(
+        self,
+        channel_id: str,
+        message_id: str,
+        replacement: str,
+    ) -> None:
+        # No editable messages in the web UI — ignore.
+        pass
+
+    async def emit_timed_event(
+        self,
+        campaign_id: str,
+        channel_id: str,
+        actor_id: str | None,
+        narration: str,
+    ) -> None:
+        await self._hub.publish(
+            campaign_id,
+            {
+                "type": "timed_event",
+                "actor_id": actor_id,
+                "payload": {
+                    "narration": narration,
+                    "actor_id": actor_id,
+                },
+            },
+        )
+
+
 def create_app() -> FastAPI:
     app_dir = Path(__file__).resolve().parent
     settings = Settings()
@@ -145,6 +180,12 @@ def create_app() -> FastAPI:
 
     # Initialize media subsystem (mounts /generated/ and wires media_port)
     _init_media(app, settings, app_dir)
+
+    # Wire up timer effects port so timed event results are pushed via WebSocket
+    if hasattr(gateway, "set_timer_effects_port"):
+        timer_port = WebTimerEffectsPort(app.state.realtime)
+        gateway.set_timer_effects_port(timer_port)
+        log.info("Timer effects port injected into gateway")
 
     app.include_router(api_router)
     app.include_router(ws_router)
