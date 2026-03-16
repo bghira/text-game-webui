@@ -13,6 +13,9 @@ class RealtimeSubscription:
 
 
 class RealtimeHub:
+    # Event types that carry session/actor scope and must honour visibility rules.
+    _SESSION_SCOPED_TYPES: frozenset[str] = frozenset({"turn", "media", "timers", "turn_progress"})
+
     def __init__(self) -> None:
         self._subs: dict[str, set[RealtimeSubscription]] = defaultdict(set)
 
@@ -73,10 +76,10 @@ class RealtimeHub:
         if sub.session_id:
             if event_session_id is not None and event_session_id != sub.session_id:
                 return False
-        elif event_session_id is not None and payload_type in {"turn", "media", "timers"}:
+        elif event_session_id is not None and payload_type in cls._SESSION_SCOPED_TYPES:
             return False
 
-        if payload_type not in {"turn", "media", "timers"}:
+        if payload_type not in cls._SESSION_SCOPED_TYPES:
             return True
 
         visibility = cls._turn_visibility_for_event(payload)

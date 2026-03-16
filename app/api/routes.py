@@ -297,7 +297,12 @@ async def submit_turn_stream(
                 try:
                     await request.app.state.realtime.publish(
                         campaign_id,
-                        {"type": "turn_progress", "session_id": payload.session_id, "payload": event_data},
+                        {
+                            "type": "turn_progress",
+                            "session_id": payload.session_id,
+                            "actor_id": payload.actor_id,
+                            "payload": event_data,
+                        },
                     )
                 except Exception:
                     pass  # best-effort

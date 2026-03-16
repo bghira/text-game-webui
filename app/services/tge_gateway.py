@@ -2781,13 +2781,21 @@ class TextGameEngineGateway(EngineGateway):
             finally:
                 await progress_queue.put(_SENTINEL)
 
-        asyncio.create_task(_run())
+        task = asyncio.create_task(_run())
 
-        while True:
-            event = await progress_queue.get()
-            if event is _SENTINEL:
-                break
-            yield event
+        try:
+            while True:
+                event = await progress_queue.get()
+                if event is _SENTINEL:
+                    break
+                yield event
+        except (GeneratorExit, asyncio.CancelledError):
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
 
         if result_box["error"] is not None:
             raise result_box["error"]

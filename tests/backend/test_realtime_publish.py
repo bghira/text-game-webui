@@ -152,6 +152,17 @@ def test_stream_turn_publishes_realtime_events(client):
     # Even though it's streaming, realtime events must be published
     assert _published_types(publish, exclude=frozenset({"turn_progress"})) == ["turn", "timers"]
 
+    # At least one turn_progress event should have been published with correct shape
+    progress_events = [
+        call.args[1]
+        for call in publish.await_args_list
+        if call.args[1].get("type") == "turn_progress"
+    ]
+    assert len(progress_events) >= 1
+    first = progress_events[0]
+    assert first["actor_id"] == "dale-denton"
+    assert "phase" in first["payload"]
+
 
 def test_stream_turn_publishes_media_event_for_look(client):
     """POST /turns/stream with scene-triggering action publishes turn+media+timers."""
@@ -167,6 +178,17 @@ def test_stream_turn_publishes_media_event_for_look(client):
     assert res.status_code == 200
 
     assert _published_types(publish, exclude=frozenset({"turn_progress"})) == ["turn", "media", "timers"]
+
+    # turn_progress events must be present for the streaming path
+    progress_events = [
+        call.args[1]
+        for call in publish.await_args_list
+        if call.args[1].get("type") == "turn_progress"
+    ]
+    assert len(progress_events) >= 1
+    first = progress_events[0]
+    assert first["actor_id"] == "dale-denton"
+    assert "phase" in first["payload"]
 
 
 def test_web_timer_effects_port_publishes_timed_event():
