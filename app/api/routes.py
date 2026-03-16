@@ -293,6 +293,19 @@ async def submit_turn_stream(
             event_type = event.get("event", "message")
             event_data = event.get("data", {})
             collected_events.append((event_type, event_data))
+            if event_type == "phase":
+                try:
+                    await request.app.state.realtime.publish(
+                        campaign_id,
+                        {
+                            "type": "turn_progress",
+                            "session_id": payload.session_id,
+                            "actor_id": payload.actor_id,
+                            "payload": event_data,
+                        },
+                    )
+                except Exception:
+                    pass  # best-effort
             if event_type == "complete":
                 final_result = TurnResultModel(**event_data)
             elif event_type == "error":
