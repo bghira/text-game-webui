@@ -177,6 +177,7 @@ def create_app() -> FastAPI:
     app.state.templates = Jinja2Templates(directory=str(app_dir / "templates"))
 
     app.mount("/static", StaticFiles(directory=str(app_dir / "static")), name="static")
+    app.mount("/media", StaticFiles(directory=str(app_dir / "media")), name="media")
 
     # Initialize media subsystem (mounts /generated/ and wires media_port)
     _init_media(app, settings, app_dir)
