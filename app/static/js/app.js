@@ -407,7 +407,11 @@
         // Restore unseen-activity timestamps
         try {
           const raw = localStorage.getItem("sessionLastSeen");
-          if (raw) this.sessionLastSeen = JSON.parse(raw);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            this.sessionLastSeen = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+              ? parsed : {};
+          }
         } catch (_) { this.sessionLastSeen = {}; }
 
         // Restore persisted campaign selection
@@ -906,10 +910,12 @@
       sessionHasUnseen(sessionId) {
         if (!sessionId || sessionId === this.selectedSessionId) return false;
         const lastSeen = this.sessionLastSeen[sessionId];
-        if (!lastSeen) return false;
+        const lastSeenMs = lastSeen ? Date.parse(lastSeen) : undefined;
         for (const turn of this.recentTurns) {
-          if (turn.session_id === sessionId && turn.created_at && turn.created_at > lastSeen)
-            return true;
+          if (turn.session_id !== sessionId || !turn.created_at) continue;
+          // Never visited — any turn means unseen
+          if (lastSeenMs === undefined) return true;
+          if (Date.parse(turn.created_at) > lastSeenMs) return true;
         }
         return false;
       },
