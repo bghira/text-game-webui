@@ -129,6 +129,10 @@
       _streamingNarration: "",
       imageGenerating: 0,
 
+      /* Unseen activity tracking */
+      sessionLastSeen: {},
+      _unseenPollTimer: null,
+
       /* Settings panel state */
       ollamaModels: [],
       settingsForm: {
@@ -399,6 +403,12 @@
         this.$watch("$store.app.modal", (val) => {
           if (val === "newCampaign") this.resetNewCampaignWizard();
         });
+
+        // Restore unseen-activity timestamps
+        try {
+          const raw = localStorage.getItem("sessionLastSeen");
+          if (raw) this.sessionLastSeen = JSON.parse(raw);
+        } catch (_) { this.sessionLastSeen = {}; }
 
         // Restore persisted campaign selection
         // Read both before selectCampaign — it clears selectedSessionId from localStorage
@@ -845,6 +855,8 @@
         this.selectedSessionId = sessionId || "";
         if (this.selectedSessionId) {
           localStorage.setItem("selectedSessionId", this.selectedSessionId);
+          this.sessionLastSeen[this.selectedSessionId] = isoNow();
+          this._persistSessionLastSeen();
         } else {
           localStorage.removeItem("selectedSessionId");
         }
@@ -856,6 +868,37 @@
         if (row) {
           const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
           this.statusMessage = `Selected window ${metadata.label || row.surface_key || row.id}.`;
+        }
+      },
+
+      _persistSessionLastSeen() {
+        try { localStorage.setItem("sessionLastSeen", JSON.stringify(this.sessionLastSeen)); }
+        catch (_) {}
+      },
+
+      sessionHasUnseen(sessionId) {
+        if (!sessionId || sessionId === this.selectedSessionId) return false;
+        const lastSeen = this.sessionLastSeen[sessionId];
+        if (!lastSeen) return false;
+        for (const turn of this.recentTurns) {
+          if (turn.session_id === sessionId && turn.created_at && turn.created_at > lastSeen)
+            return true;
+        }
+        return false;
+      },
+
+      _startUnseenPoll() {
+        this._stopUnseenPoll();
+        if (!this.selectedCampaignId) return;
+        this._unseenPollTimer = setInterval(() => {
+          if (this.sessionsList.length > 1) this.loadRecentTurns();
+        }, 15000);
+      },
+
+      _stopUnseenPoll() {
+        if (this._unseenPollTimer) {
+          clearInterval(this._unseenPollTimer);
+          this._unseenPollTimer = null;
         }
       },
 
@@ -1776,6 +1819,10 @@
         this.selectedSessionId = "";
         localStorage.removeItem("selectedSessionId");
         this.turnStream = [];
+        /* Reset unseen-activity tracking for previous campaign */
+        this.sessionLastSeen = {};
+        this._persistSessionLastSeen();
+        this._stopUnseenPoll();
         /* Reset per-campaign derived state to prevent stale values */
         this.gameTime = {};
         this.campaignSummary = "";
@@ -1844,6 +1891,7 @@
           this.loadStoryState(),
         ]);
         this.populateTurnStreamFromHistory();
+        this._startUnseenPoll();
         this.statusMessage = `Selected campaign ${campaignId}.`;
       },
 

@@ -316,6 +316,16 @@ button:disabled {
   box-shadow: var(--shadow-sm);
 }
 
+.campaign-button.has-unseen:not(.active) {
+  animation: pulse-unseen 2.5s ease-in-out infinite;
+  border-color: #c9942a;
+}
+
+@keyframes pulse-unseen {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(201, 148, 42, 0.15); }
+  50% { box-shadow: 0 0 8px 3px rgba(201, 148, 42, 0.35); }
+}
+
 /* ---- Status dots ---- */
 
 .status-dots {
