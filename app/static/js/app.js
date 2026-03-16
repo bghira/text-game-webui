@@ -407,9 +407,15 @@
           /* Pass savedSessionId so selectCampaign keeps it through loadSessions
              instead of clearing it and trying to auto-pick. */
           await this.selectCampaign(savedCampaignId, savedSessionId || undefined);
-          /* selectSession to properly wire socket, highlight button, persist */
+          /* selectSession wires the socket, highlights the button, and persists.
+             Always call it when a session is selected — this is the single place
+             that connects the socket during restore (loadSessions skips it). */
           if (this.selectedSessionId) {
             this.selectSession(this.selectedSessionId);
+          } else {
+            /* savedSessionId was stale or missing; loadSessions auto-picked but
+               skipped connectSocket, so we need to connect now. */
+            this.connectSocket();
           }
         }
 
@@ -1844,7 +1850,12 @@
         }
         /* Load session + turn data first so the stream renders immediately,
            then load remaining panels in the background. */
-        await Promise.all([this.loadSessions(), this.loadRecentTurns()]);
+        /* When restoring a session from init(), skip the socket connect in
+           loadSessions — selectSession() in init() will own the single connect. */
+        await Promise.all([
+          this.loadSessions(restoreSessionId ? { skipConnect: true } : undefined),
+          this.loadRecentTurns(),
+        ]);
         this.populateTurnStreamFromHistory();
         /* Remaining data loads — fire-and-forget so the UI stays responsive. */
         Promise.all([
@@ -2386,7 +2397,7 @@
         }
       },
 
-      async loadSessions() {
+      async loadSessions({ skipConnect } = {}) {
         if (!this.selectedCampaignId) {
           return;
         }
@@ -2416,7 +2427,7 @@
             });
           }
           if (!preferred && sessions.length > 0) {
-            preferred = sessions[0];
+            preferred = sessions.find((row) => row.enabled !== false) || sessions[0];
           }
           if (preferred && preferred.id) {
             this.selectedSessionId = preferred.id;
@@ -2424,6 +2435,7 @@
             this.syncTurnSessionSelection();
           }
         }
+        if (skipConnect) return;
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
           return;
         }
