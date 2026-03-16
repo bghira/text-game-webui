@@ -68,7 +68,7 @@
         <button
           type="button"
           class="campaign-button"
-          :class="{ active: selectedSessionId === row.id }"
+          :class="{ active: selectedSessionId === row.id, 'has-unseen': sessionHasUnseen(row.id) }"
           @click="selectSession(row.id)"
         >
           <span x-text="(row.metadata && row.metadata.label) || row.surface_key || row.id"></span>

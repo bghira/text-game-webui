@@ -521,6 +521,50 @@ export async function campaignCreationWithDocsFlow(
   return { calls, campaignId, failedFiles };
 }
 
+/* ---- Unseen-activity helpers ---- */
+
+export type RecentTurn = {
+  session_id?: string;
+  created_at?: string;
+};
+
+/**
+ * Determine whether a session has turns the user hasn't seen.
+ * - Returns false for the currently-selected session.
+ * - When lastSeen is undefined (never visited), any turn means unseen.
+ * - Compares via Date.parse() to handle both `Z` and `+00:00` suffixes.
+ */
+export function sessionHasUnseen(
+  sessionId: string,
+  selectedSessionId: string,
+  lastSeen: string | undefined,
+  recentTurns: RecentTurn[],
+): boolean {
+  if (!sessionId || sessionId === selectedSessionId) return false;
+  const lastSeenMs = lastSeen ? Date.parse(lastSeen) : undefined;
+  for (const turn of recentTurns) {
+    if (turn.session_id !== sessionId || !turn.created_at) continue;
+    if (lastSeenMs === undefined) return true;
+    if (Date.parse(turn.created_at) > lastSeenMs) return true;
+  }
+  return false;
+}
+
+/**
+ * Safely parse a sessionLastSeen JSON string from localStorage.
+ * Returns a plain object or {} on any invalid/unexpected shape.
+ */
+export function parseSessionLastSeen(raw: string | null): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, string>;
+    }
+  } catch (_) { /* fall through */ }
+  return {};
+}
+
 /* ---- Settings + Ollama model preservation ---- */
 
 export type OllamaModel = {

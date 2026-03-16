@@ -129,6 +129,10 @@
       _streamingNarration: "",
       imageGenerating: 0,
 
+      /* Unseen activity tracking */
+      sessionLastSeen: {},
+      _unseenPollTimer: null,
+
       /* Settings panel state */
       ollamaModels: [],
       settingsForm: {
@@ -400,7 +404,18 @@
           if (val === "newCampaign") this.resetNewCampaignWizard();
         });
 
-        // Restore persisted campaign + session selection
+        // Restore unseen-activity timestamps
+        try {
+          const raw = localStorage.getItem("sessionLastSeen");
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            this.sessionLastSeen = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+              ? parsed : {};
+          }
+        } catch (_) { this.sessionLastSeen = {}; }
+
+        // Restore persisted campaign selection
+        // Read both before selectCampaign — it clears selectedSessionId from localStorage
         const savedCampaignId = localStorage.getItem("selectedCampaignId");
         const savedSessionId = localStorage.getItem("selectedSessionId");
         if (savedCampaignId && this.campaigns.some(c => c.id === savedCampaignId)) {
@@ -869,6 +884,8 @@
         this.selectedSessionId = sessionId || "";
         if (this.selectedSessionId) {
           localStorage.setItem("selectedSessionId", this.selectedSessionId);
+          this.sessionLastSeen[this.selectedSessionId] = isoNow();
+          this._persistSessionLastSeen();
         } else {
           localStorage.removeItem("selectedSessionId");
         }
@@ -882,6 +899,39 @@
         if (row) {
           const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
           this.statusMessage = `Selected window ${metadata.label || row.surface_key || row.id}.`;
+        }
+      },
+
+      _persistSessionLastSeen() {
+        try { localStorage.setItem("sessionLastSeen", JSON.stringify(this.sessionLastSeen)); }
+        catch (_) {}
+      },
+
+      sessionHasUnseen(sessionId) {
+        if (!sessionId || sessionId === this.selectedSessionId) return false;
+        const lastSeen = this.sessionLastSeen[sessionId];
+        const lastSeenMs = lastSeen ? Date.parse(lastSeen) : undefined;
+        for (const turn of this.recentTurns) {
+          if (turn.session_id !== sessionId || !turn.created_at) continue;
+          // Never visited — any turn means unseen
+          if (lastSeenMs === undefined) return true;
+          if (Date.parse(turn.created_at) > lastSeenMs) return true;
+        }
+        return false;
+      },
+
+      _startUnseenPoll() {
+        this._stopUnseenPoll();
+        if (!this.selectedCampaignId) return;
+        this._unseenPollTimer = setInterval(() => {
+          if (this.sessionsList.length > 1) this.loadRecentTurns();
+        }, 15000);
+      },
+
+      _stopUnseenPoll() {
+        if (this._unseenPollTimer) {
+          clearInterval(this._unseenPollTimer);
+          this._unseenPollTimer = null;
         }
       },
 
@@ -1802,6 +1852,10 @@
         this.selectedSessionId = restoreSessionId || "";
         if (!restoreSessionId) localStorage.removeItem("selectedSessionId");
         this.turnStream = [];
+        /* Reset unseen-activity tracking for previous campaign */
+        this.sessionLastSeen = {};
+        this._persistSessionLastSeen();
+        this._stopUnseenPoll();
         /* Reset per-campaign derived state to prevent stale values */
         this.gameTime = {};
         this.campaignSummary = "";
@@ -1877,6 +1931,8 @@
           this.loadLiteraryStyles(),
           this.loadStoryState(),
         ]).catch(() => {});
+        this.populateTurnStreamFromHistory();
+        this._startUnseenPoll();
         this.statusMessage = `Selected campaign ${campaignId}.`;
       },
 
