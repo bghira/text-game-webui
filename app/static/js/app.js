@@ -497,20 +497,29 @@
       },
 
       async loadOllamaModels() {
+        /* Capture the model before the dropdown re-renders to guard against
+           the <select> syncing an empty value back into settingsForm.model. */
+        const savedModel = (this.settingsForm.model || "").trim();
         try {
           const data = await this.api("/api/ollama/models");
           if (data.reachable && Array.isArray(data.models)) {
             this.ollamaModels = data.models;
             /* ensure current model appears in the list so the dropdown doesn't reset */
-            const currentModel = (this.settingsForm.model || "").trim();
+            const currentModel = savedModel || (this.settingsForm.model || "").trim();
             if (currentModel && !this.ollamaModels.some((m) => m.name === currentModel)) {
               this.ollamaModels.unshift({ name: currentModel, size: null, modified_at: null });
             }
+            /* Restore model in case the select element reset it */
+            if (savedModel) this.settingsForm.model = savedModel;
           } else {
             this.ollamaModels = [];
           }
         } catch (_err) {
           this.ollamaModels = [];
+        }
+        /* Final guard: restore model if it was blanked during re-render */
+        if (savedModel && !this.settingsForm.model) {
+          this.settingsForm.model = savedModel;
         }
       },
 

@@ -1,6 +1,7 @@
 import {
   applyApiError,
   applyApiSuccess,
+  applyOllamaModels,
   applyWsClosed,
   applyWsConnected,
   buildRuntimeChecksPath,
@@ -9,6 +10,7 @@ import {
   mergeDiagnosticsBundle,
   submitTurnFlow,
 } from "../src/flow_helpers";
+import type { SettingsForm } from "../src/flow_helpers";
 
 describe("runtime bootstrap flow", () => {
   it("requests runtime and health during startup", async () => {
@@ -107,5 +109,54 @@ describe("runtime bootstrap flow", () => {
     expect((mergedClient.runtime_checks_meta as Record<string, unknown>).probe_llm).toBe(true);
     expect((mergedClient.diagnostics as Record<string, unknown>).api_last_success_at).toBe("2026-03-03T20:00:00Z");
     expect(mergedClient.selected_actor).toBe("dale-denton");
+  });
+
+  describe("ollama model preservation", () => {
+    const baseForm: SettingsForm = {
+      completion_mode: "ollama",
+      base_url: "http://127.0.0.1:11434",
+      model: "qwen3.5:27b",
+      temperature: 0.8,
+      max_tokens: 3200,
+      timeout_seconds: 90,
+      keep_alive: "30m",
+      ollama_options_json: "{}",
+    };
+
+    it("preserves model when it exists in ollama model list", () => {
+      const result = applyOllamaModels(
+        { ...baseForm },
+        [{ name: "qwen3.5:27b", size: 1000, modified_at: "2026-01-01" }, { name: "llama3:8b", size: 500, modified_at: "2026-01-01" }],
+        true,
+      );
+      expect(result.settingsForm.model).toBe("qwen3.5:27b");
+      expect(result.ollamaModels.some(m => m.name === "qwen3.5:27b")).toBe(true);
+    });
+
+    it("preserves model and prepends when missing from ollama list", () => {
+      const result = applyOllamaModels(
+        { ...baseForm },
+        [{ name: "llama3:8b", size: 500, modified_at: "2026-01-01" }],
+        true,
+      );
+      expect(result.settingsForm.model).toBe("qwen3.5:27b");
+      expect(result.ollamaModels[0].name).toBe("qwen3.5:27b");
+    });
+
+    it("preserves model when ollama is unreachable", () => {
+      const result = applyOllamaModels({ ...baseForm }, [], false);
+      expect(result.settingsForm.model).toBe("qwen3.5:27b");
+      expect(result.ollamaModels).toEqual([]);
+    });
+
+    it("handles empty model gracefully", () => {
+      const result = applyOllamaModels(
+        { ...baseForm, model: "" },
+        [{ name: "llama3:8b", size: 500, modified_at: null }],
+        true,
+      );
+      expect(result.settingsForm.model).toBe("");
+      expect(result.ollamaModels.length).toBe(1);
+    });
   });
 });
