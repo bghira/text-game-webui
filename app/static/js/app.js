@@ -400,16 +400,16 @@
           if (val === "newCampaign") this.resetNewCampaignWizard();
         });
 
-        // Restore persisted campaign selection
-        // Read both before selectCampaign — it clears selectedSessionId from localStorage
+        // Restore persisted campaign + session selection
         const savedCampaignId = localStorage.getItem("selectedCampaignId");
         const savedSessionId = localStorage.getItem("selectedSessionId");
         if (savedCampaignId && this.campaigns.some(c => c.id === savedCampaignId)) {
-          await this.selectCampaign(savedCampaignId);
-          if (savedSessionId && this.sessionsList.some(s => s.id === savedSessionId)) {
-            this.selectSession(savedSessionId);
-          } else {
-            this.populateTurnStreamFromHistory();
+          /* Pass savedSessionId so selectCampaign keeps it through loadSessions
+             instead of clearing it and trying to auto-pick. */
+          await this.selectCampaign(savedCampaignId, savedSessionId || undefined);
+          /* selectSession to properly wire socket, highlight button, persist */
+          if (this.selectedSessionId) {
+            this.selectSession(this.selectedSessionId);
           }
         }
 
@@ -419,13 +419,12 @@
       },
 
       /* ---- Turn stream hydration from history ---- */
-      populateTurnStreamFromHistory() {
-        if (!this.recentTurns || this.recentTurns.length === 0) return;
-        const sessionId = this.selectedSessionId;
+      _buildTurnEntries(turns, sessionFilter) {
         const entries = [];
         let counter = 0;
-        for (const turn of this.recentTurns) {
-          if (sessionId && turn.session_id && turn.session_id !== sessionId) continue;
+        let lastGameTime = null;
+        for (const turn of turns) {
+          if (sessionFilter && turn.session_id && turn.session_id !== sessionFilter) continue;
           if (turn.kind === "narrator" || turn.kind === "player") {
             counter++;
             const meta = turn.meta || {};
@@ -438,13 +437,32 @@
             };
             if (meta.game_time) {
               entry.meta._game_time = meta.game_time;
-              this.gameTime = meta.game_time;
+              lastGameTime = meta.game_time;
             }
             entries.push(entry);
           }
         }
-        this.turnCounter = counter;
-        this.turnStream = entries;
+        return { entries, counter, lastGameTime };
+      },
+
+      populateTurnStreamFromHistory() {
+        if (!this.recentTurns || this.recentTurns.length === 0) return;
+        const sessionId = this.selectedSessionId;
+        let result = this._buildTurnEntries(this.recentTurns, sessionId);
+        /* If session filter produced zero entries but we have turns, show
+           all turns rather than a blank stream. */
+        if (result.entries.length === 0 && sessionId) {
+          result = this._buildTurnEntries(this.recentTurns, null);
+        }
+        this.turnCounter = result.counter;
+        this.turnStream = result.entries;
+        /* Apply turn-derived game time only when we don't already have
+           authoritative data (e.g. from loadCalendar). */
+        if (result.lastGameTime) {
+          if (!this.gameTime || !this.gameTime.day) {
+            this.gameTime = result.lastGameTime;
+          }
+        }
         this._scrollStream();
       },
 
@@ -852,6 +870,8 @@
         this.turnStream = [];
         this.connectSocket();
         this.populateTurnStreamFromHistory();
+        /* Refresh authoritative game time — turn metadata may be incomplete */
+        this.loadCalendar();
         const row = this.currentSessionRecord();
         if (row) {
           const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
@@ -1769,12 +1789,12 @@
         }
       },
 
-      async selectCampaign(campaignId) {
+      async selectCampaign(campaignId, restoreSessionId) {
         this.resetError();
         this.selectedCampaignId = campaignId;
         localStorage.setItem("selectedCampaignId", campaignId);
-        this.selectedSessionId = "";
-        localStorage.removeItem("selectedSessionId");
+        this.selectedSessionId = restoreSessionId || "";
+        if (!restoreSessionId) localStorage.removeItem("selectedSessionId");
         this.turnStream = [];
         /* Reset per-campaign derived state to prevent stale values */
         this.gameTime = {};
@@ -1822,8 +1842,12 @@
           this.rosterActions.slug = this.turnForm.actor_id;
           this.rosterActions.player = true;
         }
-        await Promise.all([
-          this.loadSessions(),
+        /* Load session + turn data first so the stream renders immediately,
+           then load remaining panels in the background. */
+        await Promise.all([this.loadSessions(), this.loadRecentTurns()]);
+        this.populateTurnStreamFromHistory();
+        /* Remaining data loads — fire-and-forget so the UI stays responsive. */
+        Promise.all([
           this.loadMap(),
           this.loadTimers(),
           this.loadCalendar(),
@@ -1836,14 +1860,12 @@
           this.loadCampaignFlags(),
           this.loadSourceMaterials(),
           this.loadCampaignRules(),
-          this.loadRecentTurns(),
           this.loadCampaignPersona(),
           this.checkSetupMode(),
           this.loadSceneImages(),
           this.loadLiteraryStyles(),
           this.loadStoryState(),
-        ]);
-        this.populateTurnStreamFromHistory();
+        ]).catch(() => {});
         this.statusMessage = `Selected campaign ${campaignId}.`;
       },
 
@@ -2393,8 +2415,12 @@
               return actorId && row.surface === "web_private" && metadata.owner_actor_id === actorId;
             });
           }
+          if (!preferred && sessions.length > 0) {
+            preferred = sessions[0];
+          }
           if (preferred && preferred.id) {
             this.selectedSessionId = preferred.id;
+            localStorage.setItem("selectedSessionId", preferred.id);
             this.syncTurnSessionSelection();
           }
         }
