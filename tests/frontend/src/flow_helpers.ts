@@ -543,11 +543,19 @@ export type SettingsForm = {
 /**
  * Simulate the loadOllamaModels flow: populate the dropdown and
  * ensure the current model isn't lost in the process.
+ *
+ * The optional `onModelsAssigned` callback simulates a side-effect that
+ * occurs between the moment the model list is assigned and the restoration
+ * guard runs — e.g. Alpine's <select x-model> syncing an empty value back
+ * into settingsForm.model when options re-render.  The callback receives
+ * the mutable settingsForm so it can blank the model field, exercising
+ * the restoration branch.
  */
 export function applyOllamaModels(
   settingsForm: SettingsForm,
   apiModels: OllamaModel[],
   reachable: boolean,
+  onModelsAssigned?: (form: SettingsForm) => void,
 ): { ollamaModels: OllamaModel[]; settingsForm: SettingsForm } {
   const savedModel = (settingsForm.model || "").trim();
   let ollamaModels: OllamaModel[];
@@ -558,11 +566,14 @@ export function applyOllamaModels(
     if (currentModel && !ollamaModels.some((m) => m.name === currentModel)) {
       ollamaModels.unshift({ name: currentModel, size: null, modified_at: null });
     }
+    /* Simulate Alpine re-render side-effect (may blank the model) */
+    if (onModelsAssigned) onModelsAssigned(settingsForm);
     if (savedModel) settingsForm = { ...settingsForm, model: savedModel };
   } else {
     ollamaModels = [];
   }
 
+  /* Final guard: restore model if it was blanked during re-render */
   if (savedModel && !settingsForm.model) {
     settingsForm = { ...settingsForm, model: savedModel };
   }

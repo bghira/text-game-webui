@@ -149,6 +149,27 @@ describe("runtime bootstrap flow", () => {
       expect(result.ollamaModels).toEqual([]);
     });
 
+    it("restores model blanked by select re-render side-effect", () => {
+      const result = applyOllamaModels(
+        { ...baseForm },
+        [{ name: "qwen3.5:27b", size: 1000, modified_at: "2026-01-01" }],
+        true,
+        (form) => { form.model = ""; },
+      );
+      expect(result.settingsForm.model).toBe("qwen3.5:27b");
+    });
+
+    it("restores model blanked when model is missing from ollama list", () => {
+      const result = applyOllamaModels(
+        { ...baseForm },
+        [{ name: "llama3:8b", size: 500, modified_at: null }],
+        true,
+        (form) => { form.model = ""; },
+      );
+      expect(result.settingsForm.model).toBe("qwen3.5:27b");
+      expect(result.ollamaModels[0].name).toBe("qwen3.5:27b");
+    });
+
     it("handles empty model gracefully", () => {
       const result = applyOllamaModels(
         { ...baseForm, model: "" },
