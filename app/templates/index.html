@@ -1954,7 +1954,7 @@
           <button type="button" @click="applySettings()" :disabled="settingsSaving" class="btn-primary">Apply Changes</button>
         </div>
 
-        <p class="settings-note">Settings apply until server restart.</p>
+        <p class="settings-note">Settings persist across restarts after clicking Apply.</p>
         <p class="settings-status" :class="settingsStatus.ok === false ? 'error' : 'status'" x-show="settingsStatus.message" x-text="settingsStatus.message"></p>
       </div>
 
