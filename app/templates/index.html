@@ -207,7 +207,7 @@
         <article class="turn-entry" :class="'turn-type-' + entry.type">
           <template x-if="entry.type === 'narrator'">
             <div class="turn-narrator">
-              <p class="narrator-text" :class="{ 'streaming': entry._streaming }" x-text="entry.text"></p>
+              <p class="narrator-text" :class="{ 'streaming': entry._streaming, 'phase-text': entry._phaseText }" x-text="entry.text"></p>
               <span class="turn-footer">
                 <template x-if="entry.meta && entry.meta._game_time && entry.meta._game_time.day">
                   <small class="turn-game-time" x-text="'Day ' + entry.meta._game_time.day + ', ' + String(entry.meta._game_time.hour||0).padStart(2,'0') + ':' + String(entry.meta._game_time.minute||0).padStart(2,'0')"></small>
