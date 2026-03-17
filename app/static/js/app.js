@@ -162,6 +162,7 @@
       submitting: false,
       _submittingTurn: false,
       _streamingNarration: "",
+      _phaseTyper: null,
       imageGenerating: 0,
 
       /* Unseen activity tracking */
@@ -2081,7 +2082,12 @@
             this.loadRecentTurns();
           }
           if (payload.type === "turn_progress" && payload.payload && this.submitting) {
-            this.statusMessage = this._turnProgressLabel(payload.payload.phase, payload.payload);
+            const label = this._turnProgressLabel(payload.payload.phase, payload.payload);
+            this.statusMessage = label;
+            const streamEntry = this.turnStream.find((e) => e._streaming);
+            if (streamEntry) {
+              this._typePhase(streamEntry.id, label);
+            }
           }
         };
         this.socket.onerror = () => {
@@ -2113,6 +2119,35 @@
           const stream = document.getElementById("turn-stream");
           if (stream) stream.scrollTop = stream.scrollHeight;
         });
+      },
+
+      _typePhase(entryId, label) {
+        if (this._phaseTyper && this._phaseTyper.timerId) {
+          clearInterval(this._phaseTyper.timerId);
+        }
+        this._phaseTyper = { text: label, index: 0, timerId: null, entryId };
+        const entry = this.turnStream.find((e) => e.id === entryId);
+        if (entry) {
+          entry.text = "";
+          entry._phaseText = true;
+        }
+        this._phaseTyper.timerId = setInterval(() => {
+          this._phaseTyper.index++;
+          const entry = this.turnStream.find((e) => e.id === this._phaseTyper.entryId);
+          if (entry) entry.text = this._phaseTyper.text.slice(0, this._phaseTyper.index);
+          this._scrollStream();
+          if (this._phaseTyper.index >= this._phaseTyper.text.length) {
+            clearInterval(this._phaseTyper.timerId);
+            this._phaseTyper.timerId = null;
+          }
+        }, 30);
+      },
+
+      _clearPhaseTyper() {
+        if (this._phaseTyper && this._phaseTyper.timerId) {
+          clearInterval(this._phaseTyper.timerId);
+        }
+        this._phaseTyper = null;
       },
 
       _turnProgressLabel(phase, detail) {
@@ -2153,16 +2188,30 @@
 
       _handleStreamEvent(eventType, data, streamEntryId) {
         if (eventType === "phase") {
-          const labels = { starting: "Starting turn...", generating: "Generating narration...", narrating: "Streaming narration..." };
-          this.statusMessage = labels[data.phase] || `Phase: ${data.phase}`;
+          const label = this._turnProgressLabel(data.phase, data);
+          this.statusMessage = label;
+          if (streamEntryId && data.phase !== "narrating") {
+            this._typePhase(streamEntryId, label);
+          } else if (data.phase === "narrating") {
+            this._clearPhaseTyper();
+            const entry = this.turnStream.find((e) => e.id === streamEntryId);
+            if (entry) { entry.text = ""; entry._phaseText = false; }
+          }
         } else if (eventType === "token") {
+          if (this._phaseTyper) {
+            this._clearPhaseTyper();
+            const phaseEntry = this.turnStream.find((e) => e.id === streamEntryId);
+            if (phaseEntry) phaseEntry._phaseText = false;
+          }
           this._streamingNarration += data.text;
           const entry = this.turnStream.find((e) => e.id === streamEntryId);
           if (entry) entry.text = this._streamingNarration;
           this._scrollStream();
         } else if (eventType === "complete") {
+          this._clearPhaseTyper();
           const entry = this.turnStream.find((e) => e.id === streamEntryId);
           if (entry) {
+            entry._phaseText = false;
             entry.text = normalizeTurnNarration(data);
             entry._streaming = false;
             entry.meta = { ...data };
@@ -2379,6 +2428,7 @@
         } catch (error) {
           this.errorMessage = String(error);
         } finally {
+          this._clearPhaseTyper();
           this._submittingTurn = false;
           this.submitting = false;
         }

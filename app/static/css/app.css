@@ -819,6 +819,11 @@ button:disabled {
   50% { opacity: 0; }
 }
 
+.narrator-text.phase-text {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
 .turn-footer {
   display: flex;
   justify-content: flex-end;
