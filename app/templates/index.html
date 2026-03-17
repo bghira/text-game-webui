@@ -1858,8 +1858,8 @@
       <div class="drawer-header">
         <h2 class="sr-only">Settings</h2>
         <div class="settings-tabs" role="tablist" aria-label="Settings sections"
-             @keydown.left.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i-1+3)%3]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
-             @keydown.right.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i+1)%3]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
+             @keydown.left.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i-1+tabs.length)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
+             @keydown.right.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i+1)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
           <button type="button" role="tab" id="settings-tab-llm" class="settings-tab"
             :class="{ active: $store.app.settingsTab === 'llm' }"
             :aria-selected="$store.app.settingsTab === 'llm'"
@@ -2111,9 +2111,9 @@
           <div class="stack compact">
             <label>
               Color Theme
-              <select :value="$store.app.theme" @change="$store.app.applyTheme($event.target.value)">
+              <select x-model="$store.app.theme" @change="$store.app.applyTheme($event.target.value)">
                 <template x-for="t in $store.app.themes" :key="t.value">
-                  <option :value="t.value" x-text="t.label" :selected="t.value === $store.app.theme"></option>
+                  <option :value="t.value" x-text="t.label"></option>
                 </template>
               </select>
             </label>

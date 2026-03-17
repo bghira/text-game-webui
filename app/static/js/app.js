@@ -98,7 +98,7 @@
       settingsOpen: false,
       settingsTab: "llm",
       modal: null,
-      theme: localStorage.getItem("theme") || "light",
+      theme: document.documentElement.getAttribute("data-theme") || localStorage.getItem("theme") || "light",
       themes: [],
       toggleDebugMode() {
         this.debugMode = !this.debugMode;
@@ -116,22 +116,23 @@
           if (res.ok) this.themes = await res.json();
         } catch (_) {}
       },
+      _syncCustomCssLink(name) {
+        const customLink = document.getElementById("custom-theme-css");
+        if (!customLink) return;
+        const builtins = ["light", "dark"];
+        if (!builtins.includes(name)) {
+          customLink.href = "/api/themes/" + encodeURIComponent(name) + "/theme.css";
+          customLink.disabled = false;
+        } else {
+          customLink.href = "";
+          customLink.disabled = true;
+        }
+      },
       applyTheme(name) {
         this.theme = name;
         localStorage.setItem("theme", name);
         document.documentElement.setAttribute("data-theme", name);
-        // Enable/disable custom CSS link for non-builtin themes
-        const customLink = document.getElementById("custom-theme-css");
-        if (customLink) {
-          const builtins = ["light", "dark"];
-          if (!builtins.includes(name)) {
-            customLink.href = "/api/themes/" + encodeURIComponent(name) + "/theme.css";
-            customLink.disabled = false;
-          } else {
-            customLink.href = "";
-            customLink.disabled = true;
-          }
-        }
+        this._syncCustomCssLink(name);
         // Persist to server
         fetch("/api/settings/theme", {
           method: "POST",
@@ -140,7 +141,8 @@
         }).catch(function() {});
       },
     });
-    // Load themes on init
+    // Sync custom CSS link and load theme list on init
+    Alpine.store("app")._syncCustomCssLink(Alpine.store("app").theme);
     Alpine.store("app").loadThemes();
   });
 

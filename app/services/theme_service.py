@@ -11,6 +11,8 @@ from typing import Any
 _BUILTIN_THEMES_DIR = Path(__file__).resolve().parent.parent / "static" / "css" / "themes"
 _LOCAL_THEMES_DIR = Path.home() / ".text-game-webui" / "themes"
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_SAFE_ASSET_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+\.[a-zA-Z0-9]+$")
+_VALID_ASSET_KINDS = frozenset({"images", "sounds"})
 _ALLOWED_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"})
 _ALLOWED_SOUND_EXTS = frozenset({".mp3", ".ogg", ".wav", ".flac"})
 
@@ -205,7 +207,9 @@ class ThemeService:
 
     def get_asset_path(self, theme_id: str, kind: str, name: str) -> Path | None:
         """Return the filesystem path for a theme asset, with security checks."""
-        if not _SAFE_NAME_RE.match(name):
+        if kind not in _VALID_ASSET_KINDS:
+            return None
+        if not _SAFE_ASSET_NAME_RE.match(name):
             return None
         theme = self.get_theme(theme_id)
         if not theme:

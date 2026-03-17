@@ -12,11 +12,24 @@
       rel="stylesheet"
     />
     <script>
-      // Apply theme from localStorage immediately to prevent flash
+      // Apply theme immediately to prevent flash. Reconcile localStorage
+      // with the server-rendered data-theme and enable custom CSS if needed.
       (function() {
-        var t = localStorage.getItem('theme');
-        if (t && t !== 'light') {
-          document.documentElement.setAttribute('data-theme', t);
+        var serverTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        var stored = localStorage.getItem('theme');
+        // Prefer localStorage (client chose this), fall back to server value
+        var theme = stored || serverTheme;
+        // Sync both sides so they agree
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('theme', theme);
+        // Enable custom CSS link for non-builtin themes
+        var builtins = ['light', 'dark'];
+        if (builtins.indexOf(theme) === -1) {
+          var link = document.getElementById('custom-theme-css');
+          if (link) {
+            link.href = '/api/themes/' + encodeURIComponent(theme) + '/theme.css';
+            link.disabled = false;
+          }
         }
       })();
     </script>

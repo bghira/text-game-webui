@@ -95,15 +95,19 @@ def test_local_folder_source_skips_invalid_dir(tmp_path):
 
 
 def test_local_folder_source_skips_unsafe_names(tmp_path):
-    theme_dir = tmp_path / "../escape"
-    theme_dir.mkdir(parents=True, exist_ok=True)
-    (theme_dir / "theme.json").write_text(json.dumps({"name": "escape"}))
-    (theme_dir / "theme.css").write_text("")
+    # Directory names with dots or spaces should be rejected by _SAFE_NAME_RE
+    for bad_name in ["has.dot", "has space", "has@symbol"]:
+        theme_dir = tmp_path / bad_name
+        theme_dir.mkdir(exist_ok=True)
+        (theme_dir / "theme.json").write_text(json.dumps({"name": bad_name}))
+        (theme_dir / "theme.css").write_text("")
 
     source = LocalFolderThemeSource(base_dir=tmp_path)
     themes = source.discover()
-    # ../escape shouldn't appear as a valid theme
-    assert all(t.id != "../escape" for t in themes)
+    discovered_ids = {t.id for t in themes}
+    assert "has.dot" not in discovered_ids
+    assert "has space" not in discovered_ids
+    assert "has@symbol" not in discovered_ids
 
 
 def test_local_folder_source_empty_when_missing():
@@ -132,5 +136,14 @@ def test_get_asset_path_validates_name():
     svc = ThemeService()
     # Invalid name with path traversal
     assert svc.get_asset_path("dark", "images", "../../../etc/passwd") is None
+    # Name without extension is rejected
+    assert svc.get_asset_path("dark", "images", "noext") is None
     # Valid name but no assets on builtin
     assert svc.get_asset_path("dark", "images", "bg.png") is None
+
+
+def test_get_asset_path_rejects_invalid_kind():
+    svc = ThemeService()
+    # Invalid kind returns None instead of silently falling through
+    assert svc.get_asset_path("dark", "other", "bg.png") is None
+    assert svc.get_asset_path("dark", "", "bg.png") is None
