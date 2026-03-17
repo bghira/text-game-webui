@@ -39,6 +39,7 @@ FEATURES = [
     "player_statistics",
     "cancel_timer",
     "player_attributes",
+    "player_rename",
     "level_up",
     "recent_turns",
     "campaign_persona",
@@ -150,6 +151,7 @@ class EngineGateway(Protocol):
     async def get_player_statistics(self, campaign_id: str, actor_id: str) -> dict: ...
     async def get_player_attributes(self, campaign_id: str, actor_id: str) -> dict: ...
     async def set_player_attribute(self, campaign_id: str, actor_id: str, attribute: str, value: int) -> dict: ...
+    async def rename_player_character(self, campaign_id: str, actor_id: str, name: str) -> dict: ...
     async def level_up_player(self, campaign_id: str, actor_id: str) -> dict: ...
     async def get_recent_turns(self, campaign_id: str, limit: int = 30) -> dict: ...
     async def get_campaign_persona(self, campaign_id: str) -> dict: ...
@@ -1023,6 +1025,28 @@ Legend: @ current player
     async def set_player_attribute(self, campaign_id: str, actor_id: str, attribute: str, value: int) -> dict:
         self._require_campaign(campaign_id)
         return {"ok": False, "note": "InMemory backend — attributes not supported."}
+
+    async def rename_player_character(self, campaign_id: str, actor_id: str, name: str) -> dict:
+        self._require_campaign(campaign_id)
+        player = self._players[campaign_id].get(actor_id)
+        if player is None:
+            raise KeyError(f"Unknown player in campaign: {actor_id}")
+        clean_name = " ".join(str(name or "").strip().split())
+        if not clean_name:
+            raise ValueError("Character name is required.")
+        state = player.get("state", {})
+        if not isinstance(state, dict):
+            state = {}
+            player["state"] = state
+        old_name = str(state.get("character_name") or actor_id)
+        state["character_name"] = clean_name[:128]
+        return {
+            "ok": True,
+            "actor_id": actor_id,
+            "old_name": old_name,
+            "name": state["character_name"],
+            "migrated_roster_slug": None,
+        }
 
     async def level_up_player(self, campaign_id: str, actor_id: str) -> dict:
         self._require_campaign(campaign_id)

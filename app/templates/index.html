@@ -407,6 +407,11 @@
                 </template>
               </div>
             </div>
+            <form class="attr-set-form" @submit.prevent="renamePlayerCharacter()">
+              <input x-model="characterNameForm.value" placeholder="Character name" class="attr-input" maxlength="128" />
+              <button type="submit" :disabled="!selectedCampaignId || !(turnForm.actor_id || '').trim() || !(characterNameForm.value || '').trim() || characterNameSaving" x-text="characterNameSaving ? 'Saving...' : 'Rename'"></button>
+            </form>
+            <p x-show="characterNameStatus" x-text="characterNameStatus" class="muted"></p>
             <!-- XP Bar -->
             <div class="xp-row">
               <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
@@ -1330,6 +1335,11 @@
                     </template>
                   </div>
                 </div>
+                <form class="attr-set-form" @submit.prevent="renamePlayerCharacter()">
+                  <input x-model="characterNameForm.value" placeholder="Character name" class="attr-input" maxlength="128" />
+                  <button type="submit" :disabled="!selectedCampaignId || !(turnForm.actor_id || '').trim() || !(characterNameForm.value || '').trim() || characterNameSaving" x-text="characterNameSaving ? 'Saving...' : 'Rename'"></button>
+                </form>
+                <p x-show="characterNameStatus" x-text="characterNameStatus" class="muted"></p>
                 <div class="xp-row">
                   <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
                   <div class="xp-bar-track"><div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div></div>
