@@ -169,6 +169,11 @@ class LevelUpRequest(BaseModel):
     actor_id: str
 
 
+class PlayerNameUpdateRequest(BaseModel):
+    actor_id: str
+    name: str
+
+
 class PersonaUpdateRequest(BaseModel):
     persona: str
 

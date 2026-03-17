@@ -35,6 +35,7 @@ from app.services.schemas import (
     MemoryStoreRequest,
     MemoryTermsRequest,
     MemoryTurnRequest,
+    PlayerNameUpdateRequest,
     PersonaUpdateRequest,
     PuzzleAnswerRequest,
     RosterRemoveRequest,
@@ -475,6 +476,20 @@ async def set_player_attribute(
 ) -> dict:
     try:
         return await gateway.set_player_attribute(campaign_id, payload.actor_id, payload.attribute, payload.value)
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.post("/campaigns/{campaign_id}/player-name")
+async def rename_player_character(
+    campaign_id: str,
+    payload: PlayerNameUpdateRequest,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.rename_player_character(campaign_id, payload.actor_id, payload.name)
     except KeyError as err:
         _not_found(err)
     except ValueError as err:

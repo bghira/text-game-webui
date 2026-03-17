@@ -3810,6 +3810,21 @@ class TextGameEngineGateway(EngineGateway):
         ok, message = self._emulator.set_attribute(player, attribute, value)
         return {"ok": ok, "message": message}
 
+    async def rename_player_character(self, campaign_id: str, actor_id: str, name: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id}")
+        return self._emulator.rename_player_character(campaign_id, actor_id, name)
+
     async def level_up_player(self, campaign_id: str, actor_id: str) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)

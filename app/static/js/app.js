@@ -394,6 +394,9 @@
       /* Player attributes */
       playerAttributes: null,
       attributeForm: { attribute: "", value: 0 },
+      characterNameForm: { value: "" },
+      characterNameSaving: false,
+      characterNameStatus: "",
 
       /* Turn history */
       recentTurns: [],
@@ -2738,9 +2741,11 @@
             `/api/campaigns/${this.selectedCampaignId}/player-state?actor_id=${encodeURIComponent(actor.trim())}`,
           );
           this.playerData = body.player_state || body;
+          this.characterNameForm.value = this.resolveCharacterName("");
           this.playerStateText = formatJson(body);
         } catch (error) {
           this.playerData = null;
+          this.characterNameForm.value = "";
           this.playerStateText = formatJson({
             detail: "Player state unavailable for selected actor.",
             actor_id: actor.trim(),
@@ -2792,6 +2797,51 @@
           await this.loadPlayerAttributes();
         } catch (error) {
           this.errorMessage = String(error);
+        }
+      },
+
+      async renamePlayerCharacter() {
+        this.resetError();
+        if (!this.selectedCampaignId) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        const name = String(this.characterNameForm.value || "").trim().split(/\s+/).filter(Boolean).join(" ");
+        if (!actor) {
+          this.errorMessage = "Select an actor first.";
+          return;
+        }
+        if (!name) {
+          this.errorMessage = "Character name is required.";
+          return;
+        }
+        this.characterNameSaving = true;
+        try {
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/player-name`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ actor_id: actor, name }),
+          });
+          const statusMessage = result.old_name && result.old_name !== result.name
+            ? `Renamed ${result.old_name} to ${result.name}.`
+            : `Saved ${result.name}.`;
+          this.characterNameStatus = statusMessage;
+          this.statusMessage = statusMessage;
+          if (this.playerData && this.playerData.state) {
+            this.playerData.state.character_name = result.name;
+          }
+          this.characterNameForm.value = result.name;
+          await Promise.all([
+            this.loadPlayerState(),
+            this.loadPlayerStatistics(),
+            this.loadPlayerAttributes(),
+            this.loadRoster(),
+            this.loadDebugSnapshot(),
+          ]);
+          this.characterNameStatus = statusMessage;
+        } catch (error) {
+          this.characterNameStatus = "";
+          this.errorMessage = String(error);
+        } finally {
+          this.characterNameSaving = false;
         }
       },
 
