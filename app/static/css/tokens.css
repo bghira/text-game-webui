@@ -1,0 +1,142 @@
+:root {
+  /* Core palette */
+  --bg: #ece8df;
+  --ink: #1f2825;
+  --panel: #fffdf8;
+  --line: #c8beb0;
+  --accent: #2d5a4f;
+  --accent-soft: #d9ebe6;
+  --error: #922f25;
+  --mono: "IBM Plex Mono", monospace;
+  --sans: "IBM Plex Sans", sans-serif;
+  --shadow-sm: 0 1px 2px rgba(31, 40, 37, 0.04), 0 1px 4px rgba(31, 40, 37, 0.06);
+  --shadow-md: 0 2px 6px rgba(31, 40, 37, 0.06), 0 4px 12px rgba(31, 40, 37, 0.08);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 14px;
+  --transition: 150ms ease;
+
+  /* Body gradient */
+  --bg-gradient: linear-gradient(120deg, #f7f3ea 0%, #ece8df 60%, #e2e9e3 100%);
+
+  /* Text scale */
+  --ink-heading: #3a4e46;
+  --ink-secondary: #5a7268;
+  --ink-muted: #6a7a70;
+  --ink-faint: #7a8a80;
+  --ink-ghost: #8a9990;
+  --ink-placeholder: #9ca8a1;
+
+  /* Accent scale */
+  --accent-hover: #346b5e;
+  --accent-dark: #224740;
+  --accent-text: #1e3b33;
+  --accent-border: #b5ccc3;
+  --accent-border-hover: #9cb8ad;
+  --accent-muted: #a8c4b8;
+
+  /* Surfaces */
+  --surface-white: #fff;
+  --surface-warm: #fffcf6;
+  --surface-warm-deep: #fffaf0;
+  --surface-subtle: #f8f6f1;
+  --surface-muted: #f5f2ec;
+  --surface-tint: #f4f8f6;
+  --surface-soft: #f0ebe0;
+  --surface-dim: #e5e2db;
+  --surface-accent-light: #eef5f2;
+
+  /* Status */
+  --success: #3a8a5c;
+  --success-bright: #2e7d32;
+  --success-bg: #e8f5e9;
+  --success-border: #a5d6a7;
+  --warning: #b89a3e;
+  --warning-accent: #c9942a;
+  --warning-brown: #8a6d3b;
+  --error-bright: #c62828;
+  --error-border: #ef9a9a;
+  --error-bg: #fce4ec;
+  --info-accent: #5a8acc;
+  --cancel-bg: #fff3e0;
+  --cancel-border: #ffcc80;
+  --cancel-text: #e65100;
+  --cancel-bg-hover: #ffe0b2;
+
+  /* Active states */
+  --active-text: #eff8f4;
+  --active-border: #224740;
+
+  /* Overlays & shadows */
+  --overlay-light: rgba(0, 0, 0, 0.3);
+  --overlay-dark: rgba(0, 0, 0, 0.35);
+  --shadow-drawer: -6px 0 30px rgba(0, 0, 0, 0.1);
+  --shadow-modal: 0 8px 40px rgba(31, 40, 37, 0.15);
+  --shadow-inset: inset 0 1px 3px rgba(31, 40, 37, 0.04);
+  --shadow-focus: 0 0 0 3px rgba(45, 90, 79, 0.1);
+  --scrollbar-thumb: rgba(31, 40, 37, 0.15);
+  --scrollbar-thumb-hover: rgba(31, 40, 37, 0.28);
+
+  /* Component tokens */
+  --narrator-border: #e8e2d8;
+  --scene-card-border: #d4cfc4;
+  --mechanic-bg: #fdf8ee;
+  --mechanic-border: #d8ceb8;
+  --debug-border: #c8bfa8;
+  --explainer-border: #c8c2b6;
+  --settings-group-bg: rgba(0, 0, 0, 0.018);
+  --close-hover-bg: rgba(0, 0, 0, 0.05);
+
+  /* Button hover */
+  --button-hover-bg: #cce3dc;
+
+  /* Dice */
+  --dice-success-bg: linear-gradient(135deg, #e8f5e9 0%, #dcedc8 100%);
+  --dice-fail-bg: linear-gradient(135deg, #fce4ec 0%, #f8d7da 100%);
+
+  /* Scene card */
+  --scene-card-bg: linear-gradient(135deg, #f0ebe0 0%, #e8e3d8 100%);
+  --scene-prompt-text-color: #5a6b62;
+
+  /* Setup */
+  --setup-text-color: #4a5e54;
+
+  /* Player action */
+  --player-action-text: #3a4a42;
+
+  /* Quick info */
+  --quick-info-bg: linear-gradient(135deg, var(--accent-soft) 0%, #e8f0ec 100%);
+
+  /* Campaign summary */
+  --campaign-summary-bg: linear-gradient(135deg, var(--accent-soft) 0%, #e8f0ec 100%);
+
+  /* Wizard conversation */
+  --wizard-conv-bg: #fffcf6;
+
+  /* Stat pill */
+  --stat-pill-color: #3a5e4c;
+
+  /* Reasoning text */
+  --reasoning-text-color: #4a5e54;
+
+  /* File drop */
+  --file-drop-hover-bg: rgba(45, 90, 79, 0.06);
+
+  /* Status text */
+  --status-text: #34594f;
+
+  /* Slider thumb shadow */
+  --slider-thumb-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+
+  /* Action bar focus */
+  --action-bar-focus-shadow: 0 0 0 3px rgba(45, 90, 79, 0.08);
+
+  /* Selection */
+  --selection-color: #fff;
+
+  /* History player border */
+  --history-player-border: #5a8acc;
+
+  /* Flag hint */
+  --flag-hint-color: #8a9590;
+}

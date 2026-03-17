@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{{ theme or 'light' }}">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,8 +11,33 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
+    <script>
+      // Apply theme immediately to prevent flash. Reconcile localStorage
+      // with the server-rendered data-theme and enable custom CSS if needed.
+      (function() {
+        var serverTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        var stored = localStorage.getItem('theme');
+        // Prefer localStorage (client chose this), fall back to server value
+        var theme = stored || serverTheme;
+        // Sync both sides so they agree
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('theme', theme);
+        // Enable custom CSS link for non-builtin themes
+        var builtins = ['light', 'dark'];
+        if (builtins.indexOf(theme) === -1) {
+          var link = document.getElementById('custom-theme-css');
+          if (link) {
+            link.href = '/api/themes/' + encodeURIComponent(theme) + '/theme.css';
+            link.disabled = false;
+          }
+        }
+      })();
+    </script>
     <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
+    <link rel="stylesheet" href="/static/css/tokens.css" />
     <link rel="stylesheet" href="/static/css/app.css" />
+    <link rel="stylesheet" href="/static/css/themes/dark.css" />
+    <link id="custom-theme-css" rel="stylesheet" href="" disabled />
   </head>
   <body>
     <header class="topbar">

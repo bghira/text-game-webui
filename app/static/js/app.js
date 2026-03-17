@@ -98,6 +98,8 @@
       settingsOpen: false,
       settingsTab: "llm",
       modal: null,
+      theme: document.documentElement.getAttribute("data-theme") || localStorage.getItem("theme") || "light",
+      themes: [],
       toggleDebugMode() {
         this.debugMode = !this.debugMode;
         localStorage.setItem("debugMode", this.debugMode ? "true" : "false");
@@ -108,7 +110,40 @@
       closeModal() {
         this.modal = null;
       },
+      async loadThemes() {
+        try {
+          const res = await fetch("/api/themes");
+          if (res.ok) this.themes = await res.json();
+        } catch (_) {}
+      },
+      _syncCustomCssLink(name) {
+        const customLink = document.getElementById("custom-theme-css");
+        if (!customLink) return;
+        const builtins = ["light", "dark"];
+        if (!builtins.includes(name)) {
+          customLink.href = "/api/themes/" + encodeURIComponent(name) + "/theme.css";
+          customLink.disabled = false;
+        } else {
+          customLink.href = "";
+          customLink.disabled = true;
+        }
+      },
+      applyTheme(name) {
+        this.theme = name;
+        localStorage.setItem("theme", name);
+        document.documentElement.setAttribute("data-theme", name);
+        this._syncCustomCssLink(name);
+        // Persist to server
+        fetch("/api/settings/theme", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ theme: name }),
+        }).catch(function() {});
+      },
     });
+    // Sync custom CSS link and load theme list on init
+    Alpine.store("app")._syncCustomCssLink(Alpine.store("app").theme);
+    Alpine.store("app").loadThemes();
   });
 
   window.textGameApp = function textGameApp() {

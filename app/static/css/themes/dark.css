@@ -1,0 +1,140 @@
+html[data-theme="dark"] {
+  /* Core palette */
+  --bg: #1a1d21;
+  --ink: #d8dce0;
+  --panel: #22262b;
+  --line: #3a3f47;
+  --accent: #5cb8a3;
+  --accent-soft: #1e3a34;
+  --error: #e57373;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2), 0 1px 4px rgba(0, 0, 0, 0.15);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.18);
+
+  /* Body gradient */
+  --bg-gradient: linear-gradient(120deg, #1a1d21 0%, #1e2126 60%, #1c2023 100%);
+
+  /* Text scale */
+  --ink-heading: #b0c0b8;
+  --ink-secondary: #8a9e95;
+  --ink-muted: #7a8e85;
+  --ink-faint: #6a7e75;
+  --ink-ghost: #5a6e65;
+  --ink-placeholder: #4a5e55;
+
+  /* Accent scale */
+  --accent-hover: #6ecab5;
+  --accent-dark: #4aa08d;
+  --accent-text: #8fd4c4;
+  --accent-border: #2e5048;
+  --accent-border-hover: #3a6458;
+  --accent-muted: #345a50;
+  --accent-soft: #1e3a34;
+
+  /* Surfaces */
+  --surface-white: #282d33;
+  --surface-warm: #252a2f;
+  --surface-warm-deep: #232830;
+  --surface-subtle: #2a2f35;
+  --surface-muted: #2c3138;
+  --surface-tint: #242a30;
+  --surface-soft: #2e3339;
+  --surface-dim: #343940;
+  --surface-accent-light: #1e2e2a;
+
+  /* Status */
+  --success: #66bb6a;
+  --success-bright: #81c784;
+  --success-bg: #1b3a1e;
+  --success-border: #2e6630;
+  --warning: #d4a84a;
+  --warning-accent: #dbb040;
+  --warning-brown: #c8a060;
+  --error-bright: #ef5350;
+  --error-border: #6e3030;
+  --error-bg: #3a1e1e;
+  --info-accent: #64b5f6;
+  --cancel-bg: #3a2e1a;
+  --cancel-border: #6a5030;
+  --cancel-text: #ffab40;
+  --cancel-bg-hover: #4a3a22;
+
+  /* Active states */
+  --active-text: #1a2e28;
+  --active-border: #4aa08d;
+
+  /* Overlays & shadows */
+  --overlay-light: rgba(0, 0, 0, 0.5);
+  --overlay-dark: rgba(0, 0, 0, 0.6);
+  --shadow-drawer: -6px 0 30px rgba(0, 0, 0, 0.3);
+  --shadow-modal: 0 8px 40px rgba(0, 0, 0, 0.4);
+  --shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.15);
+  --shadow-focus: 0 0 0 3px rgba(92, 184, 163, 0.2);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.22);
+
+  /* Component tokens */
+  --narrator-border: #3a3f47;
+  --scene-card-border: #3a3f47;
+  --mechanic-bg: #2a2820;
+  --mechanic-border: #4a4538;
+  --debug-border: #4a4538;
+  --explainer-border: #4a4f56;
+  --settings-group-bg: rgba(255, 255, 255, 0.03);
+  --close-hover-bg: rgba(255, 255, 255, 0.08);
+
+  /* Button hover */
+  --button-hover-bg: #254038;
+
+  /* Dice */
+  --dice-success-bg: linear-gradient(135deg, #1b3a1e 0%, #1e3a20 100%);
+  --dice-fail-bg: linear-gradient(135deg, #3a1e1e 0%, #3a2020 100%);
+
+  /* Scene card */
+  --scene-card-bg: linear-gradient(135deg, #2a2f35 0%, #2e3339 100%);
+  --scene-prompt-text-color: #8a9e95;
+
+  /* Setup */
+  --setup-text-color: #8a9e95;
+
+  /* Player action */
+  --player-action-text: #9ab0a8;
+
+  /* Quick info */
+  --quick-info-bg: linear-gradient(135deg, #1e3a34 0%, #1e2e2a 100%);
+
+  /* Campaign summary */
+  --campaign-summary-bg: linear-gradient(135deg, #1e3a34 0%, #1e2e2a 100%);
+
+  /* Wizard conversation */
+  --wizard-conv-bg: #252a2f;
+
+  /* Stat pill */
+  --stat-pill-color: #8fd4c4;
+
+  /* Reasoning text */
+  --reasoning-text-color: #8a9e95;
+
+  /* File drop */
+  --file-drop-hover-bg: rgba(92, 184, 163, 0.08);
+
+  /* Status text */
+  --status-text: #8fd4c4;
+
+  /* Slider thumb shadow */
+  --slider-thumb-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+
+  /* Action bar focus */
+  --action-bar-focus-shadow: 0 0 0 3px rgba(92, 184, 163, 0.15);
+
+  /* Selection */
+  --selection-color: #1a2e28;
+
+  /* History player border */
+  --history-player-border: #64b5f6;
+
+  /* Flag hint */
+  --flag-hint-color: #5a6e65;
+
+  /* Color scheme hint for form controls */
+  color-scheme: dark;
+}
