@@ -62,6 +62,7 @@ class TurnResult(BaseModel):
     actor_id: str | None = None
     session_id: str | None = None
     narration: str
+    scene_output: dict | None = None
     state_update: dict = Field(default_factory=dict)
     player_state_update: dict = Field(default_factory=dict)
     summary_update: str | None = None
