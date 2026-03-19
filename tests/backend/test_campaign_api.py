@@ -580,3 +580,58 @@ def test_get_chapters_happy_path(client):
 def test_get_chapters_unknown_campaign(client):
     res = client.get("/api/campaigns/nonexistent-campaign/chapters")
     assert res.status_code == 404
+
+
+def test_recent_turns_offset_pagination(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    # Submit 5 turns
+    for i in range(5):
+        res = client.post(
+            f"/api/campaigns/{campaign_id}/turns",
+            json={"actor_id": "dale-denton", "action": f"action {i + 1}"},
+        )
+        assert res.status_code == 200
+
+    # Page 1: latest 2 turns (turns 4 & 5)
+    res1 = client.get(f"/api/campaigns/{campaign_id}/recent-turns", params={"limit": 2, "offset": 0})
+    assert res1.status_code == 200
+    body1 = res1.json()
+    assert body1["count"] == 2
+    assert body1["has_more"] is True
+    ids1 = [t["id"] for t in body1["turns"]]
+    assert ids1 == [4, 5]
+
+    # Page 2: next 2 turns (turns 2 & 3)
+    res2 = client.get(f"/api/campaigns/{campaign_id}/recent-turns", params={"limit": 2, "offset": 2})
+    assert res2.status_code == 200
+    body2 = res2.json()
+    assert body2["count"] == 2
+    assert body2["has_more"] is True
+    ids2 = [t["id"] for t in body2["turns"]]
+    assert ids2 == [2, 3]
+
+    # Page 3: last turn (turn 1)
+    res3 = client.get(f"/api/campaigns/{campaign_id}/recent-turns", params={"limit": 2, "offset": 4})
+    assert res3.status_code == 200
+    body3 = res3.json()
+    assert body3["count"] == 1
+    assert body3["has_more"] is False
+    ids3 = [t["id"] for t in body3["turns"]]
+    assert ids3 == [1]
+
+    # Offset beyond total returns empty
+    res4 = client.get(f"/api/campaigns/{campaign_id}/recent-turns", params={"limit": 2, "offset": 10})
+    assert res4.status_code == 200
+    body4 = res4.json()
+    assert body4["count"] == 0
+    assert body4["has_more"] is False
+    assert body4["turns"] == []
+
+    # Default (no offset) returns all 5 with has_more false
+    res5 = client.get(f"/api/campaigns/{campaign_id}/recent-turns", params={"limit": 30})
+    assert res5.status_code == 200
+    body5 = res5.json()
+    assert body5["count"] == 5
+    assert body5["has_more"] is False

@@ -390,6 +390,7 @@ export async function smsToolsFlow(
 /* ---- Turn history types and helpers ---- */
 
 export type HistoryTurn = {
+  id?: number | null;
   kind: string;
   content: string;
   session_id?: string;
@@ -412,21 +413,22 @@ export type Session = {
 export function populateTurnStreamFromHistory(
   recentTurns: HistoryTurn[],
   selectedSessionId: string,
-): { entries: Array<{ id: number; type: string; text: string; at: string; meta: Record<string, unknown> }>; turnCounter: number; gameTime: Record<string, unknown> } {
+): { entries: Array<{ id: number; type: string; text: string; at: string; meta: Record<string, unknown>; _backendTurnId: number | null }>; turnCounter: number; gameTime: Record<string, unknown> } {
   let gameTime: Record<string, unknown> = {};
-  const entries: Array<{ id: number; type: string; text: string; at: string; meta: Record<string, unknown> }> = [];
+  const entries: Array<{ id: number; type: string; text: string; at: string; meta: Record<string, unknown>; _backendTurnId: number | null }> = [];
   let counter = 0;
   for (const turn of recentTurns) {
     if (selectedSessionId && turn.session_id && turn.session_id !== selectedSessionId) continue;
     if (turn.kind === "narration" || turn.kind === "action_response") {
       counter++;
       const meta = turn.meta || {};
-      const entry: { id: number; type: string; text: string; at: string; meta: Record<string, unknown> } = {
+      const entry: { id: number; type: string; text: string; at: string; meta: Record<string, unknown>; _backendTurnId: number | null } = {
         id: counter,
         type: "narrator",
         at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
         text: turn.content || "[No content]",
         meta: {},
+        _backendTurnId: turn.id || null,
       };
       if (meta.game_time) {
         entry.meta._game_time = meta.game_time;
@@ -519,6 +521,64 @@ export async function campaignCreationWithDocsFlow(
   }
 
   return { calls, campaignId, failedFiles };
+}
+
+/* ---- Rewind from turn stream helpers ---- */
+
+export async function rewindFromStreamFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  turnId: number,
+): Promise<{ calls: string[]; rewindOk: boolean }> {
+  const calls: string[] = [];
+  if (!Number.isFinite(turnId) || turnId <= 0) {
+    return { calls, rewindOk: false };
+  }
+  const url = `/api/campaigns/${campaignId}/rewind?target_turn_id=${turnId}`;
+  calls.push(url);
+  const result = (await fetcher(url, { method: "POST" })) as { ok?: boolean };
+  return { calls, rewindOk: result.ok !== false };
+}
+
+/* ---- Infinite scroll pagination helpers ---- */
+
+export type PaginationState = {
+  offset: number;
+  hasMore: boolean;
+  loading: boolean;
+};
+
+export function initPaginationState(): PaginationState {
+  return { offset: 0, hasMore: false, loading: false };
+}
+
+export function resetPagination(): PaginationState {
+  return { offset: 0, hasMore: false, loading: false };
+}
+
+export async function loadOlderTurnsFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  currentTurns: HistoryTurn[],
+  pagination: PaginationState,
+): Promise<{ calls: string[]; turns: HistoryTurn[]; pagination: PaginationState }> {
+  const calls: string[] = [];
+  if (pagination.loading || !pagination.hasMore) {
+    return { calls, turns: currentTurns, pagination };
+  }
+  const newOffset = pagination.offset + currentTurns.length;
+  const url = `/api/campaigns/${campaignId}/recent-turns?limit=30&offset=${newOffset}`;
+  calls.push(url);
+  const data = (await fetcher(url)) as { turns?: HistoryTurn[]; has_more?: boolean };
+  const older = Array.isArray(data.turns) ? data.turns : [];
+  if (older.length === 0) {
+    return { calls, turns: currentTurns, pagination: { ...pagination, hasMore: false } };
+  }
+  return {
+    calls,
+    turns: [...older, ...currentTurns],
+    pagination: { offset: newOffset, hasMore: !!data.has_more, loading: false },
+  };
 }
 
 /* ---- Unseen-activity helpers ---- */

@@ -3841,14 +3841,20 @@ class TextGameEngineGateway(EngineGateway):
         ok, message = self._emulator.level_up(player)
         return {"ok": ok, "message": message}
 
-    async def get_recent_turns(self, campaign_id: str, limit: int = 30) -> dict:
+    async def get_recent_turns(self, campaign_id: str, limit: int = 30, offset: int = 0) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
-        turns = self._emulator.get_recent_turns(campaign_id, limit=limit)
+        fetch_limit = limit + offset + 1
+        raw = self._emulator.get_recent_turns(campaign_id, limit=fetch_limit)
+        # raw is oldest→newest
+        has_more = len(raw) >= fetch_limit
+        end_idx = len(raw) - offset if offset < len(raw) else 0
+        start_idx = max(0, end_idx - limit)
+        page = raw[start_idx:end_idx] if end_idx > 0 else []
         rows = []
-        for turn in turns:
+        for turn in page:
             meta = self._parse_json(turn.meta_json, {})
             rows.append({
                 "id": turn.id,
@@ -3859,7 +3865,7 @@ class TextGameEngineGateway(EngineGateway):
                 "meta": meta,
                 "created_at": turn.created_at.isoformat() if turn.created_at else None,
             })
-        return {"turns": rows, "count": len(rows)}
+        return {"turns": rows, "count": len(rows), "has_more": has_more}
 
     async def get_campaign_persona(self, campaign_id: str) -> dict:
         with self._session_factory() as session:

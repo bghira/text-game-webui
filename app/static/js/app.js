@@ -403,6 +403,9 @@
 
       /* Turn history */
       recentTurns: [],
+      _turnStreamOffset: 0,
+      _turnStreamHasMore: false,
+      _turnStreamLoadingOlder: false,
 
       /* Campaign persona */
       campaignPersona: "",
@@ -476,6 +479,18 @@
           }
         }
 
+        /* Infinite scroll: load older turns when scrolled near top */
+        this.$nextTick(() => {
+          const stream = document.getElementById("turn-stream");
+          if (stream) {
+            stream.addEventListener("scroll", () => {
+              if (stream.scrollTop < 80 && this._turnStreamHasMore && !this._turnStreamLoadingOlder) {
+                this.loadOlderTurns();
+              }
+            });
+          }
+        });
+
         if (!this.statusMessage.startsWith("Runtime backend:")) {
           this.statusMessage = "Initialized.";
         }
@@ -497,6 +512,7 @@
               at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
               text: renderDiscordTimestamps(stripTrailingInventory(turn.content || "[No content]")),
               meta: {},
+              _backendTurnId: turn.id || null,
             };
             if (meta.game_time) {
               entry.meta._game_time = meta.game_time;
@@ -508,7 +524,7 @@
         return { entries, counter, lastGameTime };
       },
 
-      populateTurnStreamFromHistory() {
+      populateTurnStreamFromHistory(scrollToBottom) {
         if (!this.recentTurns || this.recentTurns.length === 0) return;
         const sessionId = this.selectedSessionId;
         let result = this._buildTurnEntries(this.recentTurns, sessionId);
@@ -526,7 +542,7 @@
             this.gameTime = result.lastGameTime;
           }
         }
-        this._scrollStream();
+        if (scrollToBottom !== false) this._scrollStream();
       },
 
       /* ---- Turn stream filtering ---- */
@@ -1714,18 +1730,18 @@
       },
 
       /* ---- Rewind ---- */
-      async rewindToTurn() {
+      async rewindToTurnId(turnId) {
         this.resetError();
         this.rewindStatus = "";
         if (!this.selectedCampaignId) {
           this.errorMessage = "Select a campaign first.";
           return;
         }
-        const turnId = parseInt(this.rewindTargetTurn, 10);
         if (!Number.isFinite(turnId) || turnId <= 0) {
           this.errorMessage = "Enter a valid turn ID (positive integer).";
           return;
         }
+        if (!confirm(`Rewind to turn ${turnId}? This is destructive and cannot be undone.`)) return;
         try {
           const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/rewind?target_turn_id=${turnId}`, {
             method: "POST",
@@ -1736,6 +1752,7 @@
           }
           this.rewindStatus = `Rewound to turn ${turnId} at ${nowLabel()}.`;
           this.rewindTargetTurn = "";
+          this._resetPagination();
           this.pushStream("notice", `Rewound to turn ${turnId}`, { rewind: true });
           /* Reload all state after rewind */
           await Promise.all([
@@ -1757,6 +1774,11 @@
         } catch (error) {
           this.errorMessage = String(error);
         }
+      },
+
+      async rewindToTurn() {
+        const turnId = parseInt(this.rewindTargetTurn, 10);
+        await this.rewindToTurnId(turnId);
       },
 
       async refreshCampaigns() {
@@ -1903,6 +1925,7 @@
         this.selectedSessionId = restoreSessionId || "";
         if (!restoreSessionId) localStorage.removeItem("selectedSessionId");
         this.turnStream = [];
+        this._resetPagination();
         /* Reset unseen-activity tracking for previous campaign */
         this.sessionLastSeen = {};
         this._persistSessionLastSeen();
@@ -2894,7 +2917,44 @@
             `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=${lim}`,
           );
           this.recentTurns = Array.isArray(data.turns) ? data.turns : [];
-        } catch (_) { this.recentTurns = []; }
+          this._turnStreamOffset = 0;
+          this._turnStreamHasMore = !!data.has_more;
+        } catch (_) { this.recentTurns = []; this._turnStreamHasMore = false; }
+      },
+
+      async loadOlderTurns() {
+        if (this._turnStreamLoadingOlder || !this._turnStreamHasMore || !this.selectedCampaignId) return;
+        this._turnStreamLoadingOlder = true;
+        try {
+          const newOffset = this._turnStreamOffset + this.recentTurns.length;
+          const data = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=30&offset=${newOffset}`,
+          );
+          const older = Array.isArray(data.turns) ? data.turns : [];
+          if (older.length === 0) {
+            this._turnStreamHasMore = false;
+            return;
+          }
+          const stream = document.getElementById("turn-stream");
+          const prevHeight = stream ? stream.scrollHeight : 0;
+          this.recentTurns = [...older, ...this.recentTurns];
+          this._turnStreamOffset = newOffset;
+          this._turnStreamHasMore = !!data.has_more;
+          this.populateTurnStreamFromHistory(false);
+          this.$nextTick(() => {
+            if (stream) stream.scrollTop = stream.scrollHeight - prevHeight;
+          });
+        } catch (_) {
+          /* swallow — will retry on next scroll */
+        } finally {
+          this._turnStreamLoadingOlder = false;
+        }
+      },
+
+      _resetPagination() {
+        this._turnStreamOffset = 0;
+        this._turnStreamHasMore = false;
+        this._turnStreamLoadingOlder = false;
       },
 
       /* ---- Campaign persona ---- */
