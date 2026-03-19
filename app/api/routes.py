@@ -1267,8 +1267,8 @@ def _query_rocm_smi() -> dict | None:
         return None
 
     commands = [
-        [rocm_smi, "--showproductname", "--showuse", "--showtemp", "--showmemuse", "--json"],
         [rocm_smi, "--showproductname", "--showuse", "--showtemp", "--showmeminfo", "vram", "--json"],
+        [rocm_smi, "--showproductname", "--showuse", "--showtemp", "--showmemuse", "--json"],
         [rocm_smi, "--showuse", "--showtemp", "--json"],
         [rocm_smi, "--showuse"],
     ]
@@ -1317,6 +1317,14 @@ def _query_rocm_smi() -> dict | None:
                         or _coerce_bytes(entry.get("GPU Memory Total (B)"))
                         or _coerce_bytes(entry.get("GPU Memory Total"))
                     )
+                # Fallback: compute used from percentage when only --showmemuse was available
+                if used_bytes is None and total_bytes is not None:
+                    mem_pct = (
+                        _coerce_percent(entry.get("GPU memory use (%)"))
+                        or _coerce_percent(entry.get("GPU Memory Allocated (VRAM%)"))
+                    )
+                    if mem_pct is not None:
+                        used_bytes = int(total_bytes * mem_pct / 100.0)
                 utilization_pct = None
                 for util_key in (
                     "GPU use (%)",
@@ -1334,16 +1342,16 @@ def _query_rocm_smi() -> dict | None:
                     temp_c = _coerce_percent(raw_value)
                     if temp_c is not None:
                         break
+                # Card model often returns a hex PCI ID (e.g. "0x74b5").
+                # Check human-readable fields first, skip any hex values.
+                raw_name = "AMD GPU"
+                for name_key in ("Card series", "Market Name", "Device Name", "Card model"):
+                    val = entry.get(name_key)
+                    if isinstance(val, str) and val.strip() and not val.strip().startswith("0x"):
+                        raw_name = val.strip()
+                        break
                 candidates.append({
-                    "name": _normalize_gpu_name(
-                        str(
-                            entry.get("Card model")
-                            or entry.get("Card series")
-                            or entry.get("Device Name")
-                            or entry.get("Market Name")
-                            or "AMD GPU"
-                        )
-                    ),
+                    "name": _normalize_gpu_name(raw_name),
                     "utilization_pct": utilization_pct,
                     "vram_used_bytes": used_bytes,
                     "vram_total_bytes": total_bytes,
