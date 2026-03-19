@@ -167,6 +167,7 @@ class EngineGateway(Protocol):
     async def get_literary_styles(self, campaign_id: str) -> dict: ...
     async def cancel_sms_deliveries(self, campaign_id: str) -> dict: ...
     async def get_story_state(self, campaign_id: str) -> dict: ...
+    async def get_chapter_list(self, campaign_id: str) -> dict: ...
     async def search_source_material(self, campaign_id: str, query: str, *, document_key: str | None = None, top_k: int = 5) -> dict: ...
     async def ingest_source_material_with_digest(self, campaign_id: str, payload: SourceMaterialDigestIngest) -> dict: ...
     async def browse_source_keys(self, campaign_id: str, *, wildcard: str = "*", document_key: str | None = None) -> dict: ...
@@ -1118,6 +1119,7 @@ Legend: @ current player
     async def get_story_state(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)
         return {
+            "on_rails": False,
             "story_outline": None,
             "current_chapter": None,
             "current_scene": None,
@@ -1126,6 +1128,15 @@ Legend: @ current player
             "chapter_plan": {},
             "active_puzzle": None,
             "active_minigame": None,
+        }
+
+    async def get_chapter_list(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {
+            "on_rails": False,
+            "current_chapter": None,
+            "current_scene": None,
+            "chapters": [],
         }
 
     async def search_source_material(self, campaign_id: str, query: str, *, document_key: str | None = None, top_k: int = 5) -> dict:

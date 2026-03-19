@@ -4162,6 +4162,7 @@ class TextGameEngineGateway(EngineGateway):
             if not isinstance(state, dict):
                 state = {}
         return {
+            "on_rails": bool(state.get("on_rails", False)),
             "story_outline": state.get("story_outline"),
             "current_chapter": state.get("current_chapter"),
             "current_scene": state.get("current_scene"),
@@ -4171,6 +4172,13 @@ class TextGameEngineGateway(EngineGateway):
             "active_puzzle": state.get("_active_puzzle"),
             "active_minigame": state.get("_active_minigame"),
         }
+
+    async def get_chapter_list(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+        return self._emulator.get_chapter_list(campaign)
 
     async def search_source_material(self, campaign_id: str, query: str, *, document_key: str | None = None, top_k: int = 5) -> dict:
         with self._session_factory() as session:

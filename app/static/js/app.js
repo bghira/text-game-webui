@@ -415,6 +415,9 @@
 
       /* Story state (debug) */
       storyState: null,
+      /* Chapter list for sidebar */
+      chapterList: null,
+      chaptersPanelOpen: true,
       rewindTargetTurn: "",
       rewindStatus: "",
 
@@ -1684,7 +1687,7 @@
           }
           this.puzzleAnswer = "";
           this.puzzleStatus = result.solved ? "Solved!" : (result.failed ? "Failed." : "");
-          await this.loadStoryState();
+          await Promise.all([this.loadStoryState(), this.loadChapterList()]);
         } catch (error) {
           this.errorMessage = String(error);
         }
@@ -1718,7 +1721,7 @@
           this.minigameMove = "";
           this.minigameBoard = result.board || "";
           this.minigameStatus = result.finished ? `Finished (${result.status})` : (result.status || "");
-          await this.loadStoryState();
+          await Promise.all([this.loadStoryState(), this.loadChapterList()]);
         } catch (error) {
           this.errorMessage = String(error);
         }
@@ -1730,6 +1733,14 @@
         try {
           this.storyState = await this.api(`/api/campaigns/${this.selectedCampaignId}/story`);
         } catch (_) { this.storyState = null; }
+      },
+
+      /* ---- Chapter list (sidebar) ---- */
+      async loadChapterList() {
+        if (!this.selectedCampaignId) return;
+        try {
+          this.chapterList = await this.api(`/api/campaigns/${this.selectedCampaignId}/chapters`);
+        } catch (_) { this.chapterList = null; }
       },
 
       /* ---- Rewind ---- */
@@ -1770,6 +1781,7 @@
             this.loadCampaignFlags(),
             this.loadRecentTurns(),
             this.loadStoryState(),
+            this.loadChapterList(),
             this.loadSceneImages(),
           ]);
         } catch (error) {
@@ -1929,6 +1941,7 @@
         this.gameTime = {};
         this.campaignSummary = "";
         this.storyState = null;
+        this.chapterList = null;
         this.playerData = null;
         this.playerStats = null;
         this.playerAttributes = null;
@@ -1999,6 +2012,7 @@
           this.loadSceneImages(),
           this.loadLiteraryStyles(),
           this.loadStoryState(),
+          this.loadChapterList(),
         ]).catch(() => {});
         this.populateTurnStreamFromHistory();
         this._startUnseenPoll();
@@ -2086,6 +2100,7 @@
             }
             this.loadTimers();
             this.loadStoryState();
+            this.loadChapterList();
           }
           if (payload.type === "sms" && payload.payload) {
             this.pushStream("sms", formatJson(payload.payload));
@@ -2452,6 +2467,7 @@
             this.loadDebugSnapshot(),
             this.loadRecentTurns(),
             this.loadStoryState(),
+            this.loadChapterList(),
             this.loadSceneImages(),
           ]);
           /* Rebuild the turn stream from server history to recover any
@@ -2956,6 +2972,7 @@
           this.loadDebugSnapshot(),
           this.loadCampaignFlags(),
           this.loadStoryState(),
+          this.loadChapterList(),
           this.loadCampaignPersona(),
           this.loadSceneImages(),
           this.loadLiteraryStyles(),

@@ -584,3 +584,20 @@ def test_sms_read_with_viewer_actor_id(client):
     )
     assert res_no_viewer.status_code == 200
     assert len(res_no_viewer.json()["messages"]) == 1
+
+
+def test_get_chapters_happy_path(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    res = client.get(f"/api/campaigns/{campaign_id}/chapters")
+    assert res.status_code == 200
+    body = res.json()
+    assert "chapters" in body
+    assert isinstance(body["chapters"], list)
+    assert "on_rails" in body
+
+
+def test_get_chapters_unknown_campaign(client):
+    res = client.get("/api/campaigns/nonexistent-campaign/chapters")
+    assert res.status_code == 404
