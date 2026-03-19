@@ -2947,18 +2947,18 @@
             `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=${lim}`,
           );
           this.recentTurns = Array.isArray(data.turns) ? data.turns : [];
-          this._turnStreamOffset = 0;
+          // Offset represents the number of newest turns already loaded
+          this._turnStreamOffset = this.recentTurns.length;
           this._turnStreamHasMore = !!data.has_more;
-        } catch (_) { this.recentTurns = []; this._turnStreamHasMore = false; }
+        } catch (_) { this.recentTurns = []; this._turnStreamOffset = 0; this._turnStreamHasMore = false; }
       },
 
       async loadOlderTurns() {
         if (this._turnStreamLoadingOlder || !this._turnStreamHasMore || !this.selectedCampaignId) return;
         this._turnStreamLoadingOlder = true;
         try {
-          const newOffset = this._turnStreamOffset + this.recentTurns.length;
           const data = await this.api(
-            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=30&offset=${newOffset}`,
+            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=30&offset=${this._turnStreamOffset}`,
           );
           const older = Array.isArray(data.turns) ? data.turns : [];
           if (older.length === 0) {
@@ -2968,7 +2968,7 @@
           const stream = document.getElementById("turn-stream");
           const prevHeight = stream ? stream.scrollHeight : 0;
           this.recentTurns = [...older, ...this.recentTurns];
-          this._turnStreamOffset = newOffset;
+          this._turnStreamOffset += older.length;
           this._turnStreamHasMore = !!data.has_more;
           this.populateTurnStreamFromHistory(false);
           this.$nextTick(() => {

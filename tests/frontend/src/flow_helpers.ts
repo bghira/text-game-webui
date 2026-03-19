@@ -539,8 +539,8 @@ export async function rewindFromStreamFlow(
   }
   const url = `/api/campaigns/${campaignId}/rewind?target_turn_id=${turnId}`;
   calls.push(url);
-  const result = (await fetcher(url, { method: "POST" })) as { ok?: boolean };
-  return { calls, rewindOk: result.ok !== false };
+  const result = (await fetcher(url, { method: "POST" })) as { ok: boolean };
+  return { calls, rewindOk: result.ok === true };
 }
 
 /* ---- Infinite scroll pagination helpers ---- */
@@ -569,14 +569,14 @@ export async function loadOlderTurnsFlow(
   if (pagination.loading || !pagination.hasMore) {
     return { calls, turns: currentTurns, pagination };
   }
-  const newOffset = pagination.offset + currentTurns.length;
-  const url = `/api/campaigns/${campaignId}/recent-turns?limit=30&offset=${newOffset}`;
+  const url = `/api/campaigns/${campaignId}/recent-turns?limit=30&offset=${pagination.offset}`;
   calls.push(url);
   const data = (await fetcher(url)) as { turns?: HistoryTurn[]; has_more?: boolean };
   const older = Array.isArray(data.turns) ? data.turns : [];
   if (older.length === 0) {
     return { calls, turns: currentTurns, pagination: { ...pagination, hasMore: false } };
   }
+  const newOffset = pagination.offset + older.length;
   return {
     calls,
     turns: [...older, ...currentTurns],

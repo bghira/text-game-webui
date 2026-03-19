@@ -3851,12 +3851,15 @@ class TextGameEngineGateway(EngineGateway):
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
-        fetch_limit = limit + offset + 1
+        # Guard against pathological pagination requests by capping limit/offset.
+        safe_limit = max(1, min(limit, 100))
+        safe_offset = max(0, min(offset, 1000))
+        fetch_limit = safe_limit + safe_offset + 1
         raw = self._emulator.get_recent_turns(campaign_id, limit=fetch_limit)
         # raw is oldest→newest
         has_more = len(raw) >= fetch_limit
-        end_idx = len(raw) - offset if offset < len(raw) else 0
-        start_idx = max(0, end_idx - limit)
+        end_idx = len(raw) - safe_offset if safe_offset < len(raw) else 0
+        start_idx = max(0, end_idx - safe_limit)
         page = raw[start_idx:end_idx] if end_idx > 0 else []
         rows = []
         for turn in page:

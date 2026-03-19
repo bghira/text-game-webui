@@ -255,7 +255,7 @@
                 </template>
                 <small class="turn-time" x-text="entry.at"></small>
                 <template x-if="entry._backendTurnId > 0 && !entry._streaming">
-                  <button type="button" class="rewind-btn" title="Rewind to this turn"
+                  <button type="button" class="rewind-btn" title="Rewind to this turn" aria-label="Rewind to this turn"
                     @click="rewindToTurnId(entry._backendTurnId)" :disabled="submitting">&#x23EA;</button>
                 </template>
               </span>

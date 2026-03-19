@@ -1067,8 +1067,10 @@ Legend: @ current player
         self._require_campaign(campaign_id)
         all_turns = self._turns[campaign_id]
         total = len(all_turns)
-        end = total - offset
-        start = max(0, end - limit)
+        safe_offset = max(0, offset)
+        safe_limit = max(1, limit)
+        end = total - safe_offset
+        start = max(0, end - safe_limit)
         page = all_turns[start:end] if end > 0 else []
         return {"turns": page, "count": len(page), "has_more": start > 0}
 
