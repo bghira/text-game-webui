@@ -444,6 +444,16 @@ class InMemoryEngineGateway:
             actor_id=request.actor_id,
             session_id=session_id,
             narration=f"TURN {turn_id}: {request.actor_id} -> {request.action}",
+            scene_output={
+                "beats": [
+                    {
+                        "speaker": "narrator",
+                        "text": f"TURN {turn_id}: {request.actor_id} -> {request.action}",
+                        "type": "narration",
+                        "visibility": "public",
+                    },
+                ],
+            },
             player_state_update={
                 "room_title": player_state.get("room_title"),
                 "room_summary": player_state.get("room_summary"),
