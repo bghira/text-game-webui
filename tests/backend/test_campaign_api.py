@@ -501,6 +501,27 @@ def test_stream_turn_token_text_matches_narration(client):
     assert token_texts == complete_event["data"]["narration"]
 
 
+def test_stream_turn_complete_includes_scene_output(client):
+    """The complete SSE event should include scene_output with beats."""
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    res = client.post(
+        f"/api/campaigns/{campaign_id}/turns/stream",
+        json={"actor_id": "dale-denton", "action": "look around"},
+    )
+    assert res.status_code == 200
+
+    events = _parse_sse_events(res.text)
+    complete_event = next(e for e in events if e["event"] == "complete")
+    scene_output = complete_event["data"].get("scene_output")
+    assert scene_output is not None
+    assert isinstance(scene_output["beats"], list)
+    assert len(scene_output["beats"]) > 0
+    assert "speaker" in scene_output["beats"][0]
+    assert "text" in scene_output["beats"][0]
+
+
 def test_delete_campaign_removes_it(client):
     """DELETE /campaigns/{id} should remove the campaign from listings."""
     campaign = _create_campaign(client)

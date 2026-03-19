@@ -2669,6 +2669,7 @@ class TextGameEngineGateway(EngineGateway):
 
         turn_visibility: dict[str, Any] = {}
         reasoning: str | None = None
+        scene_output: dict | None = None
         if narrator_turn is not None:
             turn_meta = self._parse_json(narrator_turn.meta_json, {})
             if isinstance(turn_meta, dict):
@@ -2676,6 +2677,9 @@ class TextGameEngineGateway(EngineGateway):
                 raw_reasoning = turn_meta.get("reasoning")
                 if isinstance(raw_reasoning, str) and raw_reasoning.strip():
                     reasoning = raw_reasoning.strip()
+                raw_scene = turn_meta.get("scene_output")
+                if isinstance(raw_scene, dict) and isinstance(raw_scene.get("beats"), list):
+                    scene_output = raw_scene
 
         # Extract latest scene image prompt from outbox (if generated this turn)
         image_prompt: str | None = None
@@ -2717,6 +2721,7 @@ class TextGameEngineGateway(EngineGateway):
             actor_id=request.actor_id,
             session_id=session_id,
             narration=str(narration),
+            scene_output=scene_output,
             state_update=state_update,
             player_state_update=player_state_update,
             summary_update=summary_update,

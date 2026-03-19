@@ -434,6 +434,9 @@ export function populateTurnStreamFromHistory(
         entry.meta._game_time = meta.game_time;
         gameTime = meta.game_time as Record<string, unknown>;
       }
+      if (meta.scene_output && Array.isArray((meta.scene_output as Record<string, unknown>).beats)) {
+        entry.meta.scene_output = meta.scene_output;
+      }
       entries.push(entry);
     }
   }

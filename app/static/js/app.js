@@ -64,6 +64,33 @@
     });
   }
 
+  function formatSceneSpeakerName(raw) {
+    const text = String(raw || "").trim();
+    if (!text || text.toLowerCase() === "narrator") return "narrator";
+    if (text.toLowerCase() === text && text.includes("-")) {
+      const parts = text.split("-").filter(Boolean);
+      if (parts.length) return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+    }
+    return text;
+  }
+
+  function renderSceneOutputHtml(sceneOutput, fallbackText) {
+    if (!sceneOutput || !Array.isArray(sceneOutput.beats) || !sceneOutput.beats.length) {
+      return renderSimpleMarkdown(fallbackText || "");
+    }
+    const parts = [];
+    for (const beat of sceneOutput.beats) {
+      if (!beat || typeof beat !== "object") continue;
+      const text = String(beat.text || "").trim();
+      if (!text) continue;
+      const speaker = formatSceneSpeakerName(beat.speaker);
+      const escapedText = renderSimpleMarkdown(text);
+      parts.push(`<span class="speaker-label">${renderSimpleMarkdown(speaker)}</span>${escapedText}`);
+    }
+    if (parts.length) return parts.join("<br><br>");
+    return renderSimpleMarkdown(fallbackText || "");
+  }
+
   function normalizeTurnNarration(payload) {
     if (payload.narration && payload.narration.trim().length > 0) {
       return renderDiscordTimestamps(stripTrailingInventory(payload.narration));
@@ -517,6 +544,9 @@
             if (meta.game_time) {
               entry.meta._game_time = meta.game_time;
               lastGameTime = meta.game_time;
+            }
+            if (meta.scene_output && Array.isArray(meta.scene_output.beats)) {
+              entry.meta.scene_output = meta.scene_output;
             }
             entries.push(entry);
           }
@@ -3244,6 +3274,11 @@
 
       renderSimpleMarkdown(text) {
         return renderSimpleMarkdown(text);
+      },
+
+      renderNarratorHtml(entry) {
+        const scene = entry.meta && entry.meta.scene_output;
+        return renderSceneOutputHtml(scene, entry.text);
       },
 
       _scrollWizardConversation() {
