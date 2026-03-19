@@ -499,6 +499,13 @@ button:disabled {
   align-items: center;
   gap: 0.35rem;
   user-select: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: inherit;
+  cursor: pointer;
 }
 
 .chapters-heading small {

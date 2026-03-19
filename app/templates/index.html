@@ -52,10 +52,16 @@
     <!-- Chapters Panel -->
     <template x-if="chapterList && chapterList.chapters && chapterList.chapters.length > 0">
       <div class="chapters-panel">
-        <h2 class="chapters-heading" @click="chaptersPanelOpen = !chaptersPanelOpen" style="cursor:pointer">
+        <button
+          type="button"
+          class="chapters-heading"
+          @click="chaptersPanelOpen = !chaptersPanelOpen"
+          :aria-expanded="chaptersPanelOpen"
+          aria-controls="chapters-list"
+        >
           Chapters <small x-text="chaptersPanelOpen ? '\u25B4' : '\u25BE'"></small>
-        </h2>
-        <div x-show="chaptersPanelOpen" class="chapters-list">
+        </button>
+        <div x-show="chaptersPanelOpen" class="chapters-list" id="chapters-list">
           <template x-for="(ch, idx) in chapterList.chapters" :key="idx">
             <div class="chapter-entry" :class="{ 'chapter-current': ch.is_current, 'chapter-completed': ch.status === 'completed', 'chapter-resolved': ch.status === 'resolved' }">
               <div class="chapter-header">
