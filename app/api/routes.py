@@ -512,10 +512,13 @@ async def level_up_player(
 async def get_recent_turns(
     campaign_id: str,
     limit: int = 30,
+    offset: int = 0,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    if offset < 0 or limit < 1:
+        _bad_request(ValueError("limit must be >= 1 and offset must be >= 0"))
     try:
-        return await gateway.get_recent_turns(campaign_id, limit=limit)
+        return await gateway.get_recent_turns(campaign_id, limit=limit, offset=offset)
     except KeyError as err:
         _not_found(err)
 

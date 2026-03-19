@@ -241,6 +241,9 @@
     </div>
 
     <div class="turn-stream" id="turn-stream">
+      <div x-show="_turnStreamLoadingOlder" class="turn-stream-loading">
+        <small>Loading older turns...</small>
+      </div>
       <template x-for="entry in visibleTurnStream()" :key="entry.id">
         <article class="turn-entry" :class="'turn-type-' + entry.type">
           <template x-if="entry.type === 'narrator'">
@@ -251,6 +254,10 @@
                   <small class="turn-game-time" x-text="'Day ' + entry.meta._game_time.day + ', ' + String(entry.meta._game_time.hour||0).padStart(2,'0') + ':' + String(entry.meta._game_time.minute||0).padStart(2,'0')"></small>
                 </template>
                 <small class="turn-time" x-text="entry.at"></small>
+                <template x-if="entry._backendTurnId > 0 && !entry._streaming">
+                  <button type="button" class="rewind-btn" title="Rewind to this turn" aria-label="Rewind to this turn"
+                    @click="rewindToTurnId(entry._backendTurnId)" :disabled="submitting">&#x23EA;</button>
+                </template>
               </span>
             </div>
           </template>
