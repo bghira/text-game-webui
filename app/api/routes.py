@@ -749,6 +749,14 @@ async def get_story_state(campaign_id: str, gateway: EngineGateway = Depends(get
         _not_found(err)
 
 
+@router.get("/campaigns/{campaign_id}/chapters")
+async def get_chapter_list(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    try:
+        return await gateway.get_chapter_list(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+
+
 @router.get("/campaigns/{campaign_id}/map")
 async def get_map(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:

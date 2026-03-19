@@ -49,6 +49,38 @@
       <small class="game-time-clock" x-text="String(gameTime.hour||0).padStart(2,'0') + ':' + String(gameTime.minute||0).padStart(2,'0')"></small>
     </div>
 
+    <!-- Chapters Panel -->
+    <template x-if="chapterList && chapterList.chapters && chapterList.chapters.length > 0">
+      <div class="chapters-panel">
+        <h2 class="chapters-heading" @click="chaptersPanelOpen = !chaptersPanelOpen" style="cursor:pointer">
+          Chapters <small x-text="chaptersPanelOpen ? '\u25B4' : '\u25BE'"></small>
+        </h2>
+        <div x-show="chaptersPanelOpen" class="chapters-list">
+          <template x-for="(ch, idx) in chapterList.chapters" :key="idx">
+            <div class="chapter-entry" :class="{ 'chapter-current': ch.is_current, 'chapter-completed': ch.status === 'completed', 'chapter-resolved': ch.status === 'resolved' }">
+              <div class="chapter-header">
+                <span class="chapter-status-icon"
+                  x-text="ch.status === 'completed' || ch.status === 'resolved' ? '\u2713' : (ch.is_current ? '\u25B6' : '\u25CB')"></span>
+                <span class="chapter-title" x-text="ch.title"></span>
+              </div>
+              <template x-if="ch.is_current && ch.summary">
+                <p class="chapter-summary" x-text="ch.summary"></p>
+              </template>
+              <template x-if="ch.is_current && ch.scenes && ch.scenes.length > 0">
+                <ul class="scene-list">
+                  <template x-for="(sc, si) in ch.scenes" :key="si">
+                    <li class="scene-entry" :class="{ 'scene-current': sc.is_current }">
+                      <span x-text="sc.title"></span>
+                    </li>
+                  </template>
+                </ul>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+
     <h2>Rooms</h2>
     <div class="stack compact">
       <button type="button" @click="ensureSharedWindow()" :disabled="!selectedCampaignId">Shared Room</button>
@@ -254,7 +286,7 @@
                 <span class="scene-prompt-text" x-text="entry.text"></span>
                 <button type="button" class="scene-prompt-gen-btn"
                   @click="generateImage(entry)"
-                  :disabled="entry._imgGenerating || submitting || imageGenerating"
+                  :disabled="entry._imgGenerating || submitting || imageGenerating > 0"
                   x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <div class="turn-debug-card" x-show="$store.app.debugMode">
@@ -265,7 +297,7 @@
                 <pre x-text="entry.text"></pre>
                 <button type="button" class="scene-prompt-gen-btn" style="margin-top:0.35rem;"
                   @click="generateImage(entry)"
-                  :disabled="entry._imgGenerating || submitting || imageGenerating"
+                  :disabled="entry._imgGenerating || submitting || imageGenerating > 0"
                   x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <template x-if="entry._imgUrl">
@@ -339,7 +371,7 @@
             @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
             @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
           ></textarea>
-          <button type="submit" :disabled="!selectedCampaignId || submitting || imageGenerating" class="action-submit" :class="{ 'action-thinking': submitting || imageGenerating }" x-text="submitting ? 'Thinking...' : (imageGenerating ? 'Generating...' : 'Submit')"></button>
+          <button type="submit" :disabled="!selectedCampaignId || submitting || imageGenerating > 0" class="action-submit" :class="{ 'action-thinking': submitting || imageGenerating > 0 }" x-text="submitting ? 'Thinking...' : (imageGenerating > 0 ? 'Generating...' : 'Submit')"></button>
         </form>
       </div>
     </div>

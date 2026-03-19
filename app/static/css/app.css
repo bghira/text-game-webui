@@ -486,6 +486,113 @@ button:disabled {
   opacity: 0.6;
 }
 
+/* ---- Chapters Panel (sidebar) ---- */
+
+.chapters-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 0.25rem;
+  padding-top: 0.25rem;
+}
+
+.chapters-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  user-select: none;
+}
+
+.chapters-heading small {
+  font-size: 0.65rem;
+  opacity: 0.5;
+}
+
+.chapters-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.5rem;
+}
+
+.chapter-entry {
+  padding: 0.25rem 0.4rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  border-left: 2px solid transparent;
+}
+
+.chapter-entry.chapter-current {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+
+.chapter-entry.chapter-completed,
+.chapter-entry.chapter-resolved {
+  opacity: 0.55;
+}
+
+.chapter-header {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.chapter-status-icon {
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  width: 0.9rem;
+  text-align: center;
+}
+
+.chapter-current .chapter-status-icon {
+  color: var(--accent);
+}
+
+.chapter-completed .chapter-status-icon,
+.chapter-resolved .chapter-status-icon {
+  color: var(--ink-secondary);
+}
+
+.chapter-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.chapter-current .chapter-title {
+  font-weight: 600;
+}
+
+.chapter-summary {
+  margin: 0.15rem 0 0 1.2rem;
+  font-size: 0.73rem;
+  color: var(--ink-secondary);
+  line-height: 1.35;
+}
+
+.scene-list {
+  list-style: none;
+  margin: 0.2rem 0 0 1.2rem;
+  padding: 0;
+}
+
+.scene-entry {
+  font-size: 0.73rem;
+  padding: 0.1rem 0;
+  color: var(--ink-secondary);
+}
+
+.scene-entry.scene-current {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.scene-entry.scene-current::before {
+  content: "\25B8 ";
+  color: var(--accent);
+}
+
 /* Campaign flags panel */
 .campaign-flags {
   display: flex;
