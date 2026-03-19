@@ -581,6 +581,49 @@ export async function loadOlderTurnsFlow(
   };
 }
 
+/* ---- Speaker formatting helpers ---- */
+
+export function formatSceneSpeakerName(raw: unknown): string {
+  const text = String(raw || "").trim();
+  if (!text || text.toLowerCase() === "narrator") return "narrator";
+  if (text.toLowerCase() === text && text.includes("-")) {
+    const parts = text.split("-").filter(Boolean);
+    if (parts.length) return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+  }
+  return text;
+}
+
+export type Beat = {
+  speaker?: string;
+  text?: string;
+  type?: string;
+  visibility?: string;
+};
+
+export type SceneOutput = {
+  beats: Beat[];
+  location_key?: string;
+  context_key?: string;
+};
+
+export function renderSceneBeatsAsText(
+  sceneOutput: SceneOutput | null | undefined,
+  fallbackText: string,
+): { parts: Array<{ speaker: string; text: string }> } | null {
+  if (!sceneOutput || !Array.isArray(sceneOutput.beats) || !sceneOutput.beats.length) {
+    return null;
+  }
+  const parts: Array<{ speaker: string; text: string }> = [];
+  for (const beat of sceneOutput.beats) {
+    if (!beat || typeof beat !== "object") continue;
+    const text = String(beat.text || "").trim();
+    if (!text) continue;
+    const speaker = formatSceneSpeakerName(beat.speaker);
+    parts.push({ speaker, text });
+  }
+  return parts.length ? { parts } : null;
+}
+
 /* ---- Unseen-activity helpers ---- */
 
 export type RecentTurn = {
