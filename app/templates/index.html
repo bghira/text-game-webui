@@ -688,6 +688,18 @@
                   <span x-text="Number(campaignFlags.speed_multiplier || 1).toFixed(1)" style="min-width:2rem; text-align:right;"></span>
                 </div>
               </label>
+              <label>
+                Clock Start Day
+                <select :value="campaignFlags.clock_start_day_of_week" @change="setCampaignFlag('clock_start_day_of_week', $event.target.value)" :disabled="!selectedCampaignId">
+                  <option value="monday">Monday</option>
+                  <option value="tuesday">Tuesday</option>
+                  <option value="wednesday">Wednesday</option>
+                  <option value="thursday">Thursday</option>
+                  <option value="friday">Friday</option>
+                  <option value="saturday">Saturday</option>
+                  <option value="sunday">Sunday</option>
+                </select>
+              </label>
             </div>
 
             <!-- Persona -->
@@ -1158,6 +1170,10 @@
             Category (optional)
             <input x-model="memory.category" placeholder="char:elizabeth" />
           </label>
+          <label>
+            Drill-down turn IDs (optional, comma-separated)
+            <input x-model="memory.searchWithinTurnIds" placeholder="5, 10, 15" />
+          </label>
           <button type="submit" :disabled="!selectedCampaignId">Run memory_search</button>
         </form>
 
@@ -1596,6 +1612,20 @@
                   </div>
                 </label>
                 <small class="flag-hint">Scales how many in-game hours pass per turn. Crank it up for travel montages, lower it for tense scenes.</small>
+
+                <label>
+                  Clock Start Day
+                  <select :value="campaignFlags.clock_start_day_of_week" @change="setCampaignFlag('clock_start_day_of_week', $event.target.value)" :disabled="!selectedCampaignId">
+                    <option value="monday">Monday</option>
+                    <option value="tuesday">Tuesday</option>
+                    <option value="wednesday">Wednesday</option>
+                    <option value="thursday">Thursday</option>
+                    <option value="friday">Friday</option>
+                    <option value="saturday">Saturday</option>
+                    <option value="sunday">Sunday</option>
+                  </select>
+                </label>
+                <small class="flag-hint">Which real-world day of the week the in-game calendar starts on. Only matters when the game clock tracks days.</small>
               </div>
             </div>
 

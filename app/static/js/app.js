@@ -288,6 +288,7 @@
       memory: {
         search: "",
         category: "",
+        searchWithinTurnIds: "",
         wildcard: "*",
         turnId: "",
         storeCategory: "",
@@ -354,6 +355,7 @@
         timed_events: false,
         difficulty: "normal",
         speed_multiplier: 1.0,
+        clock_start_day_of_week: "monday",
       },
 
       /* Source material */
@@ -1287,6 +1289,7 @@
           this.campaignFlags.timed_events = !!data.timed_events;
           this.campaignFlags.difficulty = data.difficulty || "normal";
           this.campaignFlags.speed_multiplier = typeof data.speed_multiplier === "number" ? data.speed_multiplier : 1.0;
+          this.campaignFlags.clock_start_day_of_week = data.clock_start_day_of_week || "monday";
         } catch (_) { /* non-critical */ }
       },
 
@@ -2151,6 +2154,21 @@
             }
             this.loadTimers();
             this.loadRecentTurns();
+          }
+          if (payload.type === "dm_notification" && payload.payload) {
+            const msg = payload.payload.message || "";
+            if (msg) {
+              this.pushStream("notice", msg, { dm_notification: true });
+            }
+            if (payload.payload.refresh_sms_threads) {
+              this.listSmsThreads();
+            }
+          }
+          if (payload.type === "channel_notification" && payload.payload) {
+            const msg = payload.payload.message || "";
+            if (msg) {
+              this.pushStream("notice", msg, { channel_notification: true });
+            }
           }
           if (payload.type === "turn_progress" && payload.payload && this.submitting) {
             const label = this._turnProgressLabel(payload.payload.phase, payload.payload);
@@ -3347,6 +3365,13 @@
             queries: this.memory.search.trim() ? [this.memory.search.trim()] : [],
             category: this.memory.category.trim() || null,
           };
+          const rawTurnIds = (this.memory.searchWithinTurnIds || "").trim();
+          if (rawTurnIds) {
+            const turnIds = rawTurnIds.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0);
+            if (turnIds.length) {
+              payload.search_within_turn_ids = turnIds;
+            }
+          }
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/memory/search`, {
             method: "POST",
             body: JSON.stringify(payload),

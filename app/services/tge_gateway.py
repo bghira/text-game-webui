@@ -3388,18 +3388,18 @@ class TextGameEngineGateway(EngineGateway):
             "player_state": player_state,
         }
 
-    async def memory_search(self, campaign_id: str, queries: list[str], category: str | None) -> dict:
+    async def memory_search(self, campaign_id: str, queries: list[str], category: str | None, search_within_turn_ids: list[int] | None = None) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
 
         terms = [q.strip() for q in queries if q and q.strip()]
-        if not terms:
+        if not terms and not search_within_turn_ids:
             return {"hits": []}
 
         hits: list[dict[str, Any]] = []
-        for query in terms:
+        for query in (terms or []):
             curated = self._emulator.search_curated_memories(query=query, campaign_id=campaign_id, category=category, top_k=8)
             for term, memory, score in curated:
                 hits.append(
@@ -3412,7 +3412,7 @@ class TextGameEngineGateway(EngineGateway):
                     }
                 )
 
-        if not hits:
+        if not hits and terms:
             fallback = self._fallback_memory_state(campaign_id)
             for entry in fallback:
                 if category and entry.get("category") != category:
@@ -3421,7 +3421,35 @@ class TextGameEngineGateway(EngineGateway):
                 if any(q.lower() in hay for q in terms):
                     hits.append(entry)
 
-        return {"hits": hits[:20]}
+        turn_hits: list[dict[str, Any]] = []
+        if search_within_turn_ids:
+            safe_ids = search_within_turn_ids[:50]
+            with self._session_factory() as session:
+                turns = (
+                    session.query(Turn)
+                    .filter(Turn.campaign_id == campaign_id)
+                    .filter(Turn.id.in_(safe_ids))
+                    .order_by(Turn.id)
+                    .all()
+                )
+                lowered = [q.lower() for q in terms] if terms else []
+                for turn in turns:
+                    content = str(turn.content or "")
+                    if lowered and not any(q in content.lower() for q in lowered):
+                        continue
+                    turn_hits.append({
+                        "id": int(turn.id),
+                        "kind": turn.kind,
+                        "actor_id": turn.actor_id,
+                        "content": content,
+                        "meta": self._parse_json(turn.meta_json, {}),
+                        "created_at": turn.created_at.isoformat() if turn.created_at else None,
+                    })
+
+        result: dict[str, Any] = {"hits": hits[:20]}
+        if turn_hits:
+            result["turn_hits"] = turn_hits
+        return result
 
     async def memory_terms(self, campaign_id: str, wildcard: str) -> dict:
         with self._session_factory() as session:
@@ -3636,6 +3664,7 @@ class TextGameEngineGateway(EngineGateway):
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
         emulator = self._emulator
         return {
             "guardrails": emulator.is_guardrails_enabled(campaign),
@@ -3643,6 +3672,7 @@ class TextGameEngineGateway(EngineGateway):
             "timed_events": emulator.is_timed_events_enabled(campaign),
             "difficulty": emulator.get_difficulty(campaign),
             "speed_multiplier": emulator.get_speed_multiplier(campaign),
+            "clock_start_day_of_week": state.get("clock_start_day_of_week", "monday"),
         }
 
     async def update_campaign_flags(
@@ -3654,6 +3684,7 @@ class TextGameEngineGateway(EngineGateway):
         timed_events: bool | None = None,
         difficulty: str | None = None,
         speed_multiplier: float | None = None,
+        clock_start_day_of_week: str | None = None,
     ) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
@@ -3676,6 +3707,18 @@ class TextGameEngineGateway(EngineGateway):
         if speed_multiplier is not None:
             emulator.set_speed_multiplier(campaign, max(0.1, min(10.0, speed_multiplier)))
             changed.append("speed_multiplier")
+        if clock_start_day_of_week is not None:
+            valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+            day = clock_start_day_of_week.strip().lower()
+            if day not in valid_days:
+                raise ValueError(f"Invalid day of week: {clock_start_day_of_week}")
+            with self._session_factory() as session:
+                campaign = session.get(Campaign, campaign_id)
+                state = self._parse_json(campaign.state_json, {})
+                state["clock_start_day_of_week"] = day
+                campaign.state_json = json.dumps(state, ensure_ascii=False)
+                session.commit()
+            changed.append("clock_start_day_of_week")
         return {"ok": True, "changed": changed}
 
     async def get_source_materials(self, campaign_id: str) -> dict:
@@ -4348,3 +4391,11 @@ class TextGameEngineGateway(EngineGateway):
         before calling into it.
         """
         self._emulator._timer_effects_port = port
+
+    def set_notification_port(self, port: object) -> None:
+        """Inject a NotificationPort implementation after construction.
+
+        Safe because ZorkEmulator null-checks ``_notification_port``
+        before calling into it.
+        """
+        self._emulator._notification_port = port

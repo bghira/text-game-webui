@@ -130,6 +130,45 @@ def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
             await _autostart()
 
 
+class WebNotificationPort:
+    """Implements NotificationPort by publishing DM events through the RealtimeHub."""
+
+    def __init__(self, realtime_hub: RealtimeHub) -> None:
+        self._hub = realtime_hub
+
+    async def send_dm(self, actor_id: str, message: str) -> None:
+        # Snapshot campaign IDs to avoid iterating a live dict
+        for campaign_id in self._hub.campaigns_for_actor(actor_id):
+            await self._hub.publish_to_actor(
+                campaign_id,
+                actor_id,
+                {
+                    "type": "dm_notification",
+                    "actor_id": actor_id,
+                    "payload": {
+                        "message": message,
+                        "actor_id": actor_id,
+                        "refresh_sms_threads": True,
+                    },
+                },
+            )
+
+    async def send_channel_message(
+        self,
+        *,
+        campaign_id: str,
+        message: str,
+    ) -> None:
+        # Channel messages broadcast to all subscribers of the campaign
+        await self._hub.publish(
+            campaign_id,
+            {
+                "type": "channel_notification",
+                "payload": {"message": message},
+            },
+        )
+
+
 class WebTimerEffectsPort:
     """Implements TimerEffectsPort by publishing events through the RealtimeHub."""
 
@@ -190,6 +229,12 @@ def create_app() -> FastAPI:
         timer_port = WebTimerEffectsPort(app.state.realtime)
         gateway.set_timer_effects_port(timer_port)
         log.info("Timer effects port injected into gateway")
+
+    # Wire up notification port so DM/SMS notifications push via WebSocket
+    if hasattr(gateway, "set_notification_port"):
+        notification_port = WebNotificationPort(app.state.realtime)
+        gateway.set_notification_port(notification_port)
+        log.info("Notification port injected into gateway")
 
     app.include_router(api_router)
     app.include_router(themes_router)
