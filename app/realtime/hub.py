@@ -110,3 +110,13 @@ class RealtimeHub:
                 await sub.ws.send_json(payload)
             except Exception:
                 self._subs[campaign_id].discard(sub)
+
+    async def publish_to_actor(self, campaign_id: str, actor_id: str, payload: dict) -> None:
+        """Send a message only to subscriptions matching a specific actor_id."""
+        for sub in list(self._subs[campaign_id]):
+            if sub.actor_id != actor_id:
+                continue
+            try:
+                await sub.ws.send_json(payload)
+            except Exception:
+                self._subs[campaign_id].discard(sub)

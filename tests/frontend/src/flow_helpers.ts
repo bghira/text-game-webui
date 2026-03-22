@@ -306,6 +306,102 @@ export async function rosterManagementFlow(
   return { calls };
 }
 
+export async function memorySearchDrilldownFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  payload: {
+    queries: string[];
+    category?: string | null;
+    search_within_turn_ids?: number[];
+  },
+): Promise<{ calls: string[]; url: string; body: string }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/memory/search`;
+  calls.push(url);
+  const reqBody: Record<string, unknown> = {
+    queries: payload.queries,
+    category: payload.category ?? null,
+  };
+  if (payload.search_within_turn_ids && payload.search_within_turn_ids.length) {
+    reqBody.search_within_turn_ids = payload.search_within_turn_ids;
+  }
+  const bodyStr = JSON.stringify(reqBody);
+  await fetcher(url, { method: "POST", body: bodyStr });
+  return { calls, url, body: bodyStr };
+}
+
+export type CampaignFlagsState = {
+  guardrails: boolean;
+  on_rails: boolean;
+  timed_events: boolean;
+  difficulty: string;
+  speed_multiplier: number;
+  clock_start_day_of_week: string;
+};
+
+export function initCampaignFlagsState(): CampaignFlagsState {
+  return {
+    guardrails: true,
+    on_rails: false,
+    timed_events: false,
+    difficulty: "normal",
+    speed_multiplier: 1.0,
+    clock_start_day_of_week: "monday",
+  };
+}
+
+export async function loadCampaignFlagsFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+): Promise<{ calls: string[]; flags: CampaignFlagsState }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/flags`;
+  calls.push(url);
+  const data = (await fetcher(url)) as Record<string, unknown>;
+  return {
+    calls,
+    flags: {
+      guardrails: !!data.guardrails,
+      on_rails: !!data.on_rails,
+      timed_events: !!data.timed_events,
+      difficulty: (data.difficulty as string) || "normal",
+      speed_multiplier: typeof data.speed_multiplier === "number" ? data.speed_multiplier : 1.0,
+      clock_start_day_of_week: (data.clock_start_day_of_week as string) || "monday",
+    },
+  };
+}
+
+export async function setCampaignFlagFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  key: string,
+  value: unknown,
+): Promise<{ calls: string[]; url: string; body: string }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/flags`;
+  calls.push(url);
+  const payload: Record<string, unknown> = {};
+  payload[key] = value;
+  const bodyStr = JSON.stringify(payload);
+  await fetcher(url, { method: "POST", body: bodyStr });
+  return { calls, url, body: bodyStr };
+}
+
+export type DmNotificationEvent = {
+  type: "dm_notification";
+  actor_id?: string;
+  payload: { message: string; actor_id?: string };
+};
+
+export function handleDmNotificationEvent(event: DmNotificationEvent): {
+  streamType: string;
+  message: string;
+} | null {
+  const msg = event.payload?.message || "";
+  if (!msg) return null;
+  return { streamType: "notice", message: msg };
+}
+
 export async function memoryToolsFlow(
   fetcher: FetchLike,
   campaignId: string,

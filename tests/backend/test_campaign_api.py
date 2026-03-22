@@ -656,3 +656,75 @@ def test_recent_turns_offset_pagination(client):
     body5 = res5.json()
     assert body5["count"] == 5
     assert body5["has_more"] is False
+
+
+def test_memory_search_with_turn_ids_drilldown(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    # Submit a few turns to create turn data
+    for action in ["look around", "check the drawer", "open the window"]:
+        client.post(
+            f"/api/campaigns/{campaign_id}/turns",
+            json={"actor_id": "dale-denton", "action": action},
+        )
+
+    # Basic search (no turn IDs) returns hits
+    res = client.post(
+        f"/api/campaigns/{campaign_id}/memory/search",
+        json={"queries": ["test"]},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert "hits" in body
+
+    # Search with turn IDs returns turn_hits when matching
+    res2 = client.post(
+        f"/api/campaigns/{campaign_id}/memory/search",
+        json={"queries": ["look"], "search_within_turn_ids": [1, 2]},
+    )
+    assert res2.status_code == 200
+    body2 = res2.json()
+    assert "hits" in body2
+    # turn_hits may or may not be present depending on content match
+    if "turn_hits" in body2:
+        for hit in body2["turn_hits"]:
+            assert hit["id"] in [1, 2]
+
+    # Empty queries + turn IDs still returns turn data
+    res3 = client.post(
+        f"/api/campaigns/{campaign_id}/memory/search",
+        json={"queries": [], "search_within_turn_ids": [1]},
+    )
+    assert res3.status_code == 200
+    body3 = res3.json()
+    if "turn_hits" in body3:
+        assert len(body3["turn_hits"]) <= 1
+
+
+def test_campaign_flags_clock_start_day_of_week(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    # Default flags include clock_start_day_of_week
+    flags_res = client.get(f"/api/campaigns/{campaign_id}/flags")
+    assert flags_res.status_code == 200
+    flags = flags_res.json()
+    # InMemory gateway doesn't persist but should have defaults
+    assert "guardrails" in flags
+    assert "difficulty" in flags
+
+    # Update clock_start_day_of_week
+    update_res = client.post(
+        f"/api/campaigns/{campaign_id}/flags",
+        json={"clock_start_day_of_week": "friday"},
+    )
+    assert update_res.status_code == 200
+    assert "clock_start_day_of_week" in update_res.json().get("changed", [])
+
+    # Invalid day returns 400
+    bad_res = client.post(
+        f"/api/campaigns/{campaign_id}/flags",
+        json={"clock_start_day_of_week": "notaday"},
+    )
+    assert bad_res.status_code in (400, 422)

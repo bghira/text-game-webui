@@ -123,7 +123,7 @@ class EngineGateway(Protocol):
     async def record_pending_avatar(self, campaign_id: str, actor_id: str, image_url: str, prompt: str | None = None) -> dict: ...
     async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict: ...
     async def decline_pending_avatar(self, campaign_id: str, actor_id: str) -> dict: ...
-    async def memory_search(self, campaign_id: str, queries: list[str], category: str | None) -> dict: ...
+    async def memory_search(self, campaign_id: str, queries: list[str], category: str | None, search_within_turn_ids: list[int] | None = None) -> dict: ...
     async def memory_terms(self, campaign_id: str, wildcard: str) -> dict: ...
     async def memory_turn(self, campaign_id: str, turn_id: int) -> dict: ...
     async def memory_store(self, campaign_id: str, payload: MemoryStoreRequest) -> dict: ...
@@ -141,6 +141,7 @@ class EngineGateway(Protocol):
         timed_events: bool | None = None,
         difficulty: str | None = None,
         speed_multiplier: float | None = None,
+        clock_start_day_of_week: str | None = None,
     ) -> dict: ...
     async def get_source_materials(self, campaign_id: str) -> dict: ...
     async def ingest_source_material(self, campaign_id: str, payload: SourceMaterialIngest) -> dict: ...
@@ -856,7 +857,7 @@ Legend: @ current player
             return {"ok": True, "message": "Pending avatar discarded.", "actor_id": actor_id}
         return {"ok": False, "message": "No pending avatar to discard.", "actor_id": actor_id}
 
-    async def memory_search(self, campaign_id: str, queries: list[str], category: str | None) -> dict:
+    async def memory_search(self, campaign_id: str, queries: list[str], category: str | None, search_within_turn_ids: list[int] | None = None) -> dict:
         self._require_campaign(campaign_id)
         hits = []
         lowered = [q.lower() for q in queries]
@@ -866,7 +867,18 @@ Legend: @ current player
             hay = row.get("memory", "").lower()
             if not lowered or any(q in hay for q in lowered):
                 hits.append(row)
-        return {"hits": hits[:10]}
+        turn_hits = []
+        if search_within_turn_ids:
+            turn_id_set = set(search_within_turn_ids)
+            for turn in self._turns[campaign_id]:
+                if turn["id"] in turn_id_set:
+                    content = str(turn.get("content") or turn.get("narration") or "")
+                    if not lowered or any(q in content.lower() for q in lowered):
+                        turn_hits.append(turn)
+        result = {"hits": hits[:10]}
+        if turn_hits:
+            result["turn_hits"] = turn_hits
+        return result
 
     async def memory_terms(self, campaign_id: str, wildcard: str) -> dict:
         self._require_campaign(campaign_id)
@@ -945,9 +957,27 @@ Legend: @ current player
         timed_events: bool | None = None,
         difficulty: str | None = None,
         speed_multiplier: float | None = None,
+        clock_start_day_of_week: str | None = None,
     ) -> dict:
         self._require_campaign(campaign_id)
-        return {"ok": True, "note": "InMemory backend — flags not persisted."}
+        changed: list[str] = []
+        if clock_start_day_of_week is not None:
+            valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+            day = clock_start_day_of_week.strip().lower()
+            if day not in valid_days:
+                raise ValueError(f"Invalid day of week: {clock_start_day_of_week}")
+            changed.append("clock_start_day_of_week")
+        if guardrails is not None:
+            changed.append("guardrails")
+        if on_rails is not None:
+            changed.append("on_rails")
+        if timed_events is not None:
+            changed.append("timed_events")
+        if difficulty is not None:
+            changed.append("difficulty")
+        if speed_multiplier is not None:
+            changed.append("speed_multiplier")
+        return {"ok": True, "changed": changed, "note": "InMemory backend — flags not persisted."}
 
     async def get_source_materials(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)

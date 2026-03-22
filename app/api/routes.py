@@ -375,6 +375,7 @@ async def update_campaign_flags(
             timed_events=payload.timed_events,
             difficulty=payload.difficulty,
             speed_multiplier=payload.speed_multiplier,
+            clock_start_day_of_week=payload.clock_start_day_of_week,
         )
     except KeyError as err:
         _not_found(err)
@@ -976,7 +977,7 @@ async def decline_pending_avatar(
 @router.post("/campaigns/{campaign_id}/memory/search")
 async def memory_search(campaign_id: str, payload: MemorySearchRequest, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:
-        return await gateway.memory_search(campaign_id, payload.queries, payload.category)
+        return await gateway.memory_search(campaign_id, payload.queries, payload.category, search_within_turn_ids=payload.search_within_turn_ids)
     except KeyError as err:
         _not_found(err)
 

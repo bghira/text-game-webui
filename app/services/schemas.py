@@ -87,6 +87,7 @@ class MinigameMoveRequest(BaseModel):
 class MemorySearchRequest(BaseModel):
     queries: list[str] = Field(default_factory=list)
     category: str | None = None
+    search_within_turn_ids: list[int] | None = None
 
 
 class MemoryTermsRequest(BaseModel):
@@ -145,6 +146,7 @@ class CampaignFlagsUpdate(BaseModel):
     timed_events: bool | None = None
     difficulty: str | None = None
     speed_multiplier: float | None = None
+    clock_start_day_of_week: str | None = None
 
 
 class SourceMaterialIngest(BaseModel):
