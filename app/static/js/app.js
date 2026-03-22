@@ -2160,7 +2160,15 @@
             if (msg) {
               this.pushStream("notice", msg, { dm_notification: true });
             }
-            this.listSmsThreads();
+            if (payload.payload.refresh_sms_threads) {
+              this.listSmsThreads();
+            }
+          }
+          if (payload.type === "channel_notification" && payload.payload) {
+            const msg = payload.payload.message || "";
+            if (msg) {
+              this.pushStream("notice", msg, { channel_notification: true });
+            }
           }
           if (payload.type === "turn_progress" && payload.payload && this.submitting) {
             const label = this._turnProgressLabel(payload.payload.phase, payload.payload);

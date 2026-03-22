@@ -390,10 +390,29 @@ export async function setCampaignFlagFlow(
 export type DmNotificationEvent = {
   type: "dm_notification";
   actor_id?: string;
-  payload: { message: string; actor_id?: string };
+  payload: { message: string; actor_id?: string; refresh_sms_threads?: boolean };
+};
+
+export type ChannelNotificationEvent = {
+  type: "channel_notification";
+  payload: { message: string };
 };
 
 export function handleDmNotificationEvent(event: DmNotificationEvent): {
+  streamType: string;
+  message: string;
+  refreshSmsThreads: boolean;
+} | null {
+  const msg = event.payload?.message || "";
+  if (!msg) return null;
+  return {
+    streamType: "notice",
+    message: msg,
+    refreshSmsThreads: !!event.payload?.refresh_sms_threads,
+  };
+}
+
+export function handleChannelNotificationEvent(event: ChannelNotificationEvent): {
   streamType: string;
   message: string;
 } | null {

@@ -869,7 +869,7 @@ Legend: @ current player
                 hits.append(row)
         turn_hits = []
         if search_within_turn_ids:
-            turn_id_set = set(search_within_turn_ids)
+            turn_id_set = set(search_within_turn_ids[:50])
             for turn in self._turns[campaign_id]:
                 if turn["id"] in turn_id_set:
                     content = str(turn.get("content") or turn.get("narration") or "")
@@ -946,6 +946,7 @@ Legend: @ current player
             "timed_events": False,
             "difficulty": "normal",
             "speed_multiplier": 1.0,
+            "clock_start_day_of_week": "monday",
         }
 
     async def update_campaign_flags(

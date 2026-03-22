@@ -111,6 +111,14 @@ class RealtimeHub:
             except Exception:
                 self._subs[campaign_id].discard(sub)
 
+    def campaigns_for_actor(self, actor_id: str) -> list[str]:
+        """Return a stable list of campaign IDs where *actor_id* has a subscription."""
+        return [
+            cid
+            for cid, subs in list(self._subs.items())
+            if any(sub.actor_id == actor_id for sub in subs)
+        ]
+
     async def publish_to_actor(self, campaign_id: str, actor_id: str, payload: dict) -> None:
         """Send a message only to subscriptions matching a specific actor_id."""
         for sub in list(self._subs[campaign_id]):

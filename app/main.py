@@ -137,18 +137,21 @@ class WebNotificationPort:
         self._hub = realtime_hub
 
     async def send_dm(self, actor_id: str, message: str) -> None:
-        # Find which campaigns this actor is subscribed to and publish to them
-        for campaign_id, subs in self._hub._subs.items():
-            if any(sub.actor_id == actor_id for sub in subs):
-                await self._hub.publish_to_actor(
-                    campaign_id,
-                    actor_id,
-                    {
-                        "type": "dm_notification",
+        # Snapshot campaign IDs to avoid iterating a live dict
+        for campaign_id in self._hub.campaigns_for_actor(actor_id):
+            await self._hub.publish_to_actor(
+                campaign_id,
+                actor_id,
+                {
+                    "type": "dm_notification",
+                    "actor_id": actor_id,
+                    "payload": {
+                        "message": message,
                         "actor_id": actor_id,
-                        "payload": {"message": message, "actor_id": actor_id},
+                        "refresh_sms_threads": True,
                     },
-                )
+                },
+            )
 
     async def send_channel_message(
         self,
@@ -160,8 +163,8 @@ class WebNotificationPort:
         await self._hub.publish(
             campaign_id,
             {
-                "type": "dm_notification",
-                "payload": {"message": message, "channel": True},
+                "type": "channel_notification",
+                "payload": {"message": message},
             },
         )
 
