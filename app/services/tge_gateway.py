@@ -1777,6 +1777,9 @@ class ZorkToolAwareLLM:
             return self._tool_consequence_log(campaign_id, payload)
         return f"TOOL_ERROR: unsupported tool_call '{name}'"
 
+    _EMPTY_RESPONSE_RETRIES = 2
+    _EMPTY_RESPONSE_DELAY = 3.0
+
     async def _resolve_payload(
         self,
         campaign_id: str,
@@ -1793,7 +1796,20 @@ class ZorkToolAwareLLM:
         )
         payload = self._parse_model_payload(first)
         if payload is None:
-            return None
+            # Retry on empty response — typically Ollama loading the model.
+            for attempt in range(self._EMPTY_RESPONSE_RETRIES):
+                await asyncio.sleep(self._EMPTY_RESPONSE_DELAY * (attempt + 1))
+                retry = await self._completion.complete(
+                    system_prompt,
+                    user_prompt,
+                    temperature=self._temperature,
+                    max_tokens=self._max_tokens,
+                )
+                payload = self._parse_model_payload(retry)
+                if payload is not None:
+                    break
+            if payload is None:
+                return None
 
         tool_history = ""
         used_tool_names: set[str] = set()
