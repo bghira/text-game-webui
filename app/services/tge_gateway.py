@@ -280,12 +280,30 @@ class DeterministicLLM:
     """Local fallback LLM for webui adapter bring-up."""
 
     @staticmethod
-    def _advance_time(game_time: dict[str, Any]) -> dict[str, Any]:
+    def _speed_multiplier(campaign_state: dict[str, Any] | None) -> float:
+        raw = campaign_state.get("speed_multiplier", 1.0) if isinstance(campaign_state, dict) else 1.0
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 1.0
+        if value <= 0:
+            return 1.0
+        return max(0.1, min(10.0, value))
+
+    @staticmethod
+    def _advance_time(
+        game_time: dict[str, Any],
+        *,
+        speed_multiplier: float = 1.0,
+    ) -> dict[str, Any]:
         day = int(game_time.get("day", 1) or 1)
         hour = int(game_time.get("hour", 8) or 8)
         minute = int(game_time.get("minute", 0) or 0)
 
-        minute += 10
+        base_minutes = int(getattr(ZorkEmulator, "DEFAULT_TURN_ADVANCE_MINUTES", 20) or 20)
+        min_minutes = int(getattr(ZorkEmulator, "MIN_TURN_ADVANCE_MINUTES", base_minutes) or base_minutes)
+        scaled_minutes = int(round(base_minutes * float(speed_multiplier or 1.0)))
+        minute += max(min_minutes, scaled_minutes)
         if minute >= 60:
             hour += minute // 60
             minute = minute % 60
@@ -314,7 +332,13 @@ class DeterministicLLM:
         action = (context.action or "").strip()
         lowered = action.lower()
         current_time = context.campaign_state.get("game_time", {}) if isinstance(context.campaign_state, dict) else {}
-        next_time = self._advance_time(current_time if isinstance(current_time, dict) else {})
+        speed_multiplier = self._speed_multiplier(
+            context.campaign_state if isinstance(context.campaign_state, dict) else {}
+        )
+        next_time = self._advance_time(
+            current_time if isinstance(current_time, dict) else {},
+            speed_multiplier=speed_multiplier,
+        )
 
         if any(token in lowered for token in ["look", "scan", "observe", "examine"]):
             return LLMTurnOutput(
