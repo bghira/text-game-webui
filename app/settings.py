@@ -125,6 +125,16 @@ def persist_settings(settings: Settings) -> None:
         pass
 
 
+def _default_tge_model() -> str:
+    explicit = str(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "")).strip()
+    if explicit:
+        return explicit
+    mode = str(os.getenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "ollama") or "").strip().lower()
+    if mode == "zai":
+        return "glm-5.1"
+    return "local-model"
+
+
 class Settings(BaseModel):
     theme: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_THEME", "light"))
     app_name: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_APP_NAME", "text-game-webui"))
@@ -149,7 +159,7 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_LLM_BASE_URL", "http://127.0.0.1:11434")
     )
     tge_llm_api_key: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_LLM_API_KEY", "sk-local"))
-    tge_llm_model: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "local-model"))
+    tge_llm_model: str = Field(default_factory=_default_tge_model)
     tge_llm_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_TIMEOUT_SECONDS", "90"))
     )

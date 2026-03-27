@@ -65,6 +65,9 @@ _ZORK_LOG_PATH: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     default=None,
 )
 _ZORK_LOG_RETENTION = 100
+_DEFAULT_PROVIDER_MODELS = {
+    "zai": "glm-5.1",
+}
 
 
 def _zork_log_component(value: object, label: str = "id") -> str:
@@ -2357,6 +2360,11 @@ class TextGameEngineGateway(EngineGateway):
         return normalized in {"", "*", "all"}
 
     @staticmethod
+    def _default_model_for_mode(mode: str) -> str:
+        normalized = str(mode or "").strip().lower()
+        return str(_DEFAULT_PROVIDER_MODELS.get(normalized) or "").strip()
+
+    @staticmethod
     def _parse_json_object(text: str, env_name: str) -> dict[str, Any]:
         raw = str(text or "").strip() or "{}"
         try:
@@ -2456,7 +2464,12 @@ class TextGameEngineGateway(EngineGateway):
         if not override:
             return
         target_mode = str(override.get("completion_mode") or "").strip().lower()
-        target_model = str(override.get("model") or self._settings.tge_llm_model or "").strip()
+        target_model = str(
+            override.get("model")
+            or self._default_model_for_mode(target_mode)
+            or self._settings.tge_llm_model
+            or ""
+        ).strip()
         current_mode = str(self._completion_mode or "").strip().lower()
         current_model = str(self._settings.tge_llm_model or "").strip()
         if target_mode == current_mode and target_model == current_model:
