@@ -39,6 +39,18 @@ _PERSISTABLE_KEYS = frozenset({
     "image_cache_max_entries",
 })
 
+_SYNC_LOCKED_TGE_KEYS = frozenset({
+    "tge_completion_mode",
+    "tge_llm_base_url",
+    "tge_llm_api_key",
+    "tge_llm_model",
+    "tge_llm_temperature",
+    "tge_llm_max_tokens",
+    "tge_llm_timeout_seconds",
+    "tge_ollama_keep_alive",
+    "tge_ollama_options_json",
+})
+
 
 def _sqlite_path_from_url(database_url: str) -> str | None:
     """Extract the filesystem path from a SQLAlchemy SQLite URL."""
@@ -68,6 +80,8 @@ def load_persisted_settings(settings: Settings) -> None:
     for key, value in rows:
         if key not in _PERSISTABLE_KEYS:
             continue
+        if settings.tge_sync_with_dtm and key in _SYNC_LOCKED_TGE_KEYS:
+            continue
         field_info = Settings.model_fields.get(key)
         if field_info is None:
             continue
@@ -95,6 +109,8 @@ def persist_settings(settings: Settings) -> None:
         conn = sqlite3.connect(db_path)
         _ensure_kv_table(conn)
         for key in _PERSISTABLE_KEYS:
+            if settings.tge_sync_with_dtm and key in _SYNC_LOCKED_TGE_KEYS:
+                continue
             value = getattr(settings, key, None)
             if value is None:
                 continue
@@ -151,6 +167,9 @@ class Settings(BaseModel):
     )
     tge_runtime_probe_llm: bool = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_LLM", "0") in {"1", "true", "True"}
+    )
+    tge_sync_with_dtm: bool = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_SYNC_WITH_DTM", "0") in {"1", "true", "True"}
     )
     tge_runtime_probe_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS", "8"))

@@ -213,6 +213,33 @@
         </div>
       </div>
     </template>
+
+    <!-- Song Player -->
+    <template x-if="songQueue.length > 0">
+      <div class="song-player">
+        <div class="song-player-header">
+          <button type="button" class="song-nav-btn" @click="songPrev()" :disabled="songIndex <= 0" title="Previous song">&#x25C0;</button>
+          <span class="song-player-title" x-text="currentSong ? (currentSong.title || 'Unknown') : ''"></span>
+          <button type="button" class="song-nav-btn" @click="songNext()" :disabled="songIndex >= songQueue.length - 1" title="Next song">&#x25B6;</button>
+        </div>
+        <template x-if="currentSong && currentSong.sender">
+          <small class="song-sender" x-text="currentSong.sender"></small>
+        </template>
+        <template x-if="currentSong && currentSong.caption">
+          <small class="song-caption" x-text="currentSong.caption"></small>
+        </template>
+        <div class="song-embed-wrap">
+          <iframe
+            :src="songEmbedUrl"
+            frameborder="0"
+            allow="autoplay; encrypted-media"
+            allowfullscreen
+            class="song-embed"
+          ></iframe>
+        </div>
+        <small class="song-counter" x-text="`${songIndex + 1} / ${songQueue.length}`"></small>
+      </div>
+    </template>
   </aside>
 
   <!-- ====== MAIN COLUMN ====== -->
@@ -698,6 +725,14 @@
                   <option value="friday">Friday</option>
                   <option value="saturday">Saturday</option>
                   <option value="sunday">Sunday</option>
+                </select>
+              </label>
+              <label>
+                Clock Model
+                <select :value="campaignFlags.clock_type" @change="setCampaignFlag('clock_type', $event.target.value)" :disabled="!selectedCampaignId">
+                  <option value="consequential-calendar">Shared &mdash; Consequential</option>
+                  <option value="loose-calendar">Shared &mdash; Loose</option>
+                  <option value="individual-calendars">Individual Clocks</option>
                 </select>
               </label>
             </div>
@@ -1626,6 +1661,16 @@
                   </select>
                 </label>
                 <small class="flag-hint">Which real-world day of the week the in-game calendar starts on. Only matters when the game clock tracks days.</small>
+
+                <label>
+                  Clock Model
+                  <select :value="campaignFlags.clock_type" @change="setCampaignFlag('clock_type', $event.target.value)" :disabled="!selectedCampaignId">
+                    <option value="consequential-calendar">Shared &mdash; Consequential</option>
+                    <option value="loose-calendar">Shared &mdash; Loose</option>
+                    <option value="individual-calendars">Individual Clocks</option>
+                  </select>
+                </label>
+                <small class="flag-hint">Shared clocks advance together for all players. Consequential means missed appointments stay missed; loose reschedules them. Individual gives each player their own timeline.</small>
               </div>
             </div>
 

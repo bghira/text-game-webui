@@ -337,6 +337,7 @@ export type CampaignFlagsState = {
   difficulty: string;
   speed_multiplier: number;
   clock_start_day_of_week: string;
+  clock_type: string;
 };
 
 export function initCampaignFlagsState(): CampaignFlagsState {
@@ -347,6 +348,7 @@ export function initCampaignFlagsState(): CampaignFlagsState {
     difficulty: "normal",
     speed_multiplier: 1.0,
     clock_start_day_of_week: "monday",
+    clock_type: "consequential-calendar",
   };
 }
 
@@ -367,6 +369,7 @@ export async function loadCampaignFlagsFlow(
       difficulty: (data.difficulty as string) || "normal",
       speed_multiplier: typeof data.speed_multiplier === "number" ? data.speed_multiplier : 1.0,
       clock_start_day_of_week: (data.clock_start_day_of_week as string) || "monday",
+      clock_type: (data.clock_type as string) || "consequential-calendar",
     },
   };
 }
@@ -419,6 +422,58 @@ export function handleChannelNotificationEvent(event: ChannelNotificationEvent):
   const msg = event.payload?.message || "";
   if (!msg) return null;
   return { streamType: "notice", message: msg };
+}
+
+export type SongNotificationEvent = {
+  type: "song_notification";
+  payload: {
+    video_id: string;
+    url: string;
+    title: string;
+    sender: string;
+    caption: string;
+  };
+};
+
+export type SongQueueState = {
+  queue: SongNotificationEvent["payload"][];
+  index: number;
+};
+
+export function initSongQueueState(): SongQueueState {
+  return { queue: [], index: -1 };
+}
+
+export function pushSong(
+  state: SongQueueState,
+  song: SongNotificationEvent["payload"],
+): SongQueueState {
+  // Avoid back-to-back duplicates
+  const last = state.queue.length > 0 ? state.queue[state.queue.length - 1] : null;
+  if (last && last.video_id === song.video_id) return state;
+  const queue = [...state.queue, song];
+  return { queue, index: queue.length - 1 };
+}
+
+export function songPrev(state: SongQueueState): SongQueueState {
+  if (state.index <= 0) return state;
+  return { ...state, index: state.index - 1 };
+}
+
+export function songNext(state: SongQueueState): SongQueueState {
+  if (state.index >= state.queue.length - 1) return state;
+  return { ...state, index: state.index + 1 };
+}
+
+export function currentSong(state: SongQueueState): SongNotificationEvent["payload"] | null {
+  if (state.index < 0 || state.index >= state.queue.length) return null;
+  return state.queue[state.index];
+}
+
+export function songEmbedUrl(state: SongQueueState): string {
+  const song = currentSong(state);
+  if (!song || !song.video_id) return "";
+  return `https://www.youtube.com/embed/${song.video_id}?autoplay=1&rel=0`;
 }
 
 export async function memoryToolsFlow(

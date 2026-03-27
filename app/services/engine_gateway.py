@@ -142,6 +142,7 @@ class EngineGateway(Protocol):
         difficulty: str | None = None,
         speed_multiplier: float | None = None,
         clock_start_day_of_week: str | None = None,
+        clock_type: str | None = None,
     ) -> dict: ...
     async def get_source_materials(self, campaign_id: str) -> dict: ...
     async def ingest_source_material(self, campaign_id: str, payload: SourceMaterialIngest) -> dict: ...
@@ -947,6 +948,7 @@ Legend: @ current player
             "difficulty": "normal",
             "speed_multiplier": 1.0,
             "clock_start_day_of_week": "monday",
+            "clock_type": "consequential-calendar",
         }
 
     async def update_campaign_flags(
@@ -959,6 +961,7 @@ Legend: @ current player
         difficulty: str | None = None,
         speed_multiplier: float | None = None,
         clock_start_day_of_week: str | None = None,
+        clock_type: str | None = None,
     ) -> dict:
         self._require_campaign(campaign_id)
         changed: list[str] = []
@@ -968,6 +971,11 @@ Legend: @ current player
             if day not in valid_days:
                 raise ValueError(f"Invalid day of week: {clock_start_day_of_week}")
             changed.append("clock_start_day_of_week")
+        if clock_type is not None:
+            valid_types = {"loose-calendar", "consequential-calendar", "individual-calendars"}
+            if clock_type not in valid_types:
+                raise ValueError(f"Invalid clock type: {clock_type}")
+            changed.append("clock_type")
         if guardrails is not None:
             changed.append("guardrails")
         if on_rails is not None:

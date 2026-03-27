@@ -356,7 +356,12 @@
         difficulty: "normal",
         speed_multiplier: 1.0,
         clock_start_day_of_week: "monday",
+        clock_type: "consequential-calendar",
       },
+
+      /* Song player */
+      songQueue: [],
+      songIndex: -1,
 
       /* Source material */
       sourceMaterials: [],
@@ -1290,6 +1295,7 @@
           this.campaignFlags.difficulty = data.difficulty || "normal";
           this.campaignFlags.speed_multiplier = typeof data.speed_multiplier === "number" ? data.speed_multiplier : 1.0;
           this.campaignFlags.clock_start_day_of_week = data.clock_start_day_of_week || "monday";
+          this.campaignFlags.clock_type = data.clock_type || "consequential-calendar";
         } catch (_) { /* non-critical */ }
       },
 
@@ -1307,6 +1313,35 @@
         } catch (error) {
           this.errorMessage = String(error);
         }
+      },
+
+      /* ---- Song player ---- */
+      _pushSong(song) {
+        // Avoid duplicates of the same video back-to-back
+        const last = this.songQueue.length > 0 ? this.songQueue[this.songQueue.length - 1] : null;
+        if (last && last.video_id === song.video_id) return;
+        this.songQueue.push(song);
+        // Auto-advance to the new song
+        this.songIndex = this.songQueue.length - 1;
+      },
+
+      get currentSong() {
+        if (this.songIndex < 0 || this.songIndex >= this.songQueue.length) return null;
+        return this.songQueue[this.songIndex];
+      },
+
+      songPrev() {
+        if (this.songIndex > 0) this.songIndex--;
+      },
+
+      songNext() {
+        if (this.songIndex < this.songQueue.length - 1) this.songIndex++;
+      },
+
+      get songEmbedUrl() {
+        const song = this.currentSong;
+        if (!song || !song.video_id) return "";
+        return `https://www.youtube.com/embed/${song.video_id}?autoplay=1&rel=0`;
       },
 
       /* ---- Source material ---- */
@@ -1972,6 +2007,8 @@
         this.playerStats = null;
         this.playerAttributes = null;
         this.recentTurns = [];
+        this.songQueue = [];
+        this.songIndex = -1;
         this.campaignPersona = "";
         this.campaignPersonaSource = "";
         this.personaEditText = "";
@@ -2169,6 +2206,9 @@
             if (msg) {
               this.pushStream("notice", msg, { channel_notification: true });
             }
+          }
+          if (payload.type === "song_notification" && payload.payload) {
+            this._pushSong(payload.payload);
           }
           if (payload.type === "turn_progress" && payload.payload && this.submitting) {
             const label = this._turnProgressLabel(payload.payload.phase, payload.payload);

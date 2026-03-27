@@ -376,6 +376,7 @@ async def update_campaign_flags(
             difficulty=payload.difficulty,
             speed_multiplier=payload.speed_multiplier,
             clock_start_day_of_week=payload.clock_start_day_of_week,
+            clock_type=payload.clock_type,
         )
     except KeyError as err:
         _not_found(err)
