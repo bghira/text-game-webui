@@ -2287,6 +2287,11 @@ class TextGameEngineGateway(EngineGateway):
         raise ValueError(f"Unsupported tge completion mode: {normalized}")
 
     @staticmethod
+    def _is_all_namespaces(namespace: str) -> bool:
+        normalized = str(namespace or "").strip().lower()
+        return normalized in {"", "*", "all"}
+
+    @staticmethod
     def _parse_json_object(text: str, env_name: str) -> dict[str, Any]:
         raw = str(text or "").strip() or "{}"
         try:
@@ -2720,6 +2725,14 @@ class TextGameEngineGateway(EngineGateway):
             session.commit()
 
     async def list_campaigns(self, namespace: str) -> list[CampaignSummary]:
+        if self._is_all_namespaces(namespace):
+            with self._session_factory() as session:
+                rows = (
+                    session.query(Campaign)
+                    .order_by(Campaign.updated_at.desc(), Campaign.name.asc())
+                    .all()
+                )
+            return [self._to_summary(row) for row in rows]
         rows = self._emulator.list_campaigns(namespace)
         return [self._to_summary(row) for row in rows]
 

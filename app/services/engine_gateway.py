@@ -198,7 +198,14 @@ class InMemoryEngineGateway:
             raise KeyError(f"Unknown campaign: {campaign_id}")
         return self._campaigns[campaign_id]
 
+    @staticmethod
+    def _is_all_namespaces(namespace: str) -> bool:
+        normalized = str(namespace or "").strip().lower()
+        return normalized in {"", "*", "all"}
+
     async def list_campaigns(self, namespace: str) -> list[CampaignSummary]:
+        if self._is_all_namespaces(namespace):
+            return list(self._campaigns.values())
         return [row for row in self._campaigns.values() if row.namespace == namespace]
 
     async def create_campaign(self, namespace: str, name: str, actor_id: str) -> CampaignSummary:
