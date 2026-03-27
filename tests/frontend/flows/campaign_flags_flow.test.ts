@@ -15,12 +15,13 @@ function makeFetcher(responses: Record<string, unknown>): { fetcher: FetchLike; 
   return { fetcher, calls };
 }
 
-describe("campaign flags with clock_start_day_of_week", () => {
+describe("campaign flags with clock_start_day_of_week and clock_type", () => {
   const campaignId = "camp-xyz";
 
-  test("initCampaignFlagsState includes clock_start_day_of_week default", () => {
+  test("initCampaignFlagsState includes clock_start_day_of_week and clock_type defaults", () => {
     const state = initCampaignFlagsState();
     expect(state.clock_start_day_of_week).toBe("monday");
+    expect(state.clock_type).toBe("consequential-calendar");
     expect(state.guardrails).toBe(true);
     expect(state.difficulty).toBe("normal");
   });
@@ -79,5 +80,47 @@ describe("campaign flags with clock_start_day_of_week", () => {
     await setCampaignFlagFlow(fetcher, campaignId, "difficulty", "impossible");
     const parsed = JSON.parse(calls[0].init?.body ?? "{}");
     expect(parsed.difficulty).toBe("impossible");
+  });
+
+  test("loadCampaignFlagsFlow parses clock_type from API", async () => {
+    const { fetcher } = makeFetcher({
+      [`/api/campaigns/${campaignId}/flags`]: {
+        guardrails: true,
+        on_rails: false,
+        timed_events: false,
+        difficulty: "normal",
+        speed_multiplier: 1.0,
+        clock_start_day_of_week: "monday",
+        clock_type: "individual-calendars",
+      },
+    });
+
+    const result = await loadCampaignFlagsFlow(fetcher, campaignId);
+    expect(result.flags.clock_type).toBe("individual-calendars");
+  });
+
+  test("loadCampaignFlagsFlow defaults clock_type when missing", async () => {
+    const { fetcher } = makeFetcher({
+      [`/api/campaigns/${campaignId}/flags`]: {
+        guardrails: true,
+        on_rails: false,
+        timed_events: false,
+        difficulty: "normal",
+        speed_multiplier: 1.0,
+      },
+    });
+
+    const result = await loadCampaignFlagsFlow(fetcher, campaignId);
+    expect(result.flags.clock_type).toBe("consequential-calendar");
+  });
+
+  test("setCampaignFlagFlow sends correct payload for clock_type", async () => {
+    const { fetcher, calls } = makeFetcher({
+      [`/api/campaigns/${campaignId}/flags`]: { ok: true, changed: ["clock_type"] },
+    });
+
+    await setCampaignFlagFlow(fetcher, campaignId, "clock_type", "loose-calendar");
+    const parsed = JSON.parse(calls[0].init?.body ?? "{}");
+    expect(parsed.clock_type).toBe("loose-calendar");
   });
 });

@@ -728,3 +728,37 @@ def test_campaign_flags_clock_start_day_of_week(client):
         json={"clock_start_day_of_week": "notaday"},
     )
     assert bad_res.status_code in (400, 422)
+
+
+def test_campaign_flags_clock_type(client):
+    campaign = _create_campaign(client)
+    campaign_id = campaign["id"]
+
+    # Default flags include clock_type
+    flags_res = client.get(f"/api/campaigns/{campaign_id}/flags")
+    assert flags_res.status_code == 200
+    flags = flags_res.json()
+    assert flags.get("clock_type") == "consequential-calendar"
+
+    # Update clock_type to loose-calendar
+    update_res = client.post(
+        f"/api/campaigns/{campaign_id}/flags",
+        json={"clock_type": "loose-calendar"},
+    )
+    assert update_res.status_code == 200
+    assert "clock_type" in update_res.json().get("changed", [])
+
+    # Update clock_type to individual-calendars
+    update_res = client.post(
+        f"/api/campaigns/{campaign_id}/flags",
+        json={"clock_type": "individual-calendars"},
+    )
+    assert update_res.status_code == 200
+    assert "clock_type" in update_res.json().get("changed", [])
+
+    # Invalid clock_type returns 400
+    bad_res = client.post(
+        f"/api/campaigns/{campaign_id}/flags",
+        json={"clock_type": "invalid-type"},
+    )
+    assert bad_res.status_code in (400, 422)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -153,6 +154,10 @@ class WebNotificationPort:
                 },
             )
 
+    _YOUTUBE_URL_RE = re.compile(
+        r"https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([\w-]{11})"
+    )
+
     async def send_channel_message(
         self,
         *,
@@ -167,6 +172,40 @@ class WebNotificationPort:
                 "payload": {"message": message},
             },
         )
+        # Detect song notifications and emit structured event for the player
+        if "[Song]" in message:
+            match = self._YOUTUBE_URL_RE.search(message)
+            if match:
+                video_id = match.group(1)
+                url = f"https://www.youtube.com/watch?v={video_id}"
+                lines = message.split("\n")
+                title = ""
+                sender = ""
+                caption = ""
+                for line in lines:
+                    stripped = line.strip()
+                    if stripped.startswith("**[Song]"):
+                        inner = stripped.strip("*").strip()
+                        sender = inner.replace("[Song]", "").strip()
+                    elif stripped.startswith("http"):
+                        continue
+                    elif title == "" and stripped and not stripped.startswith(">"):
+                        title = stripped
+                    elif stripped.startswith(">"):
+                        caption = stripped.lstrip("> ").strip()
+                await self._hub.publish(
+                    campaign_id,
+                    {
+                        "type": "song_notification",
+                        "payload": {
+                            "video_id": video_id,
+                            "url": url,
+                            "title": title,
+                            "sender": sender,
+                            "caption": caption,
+                        },
+                    },
+                )
 
 
 class WebTimerEffectsPort:

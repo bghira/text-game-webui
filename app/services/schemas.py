@@ -147,6 +147,7 @@ class CampaignFlagsUpdate(BaseModel):
     difficulty: str | None = None
     speed_multiplier: float | None = None
     clock_start_day_of_week: str | None = None
+    clock_type: str | None = None
 
 
 class SourceMaterialIngest(BaseModel):
