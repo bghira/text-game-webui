@@ -604,6 +604,69 @@ button:disabled {
   color: var(--accent);
 }
 
+.calendar-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 0.25rem;
+  padding-top: 0.45rem;
+}
+
+.calendar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0.5rem;
+}
+
+.calendar-entry {
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  border-left: 2px solid transparent;
+}
+
+.calendar-entry.calendar-status-today,
+.calendar-entry.calendar-status-imminent {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.calendar-entry.calendar-status-missed,
+.calendar-entry.calendar-status-overdue {
+  border-left-color: var(--error);
+}
+
+.calendar-entry-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.calendar-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.calendar-time {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  color: var(--ink-secondary);
+}
+
+.calendar-location {
+  margin: 0.18rem 0 0;
+  font-size: 0.72rem;
+  color: var(--ink-secondary);
+  line-height: 1.35;
+}
+
+.calendar-empty {
+  margin: 0.3rem 0 0.5rem;
+  font-size: 0.75rem;
+  color: var(--ink-secondary);
+}
+
 /* Campaign flags panel */
 .campaign-flags {
   display: flex;

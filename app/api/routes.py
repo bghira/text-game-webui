@@ -969,9 +969,16 @@ async def get_timers(campaign_id: str, gateway: EngineGateway = Depends(get_gate
 
 
 @router.get("/campaigns/{campaign_id}/calendar")
-async def get_calendar(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_calendar(
+    campaign_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
     try:
-        return await gateway.get_calendar(campaign_id)
+        return await gateway.get_calendar(
+            campaign_id,
+            actor_id=_linked_actor_id(request),
+        )
     except KeyError as err:
         _not_found(err)
 

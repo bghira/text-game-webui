@@ -3390,7 +3390,7 @@ class TextGameEngineGateway(EngineGateway):
             "timers": timers,
         }
 
-    async def get_calendar(self, campaign_id: str) -> dict:
+    async def get_calendar(self, campaign_id: str, actor_id: str | None = None) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
@@ -3398,24 +3398,45 @@ class TextGameEngineGateway(EngineGateway):
             state = self._parse_json(campaign.state_json, {})
             if not isinstance(state, dict):
                 state = {}
-        events = state.get("calendar", [])
-        if not isinstance(events, list):
-            events = []
-        shaped_events: list[dict[str, Any]] = []
-        for raw in events:
-            if isinstance(raw, dict):
-                event = dict(raw)
-                target_players = event.get("target_players")
-                has_targets = isinstance(target_players, list) and any(
-                    str(item or "").strip() for item in target_players
+            player = None
+            actor_id_text = str(actor_id or "").strip()
+            if actor_id_text:
+                player = (
+                    session.query(Player)
+                    .filter(Player.campaign_id == campaign_id)
+                    .filter(Player.actor_id == actor_id_text)
+                    .first()
                 )
-                event.setdefault("scope", "targeted" if has_targets else "global")
-                shaped_events.append(event)
-            else:
+                if player is None:
+                    raise KeyError(f"Unknown player in campaign: {actor_id_text}")
+        actor_id_text = str(actor_id or "").strip()
+        player_state = self._emulator.get_player_state(player) if actor_id_text and player is not None else {}
+        effective_game_time, _global_game_time, _time_model, _calendar_policy = self._emulator._current_game_time_for_prompt(  # noqa: SLF001
+            state,
+            player_state,
+        )
+        prompt_events = self._emulator._calendar_for_prompt(  # noqa: SLF001
+            state,
+            player_state=player_state,
+            viewer_actor_id=actor_id_text or None,
+        )
+        shaped_events: list[dict[str, Any]] = []
+        for raw in prompt_events:
+            if not isinstance(raw, dict):
                 shaped_events.append({"value": raw, "scope": "global"})
+                continue
+            event = dict(raw)
+            if actor_id_text and event.get("target_players") and not event.get("targeted_to_active_player"):
+                continue
+            target_players = event.get("target_players")
+            has_targets = isinstance(target_players, list) and any(
+                str(item or "").strip() for item in target_players
+            )
+            event.setdefault("scope", "targeted" if has_targets else "global")
+            shaped_events.append(event)
 
         return {
-            "game_time": state.get("game_time", {}),
+            "game_time": effective_game_time,
             "events": shaped_events,
         }
 

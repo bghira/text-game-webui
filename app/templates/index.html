@@ -102,6 +102,39 @@
       </div>
     </template>
 
+    <template x-if="selectedCampaignId">
+      <div class="calendar-panel">
+        <button
+          type="button"
+          class="chapters-heading"
+          @click="calendarPanelOpen = !calendarPanelOpen"
+          :aria-expanded="calendarPanelOpen"
+          aria-controls="sidebar-calendar-list"
+        >
+          Calendar <small x-text="calendarPanelOpen ? '\u25B4' : '\u25BE'"></small>
+        </button>
+        <div x-show="calendarPanelOpen" class="calendar-list" id="sidebar-calendar-list">
+          <template x-if="sidebarCalendarEvents().length === 0">
+            <p class="calendar-empty">No upcoming events.</p>
+          </template>
+          <template x-for="(event, idx) in sidebarCalendarEvents()" :key="idx">
+            <div class="calendar-entry" :class="'calendar-status-' + (event.status || 'upcoming')">
+              <div class="calendar-entry-top">
+                <span class="calendar-title" x-text="event.title || event.name || event.event_key || 'Untitled event'"></span>
+                <small class="calendar-time" x-text="calendarSidebarTimeLabel(event)"></small>
+              </div>
+              <template x-if="event.location">
+                <p class="calendar-location" x-text="event.location"></p>
+              </template>
+              <template x-if="event.description && !event.location">
+                <p class="calendar-location" x-text="event.description"></p>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+
     <h2>Rooms</h2>
     <div class="stack compact">
       <button type="button" @click="ensureSharedWindow()" :disabled="!selectedCampaignId">Shared Room</button>
@@ -426,7 +459,13 @@
             @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
             @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
           ></textarea>
-          <button type="submit" :disabled="!selectedCampaignId || submitting || imageGenerating > 0" class="action-submit" :class="{ 'action-thinking': submitting || imageGenerating > 0 }" x-text="submitting ? 'Thinking...' : (imageGenerating > 0 ? 'Generating...' : 'Submit')"></button>
+          <button
+            type="submit"
+            :disabled="!selectedCampaignId || imageGenerating > 0"
+            class="action-submit"
+            :class="{ 'action-thinking': imageGenerating > 0 }"
+            x-text="submitButtonLabel()"
+          ></button>
         </form>
       </div>
     </div>

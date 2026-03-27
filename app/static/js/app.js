@@ -285,6 +285,8 @@
         action: "",
         session_id: "",
       },
+      _turnQueues: {},
+      _turnQueueDraining: false,
       dtmLink: {
         enabled: false,
         linked: false,
@@ -479,6 +481,8 @@
 
       /* Game time (extracted from turn state_update) */
       gameTime: {},
+      calendarEvents: [],
+      calendarPanelOpen: true,
       campaignSummary: "",
 
       async init() {
@@ -1042,6 +1046,121 @@
         const label = metadata.label || row.surface_key || row.id;
         const scope = metadata.scope || metadata.turn_visibility_default || row.surface;
         return `${label} (${scope})`;
+      },
+
+      turnQueueKey(campaignId, actorId) {
+        const campaign = String(campaignId || "").trim();
+        const actor = String(actorId || "").trim();
+        if (!campaign || !actor) return "";
+        return `${campaign}::${actor}`;
+      },
+
+      currentTurnQueueKey() {
+        return this.turnQueueKey(this.selectedCampaignId, this.turnForm.actor_id);
+      },
+
+      currentQueuedTurnCount() {
+        const key = this.currentTurnQueueKey();
+        if (!key) return 0;
+        return Array.isArray(this._turnQueues[key]) ? this._turnQueues[key].length : 0;
+      },
+
+      submitButtonLabel() {
+        if (this.imageGenerating > 0) return "Generating...";
+        if (this.submitting) {
+          const queued = this.currentQueuedTurnCount();
+          return queued > 0 ? `Queue (${queued})` : "Queue";
+        }
+        return "Submit";
+      },
+
+      _enqueueTurnPayload(campaignId, payload) {
+        const key = this.turnQueueKey(campaignId, payload.actor_id);
+        if (!key) return;
+        if (!Array.isArray(this._turnQueues[key])) {
+          this._turnQueues[key] = [];
+        }
+        this._turnQueues[key].push({
+          actor_id: String(payload.actor_id || "").trim(),
+          action: String(payload.action || "").trim(),
+          session_id: payload.session_id || null,
+        });
+        this.turnForm.action = "";
+        const count = this._turnQueues[key].length;
+        this.statusMessage = count === 1 ? "Queued 1 action." : `Queued ${count} actions.`;
+      },
+
+      _isQueueRetryableTurnError(error) {
+        const text = String(error || "").toLowerCase();
+        return (
+          text.includes("already resolving")
+          || text.includes("timed event in progress")
+          || text.includes("waiting for it to finish")
+        );
+      },
+
+      async _drainQueuedTurns() {
+        if (this._turnQueueDraining || this.submitting) return;
+        const key = this.currentTurnQueueKey();
+        if (!key) return;
+        this._turnQueueDraining = true;
+        try {
+          while (!this.submitting) {
+            const queue = this._turnQueues[key];
+            if (!Array.isArray(queue) || queue.length === 0) {
+              delete this._turnQueues[key];
+              break;
+            }
+            const next = queue.shift();
+            if (!queue.length) {
+              delete this._turnQueues[key];
+            }
+            if (!next || !String(next.action || "").trim()) {
+              continue;
+            }
+            const result = await this._submitTurnPayload(this.selectedCampaignId, next, { queued: true });
+            if (!result.ok) {
+              if (this._isQueueRetryableTurnError(result.error)) {
+                if (!Array.isArray(this._turnQueues[key])) {
+                  this._turnQueues[key] = [];
+                }
+                this._turnQueues[key].unshift(next);
+                this.statusMessage = "Queued action is waiting for the current turn to clear.";
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                continue;
+              }
+              this.errorMessage = String(result.error);
+            }
+          }
+        } finally {
+          this._turnQueueDraining = false;
+        }
+      },
+
+      sidebarCalendarEvents() {
+        const rows = Array.isArray(this.calendarEvents) ? [...this.calendarEvents] : [];
+        rows.sort((a, b) => {
+          const dayA = Number(a && a.fire_day) || 0;
+          const dayB = Number(b && b.fire_day) || 0;
+          if (dayA !== dayB) return dayA - dayB;
+          const hourA = Number(a && a.fire_hour) || 0;
+          const hourB = Number(b && b.fire_hour) || 0;
+          return hourA - hourB;
+        });
+        return rows.slice(0, 8);
+      },
+
+      calendarSidebarTimeLabel(event) {
+        if (!event || typeof event !== "object") return "";
+        const hour = String(Number(event.fire_hour) || 0).padStart(2, "0");
+        const minute = String(Number(event.fire_minute) || 0).padStart(2, "0");
+        const day = Number(event.fire_day) || 0;
+        const status = String(event.status || "").trim().toLowerCase();
+        if (status === "today") return `Today ${hour}:${minute}`;
+        if (status === "imminent") return `Soon ${hour}:${minute}`;
+        if (status === "missed") return `Missed Day ${day} ${hour}:${minute}`;
+        if (day > 0) return `Day ${day} ${hour}:${minute}`;
+        return `${hour}:${minute}`;
       },
 
       syncTurnSessionSelection() {
@@ -1897,7 +2016,6 @@
           this.pushStream("notice", `Rewound to turn ${turnId}`, { rewind: true });
           /* Reload all state after rewind */
           await Promise.all([
-            this.loadMap(),
             this.loadTimers(),
             this.loadCalendar(),
             this.loadRoster(),
@@ -2094,6 +2212,7 @@
         this.mapText = "";
         this.timersText = "";
         this.calendarText = "";
+        this.calendarEvents = [];
         this.rosterText = "";
         this.playerStateText = "";
         this.mediaText = "";
@@ -2137,7 +2256,6 @@
         this.populateTurnStreamFromHistory();
         /* Remaining data loads — fire-and-forget so the UI stays responsive. */
         Promise.all([
-          this.loadMap(),
           this.loadTimers(),
           this.loadCalendar(),
           this.loadRoster(),
@@ -2478,29 +2596,38 @@
           this.errorMessage = "Select an actor first.";
           return;
         }
-        if (this.submitting) return;
         if (this.imageGenerating) {
           this.errorMessage = "Wait for image generation to finish before submitting a turn.";
           return;
         }
+        const payload = {
+          actor_id: this.turnForm.actor_id.trim(),
+          action: this.turnForm.action.trim(),
+          session_id: this.selectedSessionId || null,
+        };
+        if (!payload.action) return;
+        if (this.submitting) {
+          this._enqueueTurnPayload(this.selectedCampaignId, payload);
+          return;
+        }
+        const result = await this._submitTurnPayload(this.selectedCampaignId, payload, { queued: false });
+        if (!result.ok) {
+          this.errorMessage = String(result.error);
+        }
+        await this._drainQueuedTurns();
+      },
+
+      async _submitTurnPayload(campaignId, payload, { queued = false } = {}) {
         this.submitting = true;
         this._submittingTurn = true;
-        this.statusMessage = "Submitting turn...";
+        this.statusMessage = queued ? "Processing queued action..." : "Submitting turn...";
         try {
-          const payload = {
-            actor_id: this.turnForm.actor_id.trim(),
-            action: this.turnForm.action.trim(),
-            session_id: this.selectedSessionId || null,
-          };
-
-          /* Record the player's action in the stream */
           if (payload.action) {
             this.pushStream("player", payload.action, { actor_id: payload.actor_id });
           }
 
           if (!this.runtimeInfo.streaming_supported) {
-            /* Non-streaming fallback (original path) */
-            const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/turns`, {
+            const body = await this.api(`/api/campaigns/${campaignId}/turns`, {
               method: "POST",
               body: JSON.stringify(payload),
             });
@@ -2547,7 +2674,6 @@
               this.gameTime = body.state_update.game_time;
             }
           } else {
-            /* SSE streaming path */
             this._streamingNarration = "";
             this.turnCounter += 1;
             const streamEntryId = this.turnCounter;
@@ -2561,7 +2687,7 @@
             });
             this._scrollStream();
 
-            const resp = await fetch(`/api/campaigns/${this.selectedCampaignId}/turns/stream`, {
+            const resp = await fetch(`/api/campaigns/${campaignId}/turns/stream`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(payload),
@@ -2582,20 +2708,18 @@
               if (done) break;
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split("\n");
-              buffer = lines.pop();  /* keep incomplete line in buffer */
+              buffer = lines.pop();
               for (const line of lines) {
                 if (line.startsWith("event: ")) {
                   currentEvent = line.slice(7).trim();
                 } else if (line.startsWith("data: ")) {
                   currentData = line.slice(6);
                 } else if (line === "") {
-                  /* End of SSE event block */
                   if (currentEvent && currentData) {
                     try {
                       const parsed = JSON.parse(currentData);
                       this._handleStreamEvent(currentEvent, parsed, streamEntryId);
                     } catch (_e) {
-                      /* ignore malformed JSON */
                     }
                   }
                   currentEvent = "";
@@ -2603,12 +2727,12 @@
                 }
               }
             }
-            /* Flush any remaining event in buffer */
             if (currentEvent && currentData) {
               try {
                 const parsed = JSON.parse(currentData);
                 this._handleStreamEvent(currentEvent, parsed, streamEntryId);
-              } catch (_e) { /* ignore */ }
+              } catch (_e) {
+              }
             }
 
             this.turnForm.action = "";
@@ -2616,7 +2740,6 @@
 
           await Promise.all([
             this.loadSessions(),
-            this.loadMap(),
             this.loadTimers(),
             this.loadCalendar(),
             this.loadRoster(),
@@ -2630,12 +2753,11 @@
             this.loadChapterList(),
             this.loadSceneImages(),
           ]);
-          /* Rebuild the turn stream from server history to recover any
-             entries lost during async side-effects while in-flight. */
           this.populateTurnStreamFromHistory();
-          this.statusMessage = "Turn submitted.";
+          this.statusMessage = queued ? "Queued action submitted." : "Turn submitted.";
+          return { ok: true };
         } catch (error) {
-          this.errorMessage = String(error);
+          return { ok: false, error };
         } finally {
           this._clearPhaseTyper();
           this._submittingTurn = false;
@@ -2696,10 +2818,12 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/calendar`);
           this.calendarText = formatJson(body);
+          this.calendarEvents = Array.isArray(body.events) ? body.events : [];
           if (body.game_time && typeof body.game_time === "object") {
             this.gameTime = body.game_time;
           }
         } catch (_err) {
+          this.calendarEvents = [];
           /* background refresh */
         }
       },
@@ -3162,7 +3286,6 @@
       /* ---- Extracted helper to reload all campaign data ---- */
       async _reloadCampaignData() {
         await Promise.all([
-          this.loadMap(),
           this.loadPlayerState(),
           this.loadPlayerStatistics(),
           this.loadPlayerAttributes(),
