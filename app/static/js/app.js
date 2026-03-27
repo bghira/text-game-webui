@@ -596,6 +596,13 @@
         this.newCampaignWizard.actor_id = actor;
       },
 
+      effectiveLinkedActorId() {
+        if (!this.dtmLink || !this.dtmLink.enabled || !this.dtmLink.linked) {
+          return "";
+        }
+        return String(this.dtmLink.actor_id || "").trim();
+      },
+
       /* ---- Turn stream hydration from history ---- */
       _buildTurnEntries(turns, sessionFilter) {
         const entries = [];
@@ -2108,7 +2115,10 @@
         this.portraitStatus = "";
         this.scheduledSmsStatus = "";
         const selected = this.campaigns.find((row) => row.id === campaignId);
-        if (selected) {
+        const linkedActorId = this.effectiveLinkedActorId();
+        if (linkedActorId) {
+          this.turnForm.actor_id = linkedActorId;
+        } else if (selected) {
           this.turnForm.actor_id = selected.actor_id;
         }
         if (this.turnForm.actor_id) {
