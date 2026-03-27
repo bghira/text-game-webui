@@ -478,6 +478,7 @@ class InMemoryEngineGateway:
             player["state"] = player_state
 
         return TurnResult(
+            turn_id=turn_id,
             actor_id=request.actor_id,
             session_id=session_id,
             narration=f"TURN {turn_id}: {request.actor_id} -> {request.action}",

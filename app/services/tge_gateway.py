@@ -3140,6 +3140,7 @@ class TextGameEngineGateway(EngineGateway):
                 active_minigame = raw_minigame
 
         return TurnResult(
+            turn_id=int(narrator_turn.id) if narrator_turn is not None else None,
             actor_id=request.actor_id,
             session_id=session_id,
             narration=str(narration),

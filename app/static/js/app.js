@@ -659,6 +659,30 @@
         if (scrollToBottom !== false) this._scrollStream();
       },
 
+      _recentTurnsContainTurnId(turnId) {
+        const wanted = Number(turnId) || 0;
+        if (wanted <= 0 || !Array.isArray(this.recentTurns)) {
+          return false;
+        }
+        return this.recentTurns.some((turn) => Number(turn && turn.id) === wanted);
+      },
+
+      _scheduleRecentTurnRecovery(turnId) {
+        const wanted = Number(turnId) || 0;
+        if (wanted <= 0 || !this.selectedCampaignId) {
+          return;
+        }
+        setTimeout(async () => {
+          try {
+            await this.loadRecentTurns(30);
+            if (this._recentTurnsContainTurnId(wanted)) {
+              this.populateTurnStreamFromHistory();
+            }
+          } catch (_error) {
+          }
+        }, 1000);
+      },
+
       /* ---- Turn stream filtering ---- */
       visibleTurnStream() {
         if (this.$store.app.debugMode) {
@@ -2621,6 +2645,7 @@
         this.submitting = true;
         this._submittingTurn = true;
         this.statusMessage = queued ? "Processing queued action..." : "Submitting turn...";
+        let backendTurnId = 0;
         try {
           if (payload.action) {
             this.pushStream("player", payload.action, { actor_id: payload.actor_id });
@@ -2631,6 +2656,7 @@
               method: "POST",
               body: JSON.stringify(payload),
             });
+            backendTurnId = Number(body.turn_id) || 0;
             normalizeTurnNotices(body).forEach((notice) => {
               this.pushStream("notice", notice, { notice });
             });
@@ -2718,6 +2744,9 @@
                   if (currentEvent && currentData) {
                     try {
                       const parsed = JSON.parse(currentData);
+                      if (currentEvent === "complete") {
+                        backendTurnId = Number(parsed.turn_id) || 0;
+                      }
                       this._handleStreamEvent(currentEvent, parsed, streamEntryId);
                     } catch (_e) {
                     }
@@ -2730,6 +2759,9 @@
             if (currentEvent && currentData) {
               try {
                 const parsed = JSON.parse(currentData);
+                if (currentEvent === "complete") {
+                  backendTurnId = Number(parsed.turn_id) || 0;
+                }
                 this._handleStreamEvent(currentEvent, parsed, streamEntryId);
               } catch (_e) {
               }
@@ -2753,6 +2785,17 @@
             this.loadChapterList(),
             this.loadSceneImages(),
           ]);
+          if (backendTurnId > 0 && !this._recentTurnsContainTurnId(backendTurnId)) {
+            console.warn("recent-turns refresh missing completed turn", {
+              campaignId,
+              actorId: payload.actor_id,
+              sessionId: payload.session_id || null,
+              turnId: backendTurnId,
+            });
+            this.statusMessage = "Turn completed. History refresh has not caught up yet; keeping the live result.";
+            this._scheduleRecentTurnRecovery(backendTurnId);
+            return { ok: true };
+          }
           this.populateTurnStreamFromHistory();
           this.statusMessage = queued ? "Queued action submitted." : "Turn submitted.";
           return { ok: true };

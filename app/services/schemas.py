@@ -59,6 +59,7 @@ class RosterRemoveRequest(BaseModel):
 
 
 class TurnResult(BaseModel):
+    turn_id: int | None = None
     actor_id: str | None = None
     session_id: str | None = None
     narration: str
