@@ -110,6 +110,10 @@ body {
   height: calc(100vh - 58px);
 }
 
+.dtm-linked-shell {
+  display: contents;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
