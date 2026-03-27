@@ -4654,16 +4654,84 @@ class TextGameEngineGateway(EngineGateway):
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
             name = campaign.name
-            # Delete all related data
-            session.query(Embedding).filter(Embedding.campaign_id == campaign_id).delete()
-            session.query(Snapshot).filter(Snapshot.campaign_id == campaign_id).delete()
-            session.query(Turn).filter(Turn.campaign_id == campaign_id).delete()
-            session.query(Timer).filter(Timer.campaign_id == campaign_id).delete()
-            session.query(InflightTurn).filter(InflightTurn.campaign_id == campaign_id).delete()
-            session.query(OutboxEvent).filter(OutboxEvent.campaign_id == campaign_id).delete()
-            session.query(GameSession).filter(GameSession.campaign_id == campaign_id).delete()
-            session.query(MediaRef).filter(MediaRef.campaign_id == campaign_id).delete()
-            session.query(Player).filter(Player.campaign_id == campaign_id).delete()
+            session_ids = [
+                str(row[0])
+                for row in session.query(GameSession.id)
+                .filter(GameSession.campaign_id == campaign_id)
+                .all()
+            ]
+            turn_ids = [
+                int(row[0])
+                for row in session.query(Turn.id)
+                .filter(
+                    or_(
+                        Turn.campaign_id == campaign_id,
+                        Turn.session_id.in_(session_ids) if session_ids else False,
+                    )
+                )
+                .all()
+            ]
+
+            # Delete child rows before parent rows. Use both campaign_id and the
+            # campaign's session/turn ids so old session rebinds do not leave
+            # foreign-key references behind.
+            if turn_ids:
+                session.query(Embedding).filter(Embedding.turn_id.in_(turn_ids)).delete(
+                    synchronize_session=False
+                )
+                session.query(Snapshot).filter(Snapshot.turn_id.in_(turn_ids)).delete(
+                    synchronize_session=False
+                )
+            else:
+                session.query(Embedding).filter(Embedding.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+                session.query(Snapshot).filter(Snapshot.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+
+            if session_ids:
+                session.query(Turn).filter(
+                    or_(
+                        Turn.campaign_id == campaign_id,
+                        Turn.session_id.in_(session_ids),
+                    )
+                ).delete(synchronize_session=False)
+                session.query(Timer).filter(
+                    or_(
+                        Timer.campaign_id == campaign_id,
+                        Timer.session_id.in_(session_ids),
+                    )
+                ).delete(synchronize_session=False)
+                session.query(OutboxEvent).filter(
+                    or_(
+                        OutboxEvent.campaign_id == campaign_id,
+                        OutboxEvent.session_id.in_(session_ids),
+                    )
+                ).delete(synchronize_session=False)
+                session.query(GameSession).filter(GameSession.id.in_(session_ids)).delete(
+                    synchronize_session=False
+                )
+            else:
+                session.query(Turn).filter(Turn.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+                session.query(Timer).filter(Timer.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+                session.query(OutboxEvent).filter(OutboxEvent.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+
+            session.query(InflightTurn).filter(InflightTurn.campaign_id == campaign_id).delete(
+                synchronize_session=False
+            )
+            session.query(MediaRef).filter(MediaRef.campaign_id == campaign_id).delete(
+                synchronize_session=False
+            )
+            session.query(Player).filter(Player.campaign_id == campaign_id).delete(
+                synchronize_session=False
+            )
             session.delete(campaign)
             session.commit()
         return {"ok": True, "deleted_campaign_id": campaign_id, "name": name}
