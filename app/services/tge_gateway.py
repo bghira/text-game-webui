@@ -12,6 +12,7 @@ from urllib import request as urllib_request
 
 from app.settings import Settings
 from app.services.schemas import CampaignSummary, MemoryStoreRequest, TurnRequest, TurnResult
+from sqlalchemy import or_
 
 from .engine_gateway import EngineGateway
 
