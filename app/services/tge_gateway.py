@@ -4349,16 +4349,59 @@ class TextGameEngineGateway(EngineGateway):
         ok, message = self._emulator.level_up(player)
         return {"ok": ok, "message": message}
 
-    async def get_recent_turns(self, campaign_id: str, limit: int = 30, offset: int = 0) -> dict:
+    async def get_recent_turns(
+        self,
+        campaign_id: str,
+        limit: int = 30,
+        offset: int = 0,
+        actor_id: str | None = None,
+    ) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = None
+            actor_id_text = str(actor_id or "").strip()
+            if actor_id_text:
+                player = (
+                    session.query(Player)
+                    .filter(Player.campaign_id == campaign_id)
+                    .filter(Player.actor_id == actor_id_text)
+                    .first()
+                )
+                if player is None:
+                    raise KeyError(f"Unknown player in campaign: {actor_id_text}")
         # Guard against pathological pagination requests by capping limit/offset.
         safe_limit = max(1, min(limit, 100))
         safe_offset = max(0, min(offset, 1000))
         fetch_limit = safe_limit + safe_offset + 1
+        actor_id_text = str(actor_id or "").strip()
+        if actor_id_text:
+            fetch_limit = min(400, max(fetch_limit, fetch_limit * 4))
         raw = self._emulator.get_recent_turns(campaign_id, limit=fetch_limit)
+        if actor_id_text:
+            assert player is not None
+            player_state = self._emulator.get_player_state(player)
+            player_registry = self._emulator._campaign_player_registry(  # noqa: SLF001
+                campaign_id,
+                self._session_factory,
+            )
+            viewer_slug = str(
+                (player_registry.get("by_actor_id", {}).get(actor_id_text, {}) or {}).get("slug")
+                or self._emulator._player_visibility_slug(actor_id_text)  # noqa: SLF001
+                or ""
+            ).strip()
+            viewer_location_key = self._emulator._room_key_from_player_state(player_state)  # noqa: SLF001
+            raw = [
+                turn
+                for turn in raw
+                if self._emulator._turn_visible_to_viewer(  # noqa: SLF001
+                    turn,
+                    actor_id_text,
+                    viewer_slug,
+                    viewer_location_key,
+                )
+            ]
         # raw is oldest→newest
         has_more = len(raw) >= fetch_limit
         end_idx = len(raw) - safe_offset if safe_offset < len(raw) else 0

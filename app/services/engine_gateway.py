@@ -157,7 +157,13 @@ class EngineGateway(Protocol):
     async def set_player_attribute(self, campaign_id: str, actor_id: str, attribute: str, value: int) -> dict: ...
     async def rename_player_character(self, campaign_id: str, actor_id: str, name: str) -> dict: ...
     async def level_up_player(self, campaign_id: str, actor_id: str) -> dict: ...
-    async def get_recent_turns(self, campaign_id: str, limit: int = 30, offset: int = 0) -> dict: ...
+    async def get_recent_turns(
+        self,
+        campaign_id: str,
+        limit: int = 30,
+        offset: int = 0,
+        actor_id: str | None = None,
+    ) -> dict: ...
     async def get_campaign_persona(self, campaign_id: str) -> dict: ...
     async def set_campaign_persona(self, campaign_id: str, persona: str) -> dict: ...
     async def get_puzzle_hint(self, campaign_id: str) -> dict: ...
@@ -1130,7 +1136,13 @@ Legend: @ current player
         self._require_campaign(campaign_id)
         return {"ok": False, "note": "InMemory backend — level up not supported."}
 
-    async def get_recent_turns(self, campaign_id: str, limit: int = 30, offset: int = 0) -> dict:
+    async def get_recent_turns(
+        self,
+        campaign_id: str,
+        limit: int = 30,
+        offset: int = 0,
+        actor_id: str | None = None,
+    ) -> dict:
         self._require_campaign(campaign_id)
         all_turns = self._turns[campaign_id]
         total = len(all_turns)
