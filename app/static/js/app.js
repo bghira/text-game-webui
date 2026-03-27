@@ -272,7 +272,7 @@
       _gpuPollId: null,
 
       campaignForm: {
-        namespace: "default",
+        namespace: "all",
         name: "",
         actor_id: "",
         files: [],
@@ -1852,7 +1852,7 @@
       async refreshCampaigns() {
         this.resetError();
         try {
-          const namespace = encodeURIComponent(this.campaignForm.namespace || "default");
+          const namespace = encodeURIComponent(this.campaignForm.namespace || "all");
           const body = await this.api(`/api/campaigns?namespace=${namespace}`);
           this.campaigns = body.campaigns || [];
           this.statusMessage = `Loaded ${this.campaigns.length} campaign(s).`;
@@ -1900,11 +1900,14 @@
         this.campaignForm.creating = true;
         this.campaignForm.createStatus = "Creating campaign...";
         try {
+          const createNamespace = (["", "*", "all"].includes((this.campaignForm.namespace || "").trim().toLowerCase()))
+            ? "default"
+            : (this.campaignForm.namespace || "default");
           // 1. Create campaign
           const body = await this.api("/api/campaigns", {
             method: "POST",
             body: JSON.stringify({
-              namespace: this.campaignForm.namespace || "default",
+              namespace: createNamespace,
               name: this.campaignForm.name.trim(),
               actor_id: this.campaignForm.actor_id.trim(),
             }),
@@ -3182,10 +3185,13 @@
         w.step = "creating";
         w.createStatus = "Creating campaign...";
         try {
+          const createNamespace = (["", "*", "all"].includes((this.campaignForm.namespace || "").trim().toLowerCase()))
+            ? "default"
+            : (this.campaignForm.namespace || "default");
           const body = await this.api("/api/campaigns", {
             method: "POST",
             body: JSON.stringify({
-              namespace: this.campaignForm.namespace || "default",
+              namespace: createNamespace,
               name: w.name.trim(),
               actor_id: w.actor_id.trim(),
             }),

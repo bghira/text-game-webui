@@ -144,7 +144,7 @@ async def features() -> dict:
 
 
 @router.get("/campaigns")
-async def list_campaigns(namespace: str = "default", gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def list_campaigns(namespace: str = "all", gateway: EngineGateway = Depends(get_gateway)) -> dict:
     rows = await gateway.list_campaigns(namespace)
     return {"campaigns": [row.model_dump() for row in rows]}
 
