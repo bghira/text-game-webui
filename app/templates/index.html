@@ -1,6 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="layout" x-data="textGameApp()" x-init="init()">
+  <template x-if="dtmLink.enabled && !dtmLink.linked">
+    <div class="panel main-column stack">
+      <h2>Link Discord Account</h2>
+      <p>This DTM web UI only unlocks after you link your Discord account. Use this command in Discord from the account you play with:</p>
+      <pre><code x-text="dtmLink.command || ('+zork link-account ' + (dtmLink.link_code || '...'))"></code></pre>
+      <p x-show="dtmLink.link_code">
+        Waiting for confirmation of code:
+        <strong x-text="dtmLink.link_code"></strong>
+      </p>
+      <p x-show="dtmLink.error" class="error" x-text="dtmLink.error"></p>
+      <p>After Discord confirms the link, this page will unlock automatically.</p>
+    </div>
+  </template>
+  <template x-if="!dtmLink.enabled || dtmLink.linked">
 
   <!-- ====== SIDEBAR ====== -->
   <aside class="panel sidebar">
@@ -2253,6 +2267,7 @@
       </div>
     </aside>
   </div>
+  </template>
 
 </section>
 {% endblock %}

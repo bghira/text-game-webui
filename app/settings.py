@@ -174,6 +174,15 @@ class Settings(BaseModel):
     tge_runtime_probe_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS", "8"))
     )
+    dtm_link_auth_enabled: bool = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_LINK_AUTH", "0") in {"1", "true", "True"}
+    )
+    dtm_link_secret: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_LINK_SECRET", "")
+    )
+    dtm_command_prefix: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_COMMAND_PREFIX", "+")
+    )
 
     # -- Image generation settings ------------------------------------------
     image_backend: str = Field(

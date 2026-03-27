@@ -15,9 +15,19 @@ from typing import NoReturn
 from urllib import request as urllib_request
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from app.services.dtm_link_auth import (
+    LINK_CONFIRM_HEADER,
+    LINK_PENDING_COOKIE,
+    LINK_SESSION_COOKIE,
+    confirm_pending_link,
+    dtm_link_enabled,
+    get_linked_actor_from_request,
+    get_or_create_pending_link,
+    issue_session_cookie_value,
+)
 from app.services.engine_gateway import FEATURES, EngineGateway
 from app.services.schemas import (
     AttributeSetRequest,
@@ -68,6 +78,12 @@ class CampaignCreateRequest(BaseModel):
     actor_id: str
 
 
+class DtmLinkConfirmRequest(BaseModel):
+    code: str
+    actor_id: str
+    display_name: str = ""
+
+
 def get_gateway(request: Request) -> EngineGateway:
     return request.app.state.gateway
 
@@ -78,6 +94,19 @@ def _not_found(err: KeyError) -> NoReturn:
 
 def _bad_request(err: ValueError) -> NoReturn:
     raise HTTPException(status_code=400, detail=str(err)) from err
+
+
+def _linked_actor_id(request: Request) -> str | None:
+    actor_id = str(getattr(request.state, "linked_actor_id", "") or "").strip()
+    return actor_id or None
+
+
+def _linked_display_name(request: Request) -> str:
+    return str(getattr(request.state, "linked_display_name", "") or "").strip()
+
+
+def _coerced_actor_id(request: Request, provided: str | None = None) -> str:
+    return _linked_actor_id(request) or str(provided or "").strip()
 
 
 @router.get("/health")
@@ -143,15 +172,139 @@ async def features() -> dict:
     return {"features": FEATURES}
 
 
+@router.get("/dtm-link/status")
+async def dtm_link_status(request: Request) -> JSONResponse:
+    settings = request.app.state.settings
+    linked = get_linked_actor_from_request(request)
+    prefix = str(getattr(settings, "dtm_command_prefix", "+") or "+").strip() or "+"
+    if not dtm_link_enabled(settings):
+        return JSONResponse(
+            {
+                "enabled": False,
+                "linked": False,
+                "actor_id": None,
+                "display_name": "",
+                "link_code": None,
+                "command": "",
+            }
+        )
+    if linked is not None:
+        response = JSONResponse(
+            {
+                "enabled": True,
+                "linked": True,
+                "actor_id": linked.actor_id,
+                "display_name": linked.display_name,
+                "link_code": None,
+                "command": "",
+            }
+        )
+        response.delete_cookie(LINK_PENDING_COOKIE, path="/")
+        return response
+
+    pending_cookie = request.cookies.get(LINK_PENDING_COOKIE)
+    row = get_or_create_pending_link(request.app, pending_cookie)
+    actor_id = str(row.get("actor_id") or "").strip()
+    display_name = str(row.get("display_name") or "").strip()
+    if actor_id:
+        session_cookie = issue_session_cookie_value(
+            settings,
+            actor_id=actor_id,
+            display_name=display_name,
+        )
+        response = JSONResponse(
+            {
+                "enabled": True,
+                "linked": True,
+                "actor_id": actor_id,
+                "display_name": display_name,
+                "link_code": None,
+                "command": "",
+            }
+        )
+        response.set_cookie(
+            LINK_SESSION_COOKIE,
+            session_cookie,
+            httponly=True,
+            samesite="lax",
+            path="/",
+            max_age=60 * 60 * 24 * 30,
+        )
+        response.delete_cookie(LINK_PENDING_COOKIE, path="/")
+        return response
+
+    code = str(row.get("code") or "").strip()
+    response = JSONResponse(
+        {
+            "enabled": True,
+            "linked": False,
+            "actor_id": None,
+            "display_name": "",
+            "link_code": code,
+            "command": f"{prefix}zork link-account {code}",
+        }
+    )
+    response.set_cookie(
+        LINK_PENDING_COOKIE,
+        code,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        max_age=60 * 60 * 12,
+    )
+    return response
+
+
+@router.post("/dtm-link/confirm")
+async def dtm_link_confirm(payload: DtmLinkConfirmRequest, request: Request) -> dict:
+    settings = request.app.state.settings
+    if not dtm_link_enabled(settings):
+        raise HTTPException(status_code=404, detail="Discord link auth is not enabled.")
+    provided_secret = str(request.headers.get(LINK_CONFIRM_HEADER) or "").strip()
+    expected_secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
+    if not provided_secret or provided_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Invalid link secret.")
+    row = confirm_pending_link(
+        request.app,
+        code=payload.code,
+        actor_id=payload.actor_id,
+        display_name=payload.display_name,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired link code.")
+    return {
+        "ok": True,
+        "code": str(row.get("code") or ""),
+        "actor_id": str(row.get("actor_id") or ""),
+        "display_name": str(row.get("display_name") or ""),
+    }
+
+
 @router.get("/campaigns")
-async def list_campaigns(namespace: str = "all", gateway: EngineGateway = Depends(get_gateway)) -> dict:
-    rows = await gateway.list_campaigns(namespace)
+async def list_campaigns(
+    request: Request,
+    namespace: str = "all",
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    linked_actor = _linked_actor_id(request)
+    if dtm_link_enabled(request.app.state.settings) and linked_actor:
+        rows = await gateway.list_campaigns_for_actor(linked_actor)
+    else:
+        rows = await gateway.list_campaigns(namespace)
     return {"campaigns": [row.model_dump() for row in rows]}
 
 
 @router.post("/campaigns")
-async def create_campaign(payload: CampaignCreateRequest, gateway: EngineGateway = Depends(get_gateway)) -> dict:
-    row = await gateway.create_campaign(payload.namespace, payload.name, payload.actor_id)
+async def create_campaign(
+    payload: CampaignCreateRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _linked_actor_id(request) or payload.actor_id
+    namespace = payload.namespace
+    if str(namespace or "").strip().lower() in {"", "*", "all"}:
+        namespace = "default"
+    row = await gateway.create_campaign(namespace, payload.name, actor_id)
     return {"campaign": row.model_dump()}
 
 
@@ -264,6 +417,7 @@ async def submit_turn(
     request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         result = await gateway.submit_turn(campaign_id, payload)
     except KeyError as err:
@@ -282,6 +436,7 @@ async def submit_turn_stream(
     gateway: EngineGateway = Depends(get_gateway),
 ) -> StreamingResponse:
     from app.services.schemas import TurnResult as TurnResultModel
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
 
     # Collect all events *before* streaming so turn execution and realtime
     # publishing are not cancelled if the client disconnects mid-stream.
@@ -455,7 +610,13 @@ async def cancel_pending_timer(campaign_id: str, gateway: EngineGateway = Depend
 
 
 @router.get("/campaigns/{campaign_id}/player-statistics")
-async def get_player_statistics(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_player_statistics(
+    campaign_id: str,
+    actor_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id)
     try:
         return await gateway.get_player_statistics(campaign_id, actor_id)
     except KeyError as err:
@@ -463,7 +624,13 @@ async def get_player_statistics(campaign_id: str, actor_id: str, gateway: Engine
 
 
 @router.get("/campaigns/{campaign_id}/player-attributes")
-async def get_player_attributes(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_player_attributes(
+    campaign_id: str,
+    actor_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id)
     try:
         return await gateway.get_player_attributes(campaign_id, actor_id)
     except KeyError as err:
@@ -474,8 +641,10 @@ async def get_player_attributes(campaign_id: str, actor_id: str, gateway: Engine
 async def set_player_attribute(
     campaign_id: str,
     payload: AttributeSetRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.set_player_attribute(campaign_id, payload.actor_id, payload.attribute, payload.value)
     except KeyError as err:
@@ -488,8 +657,10 @@ async def set_player_attribute(
 async def rename_player_character(
     campaign_id: str,
     payload: PlayerNameUpdateRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.rename_player_character(campaign_id, payload.actor_id, payload.name)
     except KeyError as err:
@@ -502,8 +673,10 @@ async def rename_player_character(
 async def level_up_player(
     campaign_id: str,
     payload: LevelUpRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.level_up_player(campaign_id, payload.actor_id)
     except KeyError as err:
@@ -603,8 +776,10 @@ async def get_setup_status(campaign_id: str, gateway: EngineGateway = Depends(ge
 async def start_campaign_setup(
     campaign_id: str,
     payload: SetupStartRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.start_campaign_setup(
             campaign_id,
@@ -622,8 +797,10 @@ async def start_campaign_setup(
 async def handle_setup_message(
     campaign_id: str,
     payload: SetupMessageRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.handle_setup_message(campaign_id, payload.actor_id, payload.message)
     except KeyError as err:
@@ -763,7 +940,13 @@ async def get_chapter_list(campaign_id: str, gateway: EngineGateway = Depends(ge
 
 
 @router.get("/campaigns/{campaign_id}/map")
-async def get_map(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_map(
+    campaign_id: str,
+    actor_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id)
     try:
         data = await gateway.get_map(campaign_id, actor_id)
     except KeyError as err:
@@ -844,7 +1027,13 @@ async def remove_roster_character(
 
 
 @router.get("/campaigns/{campaign_id}/player-state")
-async def get_player_state(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_player_state(
+    campaign_id: str,
+    actor_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id)
     try:
         data = await gateway.get_player_state(campaign_id, actor_id)
     except KeyError as err:
@@ -856,8 +1045,10 @@ async def get_player_state(campaign_id: str, actor_id: str, gateway: EngineGatew
 async def get_media(
     campaign_id: str,
     actor_id: str | None = None,
+    request: Request = None,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id) if request is not None else actor_id
     try:
         data = await gateway.get_media(campaign_id, actor_id)
     except KeyError as err:
@@ -872,6 +1063,7 @@ async def generate_avatar(
     request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     """Generate an avatar image from a prompt and set it as the pending avatar."""
     settings = request.app.state.settings
     backend = (settings.image_backend or "none").strip().lower()
@@ -923,7 +1115,7 @@ async def commit_avatar(
 ) -> dict:
     """After generation completes, commit the image as the pending avatar."""
     body = await request.json()
-    actor_id = body.get("actor_id", "")
+    actor_id = _coerced_actor_id(request, body.get("actor_id", ""))
     image_url = body.get("image_url", "")
     prompt = body.get("prompt", "")
     if not actor_id or not image_url:
@@ -946,6 +1138,7 @@ async def accept_pending_avatar(
     request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         data = await gateway.accept_pending_avatar(campaign_id, payload.actor_id)
     except KeyError as err:
@@ -964,6 +1157,7 @@ async def decline_pending_avatar(
     request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         data = await gateway.decline_pending_avatar(campaign_id, payload.actor_id)
     except KeyError as err:
@@ -1016,7 +1210,13 @@ async def sms_list(campaign_id: str, payload: SmsListRequest, gateway: EngineGat
 
 
 @router.post("/campaigns/{campaign_id}/sms/read")
-async def sms_read(campaign_id: str, payload: SmsReadRequest, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def sms_read(
+    campaign_id: str,
+    payload: SmsReadRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    payload.viewer_actor_id = _coerced_actor_id(request, payload.viewer_actor_id)
     try:
         return await gateway.sms_read(campaign_id, payload.thread, payload.limit, viewer_actor_id=payload.viewer_actor_id)
     except KeyError as err:

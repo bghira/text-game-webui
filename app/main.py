@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -14,6 +15,7 @@ from app.api.themes import router as themes_router, settings_router as theme_set
 from app.api.ws import router as ws_router
 from app.media.image_cache import ImageCache
 from app.realtime.hub import RealtimeHub
+from app.services.dtm_link_auth import dtm_link_enabled, get_linked_actor_from_request
 from app.services.gateway_factory import build_gateway
 from app.services.theme_service import ThemeService
 from app.settings import Settings, load_persisted_settings
@@ -256,8 +258,55 @@ def create_app() -> FastAPI:
     app.state.realtime = RealtimeHub()
     app.state.templates = Jinja2Templates(directory=str(app_dir / "templates"))
     app.state.theme_service = ThemeService()
+    app.state.dtm_pending_links = {}
 
     app.mount("/static", StaticFiles(directory=str(app_dir / "static")), name="static")
+
+    @app.middleware("http")
+    async def _dtm_link_guard(request, call_next):
+        settings = request.app.state.settings
+        linked = get_linked_actor_from_request(request)
+        request.state.linked_actor_id = linked.actor_id if linked is not None else None
+        request.state.linked_display_name = linked.display_name if linked is not None else ""
+
+        if not dtm_link_enabled(settings):
+            return await call_next(request)
+
+        path = str(request.url.path or "")
+        public_api_paths = {
+            "/api/health",
+            "/api/runtime",
+            "/api/runtime/checks",
+            "/api/features",
+            "/api/dtm-link/status",
+            "/api/dtm-link/confirm",
+        }
+        if not path.startswith("/api") or path in public_api_paths:
+            return await call_next(request)
+
+        if linked is None:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Discord account link required.", "code": "discord_link_required"},
+            )
+
+        match = re.match(r"^/api/campaigns/([^/]+)(?:/|$)", path)
+        if match:
+            campaign_id = match.group(1)
+            try:
+                allowed = await request.app.state.gateway.actor_can_access_campaign(
+                    campaign_id,
+                    linked.actor_id,
+                )
+            except KeyError:
+                return JSONResponse(status_code=404, content={"detail": f"Unknown campaign: {campaign_id}"})
+            if not allowed:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "That campaign is not linked to your Discord account."},
+                )
+
+        return await call_next(request)
     app.mount("/media", StaticFiles(directory=str(app_dir / "media")), name="media")
 
     # Initialize media subsystem (mounts /generated/ and wires media_port)

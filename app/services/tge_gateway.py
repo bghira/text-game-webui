@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import logging
+import os
 import re
 import threading
 from datetime import UTC, datetime
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import Any, Protocol
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -50,6 +54,66 @@ except Exception as exc:  # pragma: no cover - import guarded at runtime
         "text-game-engine backend selected but package is unavailable. "
         "Install it with: pip install -e ../text-game-engine"
     ) from exc
+
+
+logger = logging.getLogger(__name__)
+_ZORK_LOG_ROOT = os.getenv("TEXT_GAME_WEBUI_ZORK_LOG_ROOT") or str(
+    Path(__file__).resolve().parents[3] / "zork-logs"
+)
+_ZORK_LOG_PATH: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "text_game_webui_zork_log_path",
+    default=None,
+)
+_ZORK_LOG_RETENTION = 100
+
+
+def _zork_log_component(value: object, label: str = "id") -> str:
+    raw = str(value or label).strip()
+    raw = re.sub(r"[^A-Za-z0-9._-]+", "-", raw)
+    return raw.strip("-") or label
+
+
+def _zork_log_rotate(path: str) -> None:
+    try:
+        if not os.path.exists(path):
+            return
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        archive = os.path.join(os.path.dirname(path), f"turn-{ts}.log")
+        counter = 0
+        while os.path.exists(archive):
+            counter += 1
+            archive = os.path.join(os.path.dirname(path), f"turn-{ts}-{counter}.log")
+        os.rename(path, archive)
+        archives = sorted(
+            (f for f in os.listdir(os.path.dirname(path)) if f.startswith("turn-")),
+            reverse=True,
+        )
+        for old in archives[_ZORK_LOG_RETENTION:]:
+            try:
+                os.remove(os.path.join(os.path.dirname(path), old))
+            except Exception:
+                pass
+    except Exception:
+        logger.exception("Failed rotating webui zork log")
+
+
+def _zork_log(section: str, body: str = "") -> None:
+    try:
+        log_path = _ZORK_LOG_PATH.get()
+        if log_path is None:
+            log_dir = os.path.join(_ZORK_LOG_ROOT, "webui", "global")
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, "event.log")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a") as fh:
+            fh.write(f"\n{'=' * 72}\n[{ts}] {section}\n{'=' * 72}\n")
+            if body:
+                fh.write(body)
+                if not body.endswith("\n"):
+                    fh.write("\n")
+    except Exception:
+        logger.exception("Failed writing webui zork log")
 
 
 class CompletionPortProtocol(Protocol):
@@ -2356,6 +2420,7 @@ class TextGameEngineGateway(EngineGateway):
         self._probe_timeout_seconds = max(int(settings.tge_runtime_probe_timeout_seconds or 8), 1)
         if isinstance(llm, EngineToolAwareLLM):
             llm.bind_emulator(self._emulator)
+            llm.set_log_callback(_zork_log)
 
     @property
     def completion_mode(self) -> str:
@@ -2455,12 +2520,14 @@ class TextGameEngineGateway(EngineGateway):
                         turn_visibility_default_resolver=self._session_visibility_default,
                     )
                     new_llm.bind_emulator(self._emulator)
+                    new_llm.set_log_callback(_zork_log)
                 self._llm = new_llm
                 self._game_engine._llm = new_llm
             elif isinstance(self._llm, EngineToolAwareLLM):
                 self._llm._completion = new_port
                 self._llm._temperature = temperature
                 self._llm._max_tokens = max_tokens
+                self._llm.set_log_callback(_zork_log)
 
             self._emulator._completion_port = new_port
             self._emulator._map_completion_port = new_port
@@ -2529,6 +2596,35 @@ class TextGameEngineGateway(EngineGateway):
             actor_id=str(row.created_by_actor_id or ""),
             created_at=row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at,
         )
+
+    def _begin_turn_log_scope(
+        self,
+        campaign_id: str,
+        *,
+        actor_id: str | None,
+        section: str,
+        body: str = "",
+    ) -> contextvars.Token:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            namespace = str(campaign.namespace if campaign is not None else "unknown")
+        dir_path = os.path.join(
+            _ZORK_LOG_ROOT,
+            "webui",
+            _zork_log_component(namespace, "namespace"),
+            _zork_log_component(campaign_id, "campaign"),
+        )
+        os.makedirs(dir_path, exist_ok=True)
+        latest_name = f"latest-{_zork_log_component(actor_id, 'system')}.log"
+        log_path = os.path.join(dir_path, latest_name)
+        _zork_log_rotate(log_path)
+        token = _ZORK_LOG_PATH.set(log_path)
+        _zork_log(section, body)
+        return token
+
+    @staticmethod
+    def _end_turn_log_scope(token: contextvars.Token) -> None:
+        _ZORK_LOG_PATH.reset(token)
 
     @staticmethod
     def _to_session_record(row: GameSession) -> dict:
@@ -2736,6 +2832,44 @@ class TextGameEngineGateway(EngineGateway):
             return [self._to_summary(row) for row in rows]
         rows = self._emulator.list_campaigns(namespace)
         return [self._to_summary(row) for row in rows]
+
+    async def list_campaigns_for_actor(self, actor_id: str) -> list[CampaignSummary]:
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return []
+        with self._session_factory() as session:
+            rows = (
+                session.query(Campaign)
+                .outerjoin(Player, Player.campaign_id == Campaign.id)
+                .filter(
+                    or_(
+                        Campaign.created_by_actor_id == actor,
+                        Player.actor_id == actor,
+                    )
+                )
+                .distinct()
+                .order_by(Campaign.updated_at.desc(), Campaign.name.asc())
+                .all()
+            )
+        return [self._to_summary(row) for row in rows]
+
+    async def actor_can_access_campaign(self, campaign_id: str, actor_id: str) -> bool:
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return False
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            if str(campaign.created_by_actor_id or "").strip() == actor:
+                return True
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor)
+                .first()
+            )
+        return player is not None
 
     async def list_sessions(self, campaign_id: str) -> list[dict]:
         with self._session_factory() as session:
@@ -3012,20 +3146,33 @@ class TextGameEngineGateway(EngineGateway):
 
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
         xp_before, session_id = self._pre_turn_setup(campaign_id, request)
-        async with self._turn_llm_lock:
-            self._ensure_campaign_llm(campaign_id)
-            narration = await self._emulator.play_action(
-                campaign_id=campaign_id,
-                actor_id=request.actor_id,
-                action=request.action,
-                session_id=session_id,
-                manage_claim=True,
-            )
-        notices = self._emulator.pop_turn_ephemeral_notices(
+        log_token = self._begin_turn_log_scope(
             campaign_id,
-            request.actor_id,
-            session_id,
+            actor_id=request.actor_id,
+            section=f"WEBUI TURN REQUEST campaign={campaign_id}",
+            body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
         )
+        try:
+            async with self._turn_llm_lock:
+                self._ensure_campaign_llm(campaign_id)
+                narration = await self._emulator.play_action(
+                    campaign_id=campaign_id,
+                    actor_id=request.actor_id,
+                    action=request.action,
+                    session_id=session_id,
+                    manage_claim=True,
+                )
+            notices = self._emulator.pop_turn_ephemeral_notices(
+                campaign_id,
+                request.actor_id,
+                session_id,
+            )
+            _zork_log(
+                f"WEBUI TURN RESULT campaign={campaign_id}",
+                str(narration or "(empty)"),
+            )
+        finally:
+            self._end_turn_log_scope(log_token)
 
         if narration is None:
             narration = "The world shifts, but nothing clear emerges."
@@ -3049,6 +3196,12 @@ class TextGameEngineGateway(EngineGateway):
         result_box: dict = {"narration": None, "error": None}
 
         async def _run():
+            log_token = self._begin_turn_log_scope(
+                campaign_id,
+                actor_id=request.actor_id,
+                section=f"WEBUI STREAM TURN REQUEST campaign={campaign_id}",
+                body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
+            )
             try:
                 async with self._turn_llm_lock:
                     self._ensure_campaign_llm(campaign_id)
@@ -3060,9 +3213,14 @@ class TextGameEngineGateway(EngineGateway):
                         manage_claim=True,
                         progress=on_progress,
                     )
+                    _zork_log(
+                        f"WEBUI STREAM TURN RESULT campaign={campaign_id}",
+                        str(result_box["narration"] or "(empty)"),
+                    )
             except Exception as exc:
                 result_box["error"] = exc
             finally:
+                self._end_turn_log_scope(log_token)
                 await progress_queue.put(_SENTINEL)
 
         task = asyncio.create_task(_run())
@@ -4406,6 +4564,12 @@ class TextGameEngineGateway(EngineGateway):
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
             campaign_name = campaign.name
+        log_token = self._begin_turn_log_scope(
+            campaign_id,
+            actor_id=actor_id,
+            section=f"WEBUI SETUP START campaign={campaign_id}",
+            body=f"actor_id={actor_id or ''}\non_rails={bool(on_rails)}\nattachment_text_present={bool(attachment_text)}",
+        )
         try:
             async with self._turn_llm_lock:
                 self._ensure_campaign_llm(campaign_id)
@@ -4417,15 +4581,27 @@ class TextGameEngineGateway(EngineGateway):
                     attachment_text=attachment_text,
                     ingest_source_material=bool(attachment_text),
                 )
+            _zork_log(
+                f"WEBUI SETUP START RESULT campaign={campaign_id}",
+                str(message or "(empty)"),
+            )
             return {"ok": True, "message": str(message or ""), "setup_phase": "classify_confirm"}
         except Exception as exc:
             return {"ok": False, "message": str(exc), "setup_phase": None}
+        finally:
+            self._end_turn_log_scope(log_token)
 
     async def handle_setup_message(self, campaign_id: str, actor_id: str, message: str) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
+        log_token = self._begin_turn_log_scope(
+            campaign_id,
+            actor_id=actor_id,
+            section=f"WEBUI SETUP MESSAGE campaign={campaign_id}",
+            body=f"actor_id={actor_id}\nmessage={message}",
+        )
         try:
             async with self._turn_llm_lock:
                 self._ensure_campaign_llm(campaign_id)
@@ -4434,6 +4610,10 @@ class TextGameEngineGateway(EngineGateway):
                     actor_id,
                     message,
                 )
+            _zork_log(
+                f"WEBUI SETUP MESSAGE RESULT campaign={campaign_id}",
+                str(response or "(empty)"),
+            )
             # Check current phase after handling
             with self._session_factory() as session:
                 campaign = session.get(Campaign, campaign_id)
@@ -4447,6 +4627,8 @@ class TextGameEngineGateway(EngineGateway):
             }
         except Exception as exc:
             return {"ok": False, "message": str(exc), "setup_phase": None, "completed": False}
+        finally:
+            self._end_turn_log_scope(log_token)
 
     async def get_scene_images(self, campaign_id: str) -> dict:
         with self._session_factory() as session:

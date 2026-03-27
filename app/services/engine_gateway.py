@@ -63,7 +63,9 @@ FEATURES = [
 
 class EngineGateway(Protocol):
     async def list_campaigns(self, namespace: str) -> list[CampaignSummary]: ...
+    async def list_campaigns_for_actor(self, actor_id: str) -> list[CampaignSummary]: ...
     async def create_campaign(self, namespace: str, name: str, actor_id: str) -> CampaignSummary: ...
+    async def actor_can_access_campaign(self, campaign_id: str, actor_id: str) -> bool: ...
     async def list_sessions(self, campaign_id: str) -> list[dict]: ...
     async def create_or_update_session(
         self,
@@ -207,6 +209,25 @@ class InMemoryEngineGateway:
         if self._is_all_namespaces(namespace):
             return list(self._campaigns.values())
         return [row for row in self._campaigns.values() if row.namespace == namespace]
+
+    async def list_campaigns_for_actor(self, actor_id: str) -> list[CampaignSummary]:
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return []
+        out: list[CampaignSummary] = []
+        for row in self._campaigns.values():
+            if row.actor_id == actor or actor in self._players.get(row.id, {}):
+                out.append(row)
+        return out
+
+    async def actor_can_access_campaign(self, campaign_id: str, actor_id: str) -> bool:
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return False
+        row = self._campaigns.get(campaign_id)
+        if row is None:
+            raise KeyError(f"Unknown campaign: {campaign_id}")
+        return bool(row.actor_id == actor or actor in self._players.get(campaign_id, {}))
 
     async def create_campaign(self, namespace: str, name: str, actor_id: str) -> CampaignSummary:
         campaign = CampaignSummary(

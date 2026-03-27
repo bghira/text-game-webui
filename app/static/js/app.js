@@ -285,6 +285,17 @@
         action: "",
         session_id: "",
       },
+      dtmLink: {
+        enabled: false,
+        linked: false,
+        actor_id: "",
+        display_name: "",
+        link_code: "",
+        command: "",
+        error: "",
+      },
+      _dtmLinkPollId: null,
+      _initializedAfterLink: false,
       memory: {
         search: "",
         category: "",
@@ -471,6 +482,10 @@
       campaignSummary: "",
 
       async init() {
+        const ready = await this.refreshDtmLinkStatus();
+        if (!ready) return;
+        if (this._initializedAfterLink) return;
+        this._initializedAfterLink = true;
         await this.loadRuntime();
         await this.refreshCampaigns();
         await this.loadSettingsForm();
@@ -528,6 +543,57 @@
         if (!this.statusMessage.startsWith("Runtime backend:")) {
           this.statusMessage = "Initialized.";
         }
+      },
+
+      async refreshDtmLinkStatus() {
+        try {
+          const body = await this.api("/api/dtm-link/status");
+          this.dtmLink.enabled = !!body.enabled;
+          this.dtmLink.linked = !!body.linked;
+          this.dtmLink.actor_id = body.actor_id || "";
+          this.dtmLink.display_name = body.display_name || "";
+          this.dtmLink.link_code = body.link_code || "";
+          this.dtmLink.command = body.command || "";
+          this.dtmLink.error = "";
+          if (this.dtmLink.enabled && !this.dtmLink.linked) {
+            this.startDtmLinkPolling();
+            return false;
+          }
+          this.stopDtmLinkPolling();
+          if (this.dtmLink.linked && this.dtmLink.actor_id) {
+            this.applyLinkedActor(this.dtmLink.actor_id);
+          }
+          return true;
+        } catch (error) {
+          this.dtmLink.error = String(error);
+          return !this.dtmLink.enabled;
+        }
+      },
+
+      startDtmLinkPolling() {
+        if (this._dtmLinkPollId) return;
+        this._dtmLinkPollId = setInterval(async () => {
+          const ready = await this.refreshDtmLinkStatus();
+          if (ready) {
+            this.stopDtmLinkPolling();
+            await this.init();
+          }
+        }, 3000);
+      },
+
+      stopDtmLinkPolling() {
+        if (!this._dtmLinkPollId) return;
+        clearInterval(this._dtmLinkPollId);
+        this._dtmLinkPollId = null;
+      },
+
+      applyLinkedActor(actorId) {
+        const actor = (actorId || "").trim();
+        if (!actor) return;
+        this.campaignForm.actor_id = actor;
+        this.turnForm.actor_id = actor;
+        this.mediaActions.actor_id = actor;
+        this.newCampaignWizard.actor_id = actor;
       },
 
       /* ---- Turn stream hydration from history ---- */
