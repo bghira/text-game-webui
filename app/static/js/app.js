@@ -1254,6 +1254,18 @@
         );
       },
 
+      clearPendingSubmitUi() {
+        this._clearPhaseTyper();
+        this.clearRemoteProgress();
+        this.turnStream = this.turnStream.filter((entry) => {
+          if (!entry || typeof entry !== "object") return true;
+          if (entry._streaming) return false;
+          const meta = entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+          if (meta.pending_submit) return false;
+          return true;
+        });
+      },
+
       currentSessionRecord() {
         if (!this.selectedSessionId) {
           return null;
@@ -2765,10 +2777,23 @@
         this.socket.onerror = () => {
           this.diagnostics.ws_state = "error";
           this.diagnostics.ws_last_error = "WebSocket transport error.";
-          this.errorMessage = "WebSocket error.";
+          if (this.submitting) {
+            this.clearPendingSubmitUi();
+            this._submittingTurn = false;
+            this.submitting = false;
+            this.statusMessage = "Turn connection dropped. You can retry.";
+          } else {
+            this.errorMessage = "WebSocket error.";
+          }
         };
         this.socket.onclose = (event) => {
           this.diagnostics.ws_state = "disconnected";
+          if (this.submitting && !event.target._deliberateClose) {
+            this.clearPendingSubmitUi();
+            this._submittingTurn = false;
+            this.submitting = false;
+            this.statusMessage = "Turn connection dropped. You can retry.";
+          }
           if (event.target._deliberateClose) {
             return;
           }

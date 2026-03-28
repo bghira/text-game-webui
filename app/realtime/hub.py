@@ -82,6 +82,12 @@ class RealtimeHub:
         if payload_type not in cls._SESSION_SCOPED_TYPES:
             return True
 
+        if payload_type == "turn_progress":
+            event_actor_id = cls._actor_id_for_event(payload)
+            if not event_actor_id or not sub.actor_id:
+                return False
+            return sub.actor_id == event_actor_id
+
         visibility = cls._turn_visibility_for_event(payload)
         if not isinstance(visibility, dict):
             return True
