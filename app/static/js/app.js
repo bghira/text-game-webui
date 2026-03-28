@@ -958,7 +958,10 @@
       /* ---- Settings methods ---- */
       async loadSettingsForm() {
         try {
-          const data = await this.api("/api/settings");
+          const query = this.selectedCampaignId
+            ? `?campaign_id=${encodeURIComponent(this.selectedCampaignId)}`
+            : "";
+          const data = await this.api(`/api/settings${query}`);
           this.settingsLocked = data.locked === true;
           this.settingsLockMessage = data.lock_message || "";
           this.settingsForm.completion_mode =
@@ -2914,6 +2917,7 @@
           this.loadSessions(restoreSessionId ? { skipConnect: true } : undefined),
           this.loadRecentTurns(),
         ]);
+        await this.loadSettingsForm();
         if (!this.sessionsList.some((row) => row && row.surface === "web_shared")) {
           await this.ensureSharedWindow({
             select: !this.selectedSessionId,

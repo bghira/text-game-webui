@@ -1531,24 +1531,22 @@ async def debug_snapshot(campaign_id: str, gateway: EngineGateway = Depends(get_
 
 
 @router.get("/settings")
-async def get_settings(request: Request, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_settings(
+    request: Request,
+    campaign_id: str | None = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
     settings = request.app.state.settings
-    try:
-        ollama_options = json.loads(settings.tge_ollama_options_json or "{}")
-    except (json.JSONDecodeError, TypeError):
-        ollama_options = {}
-    completion_mode = settings.tge_completion_mode
-    if request.app.state.gateway_backend == "tge":
-        completion_mode = str(getattr(gateway, "completion_mode", completion_mode) or completion_mode)
+    effective = await gateway.effective_llm_settings(campaign_id=str(campaign_id or "").strip() or None)
     return {
-        "completion_mode": completion_mode,
-        "base_url": settings.tge_llm_base_url,
-        "model": settings.tge_llm_model,
-        "temperature": settings.tge_llm_temperature,
-        "max_tokens": settings.tge_llm_max_tokens,
-        "timeout_seconds": settings.tge_llm_timeout_seconds,
-        "keep_alive": settings.tge_ollama_keep_alive,
-        "ollama_options": ollama_options,
+        "completion_mode": effective.get("completion_mode") or settings.tge_completion_mode,
+        "base_url": effective.get("base_url") or settings.tge_llm_base_url,
+        "model": effective.get("model") or settings.tge_llm_model,
+        "temperature": effective.get("temperature", settings.tge_llm_temperature),
+        "max_tokens": effective.get("max_tokens", settings.tge_llm_max_tokens),
+        "timeout_seconds": effective.get("timeout_seconds", settings.tge_llm_timeout_seconds),
+        "keep_alive": effective.get("keep_alive") or settings.tge_ollama_keep_alive,
+        "ollama_options": effective.get("ollama_options") or {},
         "gateway_backend": settings.gateway_backend,
         "locked": bool(settings.tge_sync_with_dtm),
         "lock_message": (

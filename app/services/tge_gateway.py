@@ -2416,6 +2416,36 @@ class TextGameEngineGateway(EngineGateway):
     def completion_mode(self) -> str:
         return self._completion_mode
 
+    async def effective_llm_settings(self, campaign_id: str | None = None) -> dict[str, object]:
+        override = self._campaign_backend_override(campaign_id) if campaign_id else None
+        mode = str(
+            (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
+        ).strip().lower()
+        model = str(
+            (override or {}).get("model")
+            or self._default_model_for_mode(mode)
+            or self._settings.tge_llm_model
+            or ""
+        ).strip()
+        try:
+            ollama_options = self._parse_json_object(
+                self._settings.tge_ollama_options_json,
+                "TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON",
+            )
+        except ValueError:
+            ollama_options = {}
+        return {
+            "completion_mode": mode,
+            "model": model,
+            "base_url": str(self._settings.tge_llm_base_url or "").strip(),
+            "api_key": str(self._settings.tge_llm_api_key or "").strip(),
+            "temperature": float(self._settings.tge_llm_temperature),
+            "max_tokens": int(self._settings.tge_llm_max_tokens),
+            "timeout_seconds": int(self._settings.tge_llm_timeout_seconds),
+            "keep_alive": str(self._settings.tge_ollama_keep_alive or "").strip(),
+            "ollama_options": ollama_options,
+        }
+
     @staticmethod
     def _pick(merged: dict[str, Any], key: str, fallback: Any) -> Any:
         val = merged.get(key)

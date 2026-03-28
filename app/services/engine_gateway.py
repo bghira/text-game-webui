@@ -95,6 +95,7 @@ class EngineGateway(Protocol):
         session_id: str | None,
     ) -> None: ...
     async def runtime_checks(self, probe_llm: bool = False) -> dict: ...
+    async def effective_llm_settings(self, campaign_id: str | None = None) -> dict[str, object]: ...
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
     def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]: ...
     async def queue_discord_mirror(
@@ -435,6 +436,20 @@ class InMemoryEngineGateway:
             "database": {"ok": True, "detail": "In-memory gateway has no external database dependency."},
             "engine": {"ok": True, "detail": "In-memory gateway initialized."},
             "llm": {"configured": False, "probe_attempted": False, "ok": None, "detail": "Not applicable."},
+        }
+
+    async def effective_llm_settings(self, campaign_id: str | None = None) -> dict[str, object]:
+        _ = campaign_id
+        return {
+            "completion_mode": "deterministic",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "temperature": 0.8,
+            "max_tokens": 3200,
+            "timeout_seconds": 90,
+            "keep_alive": "30m",
+            "ollama_options": {},
         }
 
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
