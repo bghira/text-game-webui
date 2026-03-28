@@ -103,6 +103,7 @@ class EngineGateway(Protocol):
         result: TurnResult,
         *,
         actor_display_name: str | None = None,
+        action_text: str | None = None,
     ) -> None: ...
     async def campaign_export(
         self,
@@ -550,8 +551,9 @@ class InMemoryEngineGateway:
         result: TurnResult,
         *,
         actor_display_name: str | None = None,
+        action_text: str | None = None,
     ) -> None:
-        _ = campaign_id, result, actor_display_name
+        _ = campaign_id, result, actor_display_name, action_text
 
     async def campaign_export(
         self,

@@ -3380,18 +3380,55 @@ class TextGameEngineGateway(EngineGateway):
         result: TurnResult,
         *,
         actor_display_name: str | None = None,
+        action_text: str | None = None,
     ) -> None:
         turn_id = int(result.turn_id or 0)
         if turn_id <= 0:
             return
+        aware_actor_ids: list[str] = []
+        seen_actor_ids: set[str] = set()
+
+        def _add_aware_actor(raw_actor_id: object) -> None:
+            actor_id = str(raw_actor_id or "").strip()
+            if actor_id and actor_id not in seen_actor_ids:
+                seen_actor_ids.add(actor_id)
+                aware_actor_ids.append(actor_id)
+
+        turn_visibility = result.turn_visibility if isinstance(result.turn_visibility, dict) else {}
+        for raw_actor_id in list(turn_visibility.get("visible_actor_ids") or []):
+            _add_aware_actor(raw_actor_id)
+
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
+        scene_output = result.scene_output if isinstance(result.scene_output, dict) else None
+        beats = scene_output.get("beats") if isinstance(scene_output, dict) else None
+        if isinstance(beats, list):
+            for beat in beats:
+                if not isinstance(beat, dict):
+                    continue
+                for raw_actor_id in list(beat.get("visible_actor_ids") or beat.get("aware_actor_ids") or []):
+                    _add_aware_actor(raw_actor_id)
+                for raw_slug in list(beat.get("actors") or []):
+                    actor_id = slug_map.get(self._canonical_slug(str(raw_slug or "")))
+                    if actor_id:
+                        _add_aware_actor(actor_id)
+                for raw_slug in list(beat.get("listeners") or []):
+                    actor_id = slug_map.get(self._canonical_slug(str(raw_slug or "")))
+                    if actor_id:
+                        _add_aware_actor(actor_id)
+                speaker_actor_id = slug_map.get(self._canonical_slug(str(beat.get("speaker") or "")))
+                if speaker_actor_id:
+                    _add_aware_actor(speaker_actor_id)
+
         payload = {
             "turn_id": turn_id,
             "actor_id": str(result.actor_id or "").strip() or None,
             "actor_display_name": str(actor_display_name or "").strip() or None,
             "session_id": str(result.session_id or "").strip() or None,
+            "action_text": str(action_text or "").strip() or None,
             "narration": str(result.narration or "").strip(),
-            "scene_output": result.scene_output if isinstance(result.scene_output, dict) else None,
-            "turn_visibility": result.turn_visibility if isinstance(result.turn_visibility, dict) else {},
+            "scene_output": scene_output,
+            "turn_visibility": turn_visibility,
+            "aware_actor_ids": aware_actor_ids,
         }
         row = OutboxEvent(
             campaign_id=campaign_id,

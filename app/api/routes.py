@@ -467,6 +467,7 @@ async def submit_turn(
         campaign_id,
         result,
         actor_display_name=_linked_display_name(request),
+        action_text=payload.action,
     )
     return result.model_dump()
 
@@ -521,6 +522,7 @@ async def submit_turn_stream(
             campaign_id,
             final_result,
             actor_display_name=_linked_display_name(request),
+            action_text=payload.action,
         )
 
     async def _sse():
