@@ -3501,6 +3501,7 @@ class TextGameEngineGateway(EngineGateway):
             return
         aware_actor_ids: list[str] = []
         seen_actor_ids: set[str] = set()
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
 
         def _add_aware_actor(raw_actor_id: object) -> None:
             actor_id = str(raw_actor_id or "").strip()
@@ -3517,7 +3518,6 @@ class TextGameEngineGateway(EngineGateway):
         for raw_actor_id in list(turn_visibility.get("visible_actor_ids") or []):
             _add_aware_actor(raw_actor_id)
 
-        slug_map = self._player_slug_to_actor_ids(campaign_id)
         scene_output = result.scene_output if isinstance(result.scene_output, dict) else None
         beats = scene_output.get("beats") if isinstance(scene_output, dict) else None
         if isinstance(beats, list):
