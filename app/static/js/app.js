@@ -15,25 +15,110 @@
     return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
   }
 
-  /**
-   * Lightweight markdown→HTML: **bold**, *italic*, newlines→<br>.
-   * Input is escaped first to avoid XSS when used with x-html.
-   */
-  function renderSimpleMarkdown(text) {
-    if (!text) return "";
-    // Escape HTML entities first
-    let s = text
+  function escapeHtml(text) {
+    return String(text || "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
-    // **bold**
-    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    // *italic* and _italic_
-    s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
-    s = s.replace(/(^|[\s>])_(.+?)_([\s<.,!?]|$)/gm, "$1<em>$2</em>$3");
-    // newlines
-    s = s.replace(/\n/g, "<br>");
-    return s;
+  }
+
+  function escapeAttribute(text) {
+    return escapeHtml(text).replace(/"/g, "&quot;");
+  }
+
+  function autolinkUrls(html) {
+    return html.replace(
+      /(^|[\s>(])((?:https?:\/\/|www\.)[^\s<]+)(?=$|[\s)<])/g,
+      (_match, prefix, rawUrl) => {
+        const href = rawUrl.startsWith("www.") ? `https://${rawUrl}` : rawUrl;
+        return `${prefix}<a href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer">${rawUrl}</a>`;
+      }
+    );
+  }
+
+  function renderInlineDiscordMarkdown(text) {
+    if (!text) return "";
+    let html = escapeHtml(text);
+    const codeTokens = [];
+    html = html.replace(/`([^`\n]+)`/g, (_match, code) => {
+      const token = `@@CODE${codeTokens.length}@@`;
+      codeTokens.push(`<code class="discord-inline-code">${code}</code>`);
+      return token;
+    });
+    html = autolinkUrls(html);
+    html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/~~(.+?)~~/g, "<s>$1</s>");
+    html = html.replace(/\*(?!\s)([^*\n]+?)\*(?!\*)/g, "<em>$1</em>");
+    html = html.replace(/(^|[\s(])_([^_\n]+?)_(?=[\s).,!?:;]|$)/g, "$1<em>$2</em>");
+    html = html.replace(/@@CODE(\d+)@@/g, (_match, idx) => codeTokens[Number(idx)] || "");
+    return html;
+  }
+
+  function renderTextBlock(text) {
+    const block = String(text || "").replace(/\r\n?/g, "\n").trim();
+    if (!block) return "";
+    const lines = block.split("\n");
+
+    if (lines.every((line) => /^\s*>\s?/.test(line))) {
+      const inner = lines.map((line) => line.replace(/^\s*>\s?/, "")).join("\n");
+      return `<blockquote>${renderInlineDiscordMarkdown(inner).replace(/\n/g, "<br>")}</blockquote>`;
+    }
+    if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
+      return `<ul>${lines.map((line) => `<li>${renderInlineDiscordMarkdown(line.replace(/^\s*[-*]\s+/, ""))}</li>`).join("")}</ul>`;
+    }
+    if (lines.every((line) => /^\s*\d+\.\s+/.test(line))) {
+      return `<ol>${lines.map((line) => `<li>${renderInlineDiscordMarkdown(line.replace(/^\s*\d+\.\s+/, ""))}</li>`).join("")}</ol>`;
+    }
+    if (/^\s*#{1,6}\s+/.test(lines[0])) {
+      const level = Math.min(6, (lines[0].match(/^\s*(#{1,6})\s+/) || ["", "#"])[1].length);
+      const headingText = lines[0].replace(/^\s*#{1,6}\s+/, "");
+      const rest = lines.slice(1).join("\n").trim();
+      const heading = `<div class="discord-heading discord-heading-${level}">${renderInlineDiscordMarkdown(headingText)}</div>`;
+      return rest
+        ? `${heading}<p>${renderInlineDiscordMarkdown(rest).replace(/\n/g, "<br>")}</p>`
+        : heading;
+    }
+    return `<p>${renderInlineDiscordMarkdown(block).replace(/\n/g, "<br>")}</p>`;
+  }
+
+  function renderSimpleMarkdown(text) {
+    if (!text) return "";
+    const source = String(text || "").replace(/\r\n?/g, "\n");
+    const parts = [];
+    let cursor = 0;
+    const fenceRe = /```([^\n`]*)\n?([\s\S]*?)```/g;
+    let match;
+    while ((match = fenceRe.exec(source)) !== null) {
+      if (match.index > cursor) {
+        parts.push({ type: "text", text: source.slice(cursor, match.index) });
+      }
+      parts.push({
+        type: "code",
+        lang: String(match[1] || "").trim(),
+        text: String(match[2] || "").replace(/\n$/, ""),
+      });
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < source.length) {
+      parts.push({ type: "text", text: source.slice(cursor) });
+    }
+    if (!parts.length) {
+      parts.push({ type: "text", text: source });
+    }
+    const rendered = parts.map((part) => {
+      if (part.type === "code") {
+        const label = part.lang
+          ? `<div class="discord-code-label">${escapeHtml(part.lang)}</div>`
+          : "";
+        return `<pre class="discord-code-block">${label}<code>${escapeHtml(part.text)}</code></pre>`;
+      }
+      return String(part.text || "")
+        .split(/\n{2,}/)
+        .map((chunk) => renderTextBlock(chunk))
+        .filter(Boolean)
+        .join("");
+    }).join("");
+    return `<div class="discord-md">${rendered}</div>`;
   }
 
   /**
@@ -85,7 +170,7 @@
       if (!text) continue;
       const speaker = formatSceneSpeakerName(beat.speaker);
       const escapedText = renderSimpleMarkdown(text);
-      parts.push(`<span class="speaker-label">${renderSimpleMarkdown(speaker)}</span>${escapedText}`);
+      parts.push(`<span class="speaker-label">${escapeHtml(speaker)}</span>${escapedText}`);
     }
     if (parts.length) return parts.join("<br><br>");
     return renderSimpleMarkdown(fallbackText || "");
@@ -1072,9 +1157,26 @@
           return "No window selected";
         }
         const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-        const label = metadata.label || row.surface_key || row.id;
+        const label = this.sessionDisplayLabel(row);
         const scope = metadata.scope || metadata.turn_visibility_default || row.surface;
         return `${label} (${scope})`;
+      },
+
+      sessionDisplayLabel(row) {
+        if (!row || typeof row !== "object") {
+          return "";
+        }
+        const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+        const label = String(metadata.label || "").trim();
+        if (label) {
+          return label;
+        }
+        const surface = String(row.surface || "").trim().toLowerCase();
+        const surfaceKey = String(row.surface_key || "").trim();
+        if (surface === "discord" || surfaceKey.startsWith("discord:")) {
+          return "Discord room";
+        }
+        return surfaceKey || String(row.id || "").trim();
       },
 
       turnQueueKey(campaignId, actorId) {
@@ -1214,8 +1316,7 @@
         this.loadCalendar();
         const row = this.currentSessionRecord();
         if (row) {
-          const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-          this.statusMessage = `Selected window ${metadata.label || row.surface_key || row.id}.`;
+          this.statusMessage = `Selected window ${this.sessionDisplayLabel(row)}.`;
         }
       },
 

@@ -462,6 +462,11 @@ async def submit_turn(
     except ValueError as err:
         _bad_request(err)
     await _publish_turn_events(request, campaign_id, result, gateway)
+    await gateway.queue_discord_mirror(
+        campaign_id,
+        result,
+        actor_display_name=_linked_display_name(request),
+    )
     return result.model_dump()
 
 
@@ -511,6 +516,11 @@ async def submit_turn_stream(
     # Publish realtime events unconditionally — not tied to client connection.
     if final_result:
         await _publish_turn_events(request, campaign_id, final_result, gateway)
+        await gateway.queue_discord_mirror(
+            campaign_id,
+            final_result,
+            actor_display_name=_linked_display_name(request),
+        )
 
     async def _sse():
         if error_event:

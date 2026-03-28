@@ -97,6 +97,13 @@ class EngineGateway(Protocol):
     async def runtime_checks(self, probe_llm: bool = False) -> dict: ...
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
     def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]: ...
+    async def queue_discord_mirror(
+        self,
+        campaign_id: str,
+        result: TurnResult,
+        *,
+        actor_display_name: str | None = None,
+    ) -> None: ...
     async def campaign_export(
         self,
         campaign_id: str,
@@ -521,6 +528,15 @@ class InMemoryEngineGateway:
         for i in range(0, len(narration), chunk_size):
             yield {"event": "token", "data": {"text": narration[i : i + chunk_size]}}
         yield {"event": "complete", "data": result.model_dump()}
+
+    async def queue_discord_mirror(
+        self,
+        campaign_id: str,
+        result: TurnResult,
+        *,
+        actor_display_name: str | None = None,
+    ) -> None:
+        _ = campaign_id, result, actor_display_name
 
     async def campaign_export(
         self,

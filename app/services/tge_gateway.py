@@ -18,6 +18,7 @@ from urllib import request as urllib_request
 from app.settings import Settings
 from app.services.schemas import CampaignSummary, MemoryStoreRequest, TurnRequest, TurnResult
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 
 from .engine_gateway import EngineGateway
 
@@ -3372,6 +3373,46 @@ class TextGameEngineGateway(EngineGateway):
         # Build complete result (DB queries)
         result = self._build_turn_result(campaign_id, request, narration, notices, xp_before, session_id)
         yield {"event": "complete", "data": result.model_dump()}
+
+    async def queue_discord_mirror(
+        self,
+        campaign_id: str,
+        result: TurnResult,
+        *,
+        actor_display_name: str | None = None,
+    ) -> None:
+        turn_id = int(result.turn_id or 0)
+        if turn_id <= 0:
+            return
+        payload = {
+            "turn_id": turn_id,
+            "actor_id": str(result.actor_id or "").strip() or None,
+            "actor_display_name": str(actor_display_name or "").strip() or None,
+            "session_id": str(result.session_id or "").strip() or None,
+            "narration": str(result.narration or "").strip(),
+            "scene_output": result.scene_output if isinstance(result.scene_output, dict) else None,
+            "turn_visibility": result.turn_visibility if isinstance(result.turn_visibility, dict) else {},
+        }
+        row = OutboxEvent(
+            campaign_id=campaign_id,
+            session_id=str(result.session_id or "").strip() or None,
+            session_scope=str(result.session_id or "").strip() or "__none__",
+            event_type="webui_discord_echo",
+            idempotency_key=f"turn:{turn_id}",
+            payload_json=json.dumps(payload, ensure_ascii=True),
+        )
+        try:
+            with self._session_factory() as session:
+                session.add(row)
+                session.commit()
+        except IntegrityError as exc:
+            message = str(exc).lower()
+            if (
+                "uq_tge_outbox_campaign_session_event_key" in message
+                or "tge_outbox_events.campaign_id, tge_outbox_events.session_scope, tge_outbox_events.event_type, tge_outbox_events.idempotency_key" in message
+            ):
+                return
+            raise
 
     async def campaign_export(
         self,

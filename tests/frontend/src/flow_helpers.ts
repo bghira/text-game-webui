@@ -992,3 +992,402 @@ export async function themeFullFlow(
 
   return { calls, state };
 }
+
+/* ---- Source material helpers ---- */
+
+export async function sourceMaterialsFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  payload: {
+    ingestText: string;
+    ingestLabel: string;
+    searchQuery: string;
+  },
+): Promise<{ calls: string[] }> {
+  const calls: string[] = [];
+
+  // List
+  const listUrl = `/api/campaigns/${campaignId}/source-materials`;
+  calls.push(listUrl);
+  await fetcher(listUrl);
+
+  // Ingest
+  calls.push(listUrl);
+  await fetcher(listUrl, {
+    method: "POST",
+    body: JSON.stringify({
+      text: payload.ingestText,
+      document_label: payload.ingestLabel,
+    }),
+  });
+
+  // Search
+  const searchUrl = `/api/campaigns/${campaignId}/source-materials/search`;
+  calls.push(searchUrl);
+  await fetcher(searchUrl, {
+    method: "POST",
+    body: JSON.stringify({ query: payload.searchQuery, top_k: 5 }),
+  });
+
+  // Browse
+  const browseUrl = `/api/campaigns/${campaignId}/source-materials/browse`;
+  calls.push(browseUrl);
+  await fetcher(browseUrl);
+
+  // Digest
+  const digestUrl = `/api/campaigns/${campaignId}/source-materials/digest`;
+  calls.push(digestUrl);
+  await fetcher(digestUrl, {
+    method: "POST",
+    body: JSON.stringify({
+      text: payload.ingestText,
+      document_label: payload.ingestLabel,
+      replace_document: true,
+    }),
+  });
+
+  return { calls };
+}
+
+/* ---- Campaign rules helpers ---- */
+
+export type CampaignRule = {
+  key: string;
+  value: string;
+};
+
+export async function campaignRulesFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  rule: CampaignRule,
+): Promise<{ calls: string[]; createResult: unknown; listResult: unknown }> {
+  const calls: string[] = [];
+  const baseUrl = `/api/campaigns/${campaignId}/campaign-rules`;
+
+  // Create rule
+  calls.push(baseUrl);
+  const createResult = await fetcher(baseUrl, {
+    method: "POST",
+    body: JSON.stringify({ key: rule.key, value: rule.value }),
+  });
+
+  // List all rules
+  calls.push(baseUrl);
+  const listResult = await fetcher(baseUrl);
+
+  return { calls, createResult, listResult };
+}
+
+/* ---- Player progression helpers ---- */
+
+export type PlayerStatsState = {
+  actor_id: string;
+  level: number;
+  attributes: Record<string, number>;
+  total_points: number;
+  points_spent: number;
+};
+
+export async function playerProgressionFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  actorId: string,
+): Promise<{ calls: string[]; stats: unknown; attributes: unknown }> {
+  const calls: string[] = [];
+
+  // Get statistics
+  const statsUrl = `/api/campaigns/${campaignId}/player-statistics?actor_id=${encodeURIComponent(actorId)}`;
+  calls.push(statsUrl);
+  const stats = await fetcher(statsUrl);
+
+  // Get attributes
+  const attrsUrl = `/api/campaigns/${campaignId}/player-attributes?actor_id=${encodeURIComponent(actorId)}`;
+  calls.push(attrsUrl);
+  const attributes = await fetcher(attrsUrl);
+
+  return { calls, stats, attributes };
+}
+
+export async function renamePlayerFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  actorId: string,
+  newName: string,
+): Promise<{ calls: string[]; result: unknown }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/player-name`;
+  calls.push(url);
+  const result = await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify({ actor_id: actorId, name: newName }),
+  });
+  return { calls, result };
+}
+
+export async function levelUpFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  actorId: string,
+): Promise<{ calls: string[]; result: unknown }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/level-up`;
+  calls.push(url);
+  const result = await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify({ actor_id: actorId }),
+  });
+  return { calls, result };
+}
+
+/* ---- Persona helpers ---- */
+
+export async function personaFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  newPersona: string,
+): Promise<{ calls: string[]; getResult: unknown; setResult: unknown }> {
+  const calls: string[] = [];
+
+  // Get
+  const getUrl = `/api/campaigns/${campaignId}/persona`;
+  calls.push(getUrl);
+  const getResult = await fetcher(getUrl);
+
+  // Set
+  calls.push(getUrl);
+  const setResult = await fetcher(getUrl, {
+    method: "POST",
+    body: JSON.stringify({ persona: newPersona }),
+  });
+
+  return { calls, getResult, setResult };
+}
+
+/* ---- Puzzle & minigame helpers ---- */
+
+export async function puzzleFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  answer: string,
+): Promise<{ calls: string[]; hint: unknown; answerResult: unknown }> {
+  const calls: string[] = [];
+
+  const hintUrl = `/api/campaigns/${campaignId}/puzzle/hint`;
+  calls.push(hintUrl);
+  const hint = await fetcher(hintUrl);
+
+  const answerUrl = `/api/campaigns/${campaignId}/puzzle/answer`;
+  calls.push(answerUrl);
+  const answerResult = await fetcher(answerUrl, {
+    method: "POST",
+    body: JSON.stringify({ answer }),
+  });
+
+  return { calls, hint, answerResult };
+}
+
+export async function minigameFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  move: string,
+): Promise<{ calls: string[]; board: unknown; moveResult: unknown }> {
+  const calls: string[] = [];
+
+  const boardUrl = `/api/campaigns/${campaignId}/minigame/board`;
+  calls.push(boardUrl);
+  const board = await fetcher(boardUrl);
+
+  const moveUrl = `/api/campaigns/${campaignId}/minigame/move`;
+  calls.push(moveUrl);
+  const moveResult = await fetcher(moveUrl, {
+    method: "POST",
+    body: JSON.stringify({ move }),
+  });
+
+  return { calls, board, moveResult };
+}
+
+/* ---- Setup wizard helpers ---- */
+
+export async function setupWizardFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  actorId: string,
+  message: string,
+): Promise<{ calls: string[]; status: unknown; startResult: unknown; messageResult: unknown }> {
+  const calls: string[] = [];
+
+  // Check status
+  const statusUrl = `/api/campaigns/${campaignId}/setup`;
+  calls.push(statusUrl);
+  const status = await fetcher(statusUrl);
+
+  // Start
+  const startUrl = `/api/campaigns/${campaignId}/setup/start`;
+  calls.push(startUrl);
+  const startResult = await fetcher(startUrl, {
+    method: "POST",
+    body: JSON.stringify({ actor_id: actorId, on_rails: false }),
+  });
+
+  // Send message
+  const msgUrl = `/api/campaigns/${campaignId}/setup/message`;
+  calls.push(msgUrl);
+  const messageResult = await fetcher(msgUrl, {
+    method: "POST",
+    body: JSON.stringify({ actor_id: actorId, message }),
+  });
+
+  return { calls, status, startResult, messageResult };
+}
+
+/* ---- Story & chapters helpers ---- */
+
+export async function storyStateFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+): Promise<{ calls: string[]; story: unknown; chapters: unknown }> {
+  const calls: string[] = [];
+
+  const storyUrl = `/api/campaigns/${campaignId}/story`;
+  calls.push(storyUrl);
+  const story = await fetcher(storyUrl);
+
+  const chaptersUrl = `/api/campaigns/${campaignId}/chapters`;
+  calls.push(chaptersUrl);
+  const chapters = await fetcher(chaptersUrl);
+
+  return { calls, story, chapters };
+}
+
+/* ---- Scene & literary style helpers ---- */
+
+export async function sceneAndStylesFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+): Promise<{ calls: string[]; images: unknown; styles: unknown }> {
+  const calls: string[] = [];
+
+  const imagesUrl = `/api/campaigns/${campaignId}/scene-images`;
+  calls.push(imagesUrl);
+  const images = await fetcher(imagesUrl);
+
+  const stylesUrl = `/api/campaigns/${campaignId}/literary-styles`;
+  calls.push(stylesUrl);
+  const styles = await fetcher(stylesUrl);
+
+  return { calls, images, styles };
+}
+
+/* ---- SMS cancel/schedule helpers ---- */
+
+export async function smsCancelFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+): Promise<{ calls: string[]; result: unknown }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/sms/cancel`;
+  calls.push(url);
+  const result = await fetcher(url, { method: "POST" });
+  return { calls, result };
+}
+
+export async function smsScheduleFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  payload: {
+    thread: string;
+    sender: string;
+    recipient: string;
+    message: string;
+    delay_seconds: number;
+  },
+): Promise<{ calls: string[]; result: unknown }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/sms/schedule`;
+  calls.push(url);
+  const result = await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return { calls, result };
+}
+
+/* ---- Campaign export helpers ---- */
+
+export async function campaignExportFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+): Promise<{ calls: string[]; result: unknown }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/export`;
+  calls.push(url);
+  const result = await fetcher(url);
+  return { calls, result };
+}
+
+/* ---- LLM settings helpers ---- */
+
+export type LLMSettingsState = {
+  completion_mode: string;
+  base_url: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  timeout_seconds: number;
+  keep_alive: string;
+  gateway_backend: string;
+};
+
+export async function loadLLMSettingsFlow(
+  fetcher: FetchLike,
+): Promise<{ calls: string[]; settings: LLMSettingsState }> {
+  const calls: string[] = [];
+  const url = "/api/settings";
+  calls.push(url);
+  const data = (await fetcher(url)) as LLMSettingsState;
+  return {
+    calls,
+    settings: {
+      completion_mode: data.completion_mode || "deterministic",
+      base_url: data.base_url || "",
+      model: data.model || "",
+      temperature: typeof data.temperature === "number" ? data.temperature : 0.7,
+      max_tokens: typeof data.max_tokens === "number" ? data.max_tokens : 2048,
+      timeout_seconds: typeof data.timeout_seconds === "number" ? data.timeout_seconds : 120,
+      keep_alive: data.keep_alive || "5m",
+      gateway_backend: data.gateway_backend || "inmemory",
+    },
+  };
+}
+
+/* ---- Rewind + timer cancel helpers ---- */
+
+export async function cancelTimerFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+): Promise<{ calls: string[]; result: unknown }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/timers/cancel`;
+  calls.push(url);
+  const result = await fetcher(url, { method: "POST" });
+  return { calls, result };
+}
+
+/* ---- Character portrait helper ---- */
+
+export async function recordPortraitFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  characterSlug: string,
+  imageUrl: string,
+): Promise<{ calls: string[]; result: unknown }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/roster/portrait`;
+  calls.push(url);
+  const result = await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify({ character_slug: characterSlug, image_url: imageUrl }),
+  });
+  return { calls, result };
+}
