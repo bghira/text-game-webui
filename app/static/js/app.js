@@ -2391,7 +2391,12 @@
         }
         if (!confirm(`Rewind to turn ${turnId}? This is destructive and cannot be undone.`)) return;
         try {
-          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/rewind?target_turn_id=${turnId}`, {
+          const params = new URLSearchParams();
+          params.set("target_turn_id", String(turnId));
+          if (this.selectedSessionId) {
+            params.set("session_id", this.selectedSessionId);
+          }
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/rewind?${params.toString()}`, {
             method: "POST",
           });
           if (result.ok === false) {

@@ -664,14 +664,37 @@ async def update_campaign_rule(
 async def rewind_to_turn(
     campaign_id: str,
     target_turn_id: int,
+    request: Request,
+    session_id: str | None = None,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
     try:
-        return await gateway.rewind_to_turn(campaign_id, target_turn_id)
+        result = await gateway.rewind_to_turn(
+            campaign_id,
+            target_turn_id,
+            session_id=str(session_id or "").strip() or None,
+            actor_id=_linked_actor_id(request),
+        )
     except KeyError as err:
         _not_found(err)
     except ValueError as err:
         _bad_request(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn_refresh",
+            "session_id": str(result.get("session_id") or "").strip() or None,
+            "actor_id": _linked_actor_id(request),
+            "payload": {
+                "target_turn_id": int(result.get("target_turn_id") or 0),
+                "resolved_turn_id": int(result.get("resolved_turn_id") or 0),
+                "session_id": str(result.get("session_id") or "").strip() or None,
+                "source": "webui",
+                "operation": "rewind",
+            },
+        },
+    )
+    return result
 
 
 @router.post("/campaigns/{campaign_id}/timers/cancel")

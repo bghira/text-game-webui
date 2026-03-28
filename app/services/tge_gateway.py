@@ -17,7 +17,7 @@ from urllib import request as urllib_request
 
 from app.settings import Settings
 from app.services.schemas import CampaignSummary, MemoryStoreRequest, TurnRequest, TurnResult
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
 from .engine_gateway import EngineGateway
@@ -2518,6 +2518,45 @@ class TextGameEngineGateway(EngineGateway):
             self._campaign_runtimes[campaign_id] = runtime
             return runtime
 
+    def _invalidate_campaign_runtime(self, campaign_id: str) -> None:
+        with self._campaign_runtime_lock:
+            self._campaign_runtimes.pop(campaign_id, None)
+
+    def _resolve_rewind_target_turn_id(self, campaign_id: str, target_turn_id: int) -> int | None:
+        wanted_turn_id = int(target_turn_id or 0)
+        if wanted_turn_id <= 0:
+            return None
+        with self._session_factory() as session:
+            target_turn = (
+                session.query(Turn)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Turn.id == wanted_turn_id)
+                .first()
+            )
+            if target_turn is None:
+                return None
+            snapshot = (
+                session.query(Snapshot)
+                .filter(Snapshot.campaign_id == campaign_id)
+                .filter(Snapshot.turn_id == wanted_turn_id)
+                .first()
+            )
+            if snapshot is not None:
+                return wanted_turn_id
+            narrator_turn = (
+                session.query(Turn)
+                .join(Snapshot, Snapshot.turn_id == Turn.id)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Snapshot.campaign_id == campaign_id)
+                .filter(Turn.kind == "narrator")
+                .filter(Turn.id >= wanted_turn_id)
+                .order_by(Turn.id.asc())
+                .first()
+            )
+            if narrator_turn is not None:
+                return int(narrator_turn.id)
+            return None
+
     def _turn_lock_for(self, campaign_id: str, actor_id: str | None) -> asyncio.Lock:
         key = (str(campaign_id).strip(), str(actor_id or "__campaign__").strip() or "__campaign__")
         with self._actor_turn_lock_guard:
@@ -4590,18 +4629,143 @@ class TextGameEngineGateway(EngineGateway):
         )
         return result if isinstance(result, dict) else {"ok": True}
 
-    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict:
+    async def rewind_to_turn(
+        self,
+        campaign_id: str,
+        target_turn_id: int,
+        *,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
-        result = self._game_engine.rewind_to_turn(campaign_id, target_turn_id)
-        ok = result.status == "ok" if hasattr(result, "status") else True
+        session_id_text = str(session_id or "").strip() or None
+        actor_id_text = str(actor_id or "").strip() or None
+        if session_id_text:
+            self._enforce_session_access(campaign_id, actor_id_text or "", session_id_text)
+        resolved_turn_id = self._resolve_rewind_target_turn_id(campaign_id, target_turn_id)
+        if resolved_turn_id is None:
+            return {
+                "ok": False,
+                "target_turn_id": target_turn_id,
+                "resolved_turn_id": None,
+                "note": "No rewind snapshot exists for that turn yet.",
+                "detail": "snapshot_not_found",
+            }
+        runtime = self._campaign_runtime(campaign_id)
+        runtime.emulator.cancel_pending_timer(campaign_id)
+
+        if session_id_text:
+            with self._session_factory() as session:
+                snapshot = (
+                    session.query(Snapshot)
+                    .filter(Snapshot.campaign_id == campaign_id)
+                    .filter(Snapshot.turn_id == resolved_turn_id)
+                    .first()
+                )
+                if snapshot is None:
+                    return {
+                        "ok": False,
+                        "target_turn_id": target_turn_id,
+                        "resolved_turn_id": None,
+                        "session_id": session_id_text,
+                        "note": "No rewind snapshot exists for that turn yet.",
+                        "detail": "snapshot_not_found",
+                    }
+                campaign = session.get(Campaign, campaign_id)
+                if campaign is None:
+                    raise KeyError(f"Unknown campaign: {campaign_id}")
+
+                campaign.state_json = snapshot.campaign_state_json
+                campaign.characters_json = snapshot.campaign_characters_json
+                campaign.summary = snapshot.campaign_summary
+                campaign.last_narration = snapshot.campaign_last_narration
+                campaign.memory_visible_max_turn_id = resolved_turn_id
+                campaign.row_version = max(int(campaign.row_version or 0), 0) + 1
+                campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+
+                players_data = self._parse_json(snapshot.players_json, [])
+                if isinstance(players_data, dict):
+                    players_data = players_data.get("players", [])
+                if not isinstance(players_data, list):
+                    players_data = []
+                for pdata in players_data:
+                    actor = pdata.get("actor_id")
+                    if not actor:
+                        continue
+                    player = (
+                        session.query(Player)
+                        .filter(Player.campaign_id == campaign_id)
+                        .filter(Player.actor_id == actor)
+                        .first()
+                    )
+                    if player is None:
+                        continue
+                    player.level = int(pdata.get("level", player.level))
+                    player.xp = int(pdata.get("xp", player.xp))
+                    player.attributes_json = str(pdata.get("attributes_json", player.attributes_json))
+                    player.state_json = str(pdata.get("state_json", player.state_json))
+                    player.updated_at = datetime.now(UTC).replace(tzinfo=None)
+
+                turn_ids_to_delete = [
+                    row.id
+                    for row in (
+                        session.query(Turn.id)
+                        .filter(Turn.campaign_id == campaign_id)
+                        .filter(Turn.id > resolved_turn_id)
+                        .filter(
+                            or_(
+                                Turn.session_id == session_id_text,
+                                and_(
+                                    Turn.session_id.is_(None),
+                                    Turn.kind == "narrator",
+                                    Turn.meta_json.like('%"system_event": "timed"%'),
+                                ),
+                            )
+                        )
+                        .all()
+                    )
+                ]
+
+                if turn_ids_to_delete:
+                    session.query(Snapshot).filter(Snapshot.turn_id.in_(turn_ids_to_delete)).delete(
+                        synchronize_session=False
+                    )
+                    session.query(Embedding).filter(Embedding.turn_id.in_(turn_ids_to_delete)).delete(
+                        synchronize_session=False
+                    )
+                    deleted_count = (
+                        session.query(Turn)
+                        .filter(Turn.id.in_(turn_ids_to_delete))
+                        .delete(synchronize_session=False)
+                    )
+                else:
+                    deleted_count = 0
+                session.commit()
+            ok = True
+            result_note = f"RewindResult(status='ok', target_turn_id={resolved_turn_id}, deleted_turns={int(deleted_count)})"
+            detail = "session_scoped_rewind"
+        else:
+            runtime.emulator._cleanup_embeddings_after_rewind(campaign_id, after_turn_id=resolved_turn_id)  # noqa: SLF001
+            result = runtime.game_engine.rewind_to_turn(campaign_id, resolved_turn_id)
+            if getattr(result, "status", None) == "ok" and getattr(result, "target_turn_id", None) is not None:
+                runtime.emulator._cleanup_embeddings_after_rewind(  # noqa: SLF001
+                    campaign_id,
+                    after_turn_id=int(result.target_turn_id),
+                )
+            ok = result.status == "ok" if hasattr(result, "status") else True
+            result_note = str(result)
+            detail = str(result)
+        self._invalidate_campaign_runtime(campaign_id)
         return {
             "ok": ok,
-            "target_turn_id": target_turn_id,
-            "note": str(result),
-            "detail": str(result),
+            "target_turn_id": resolved_turn_id,
+            "resolved_turn_id": resolved_turn_id,
+            "session_id": session_id_text,
+            "note": result_note,
+            "detail": detail,
         }
 
     async def cancel_pending_timer(self, campaign_id: str) -> dict:
