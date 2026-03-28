@@ -2885,16 +2885,19 @@ class TextGameEngineGateway(EngineGateway):
         scope = str(visibility.get("scope") or "public").strip().lower()
         if scope not in {"public", "private", "limited", "local"}:
             scope = "public"
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
         resolved_actor_ids: list[str] = []
         raw_actor_ids = visibility.get("visible_actor_ids")
         if isinstance(raw_actor_ids, list):
             for item in raw_actor_ids:
                 text = str(item or "").strip()
-                if text and text not in resolved_actor_ids:
-                    resolved_actor_ids.append(text)
+                if not text:
+                    continue
+                actor_id = slug_map.get(self._canonical_slug(text)) or text
+                if actor_id not in resolved_actor_ids:
+                    resolved_actor_ids.append(actor_id)
         raw_player_slugs = visibility.get("visible_player_slugs")
         if isinstance(raw_player_slugs, list) and raw_player_slugs:
-            slug_map = self._player_slug_to_actor_ids(campaign_id)
             for item in raw_player_slugs:
                 slug = self._canonical_slug(str(item or ""))
                 actor_id = slug_map.get(slug)
@@ -2916,9 +2919,15 @@ class TextGameEngineGateway(EngineGateway):
         visibility = dict(turn_visibility) if isinstance(turn_visibility, dict) else {}
         existing_actor_ids: list[str] = []
         seen_actor_ids: set[str] = set()
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
 
         def _add_actor_id(raw_actor_id: object) -> None:
             actor_text = str(raw_actor_id or "").strip()
+            if actor_text:
+                actor_text = str(
+                    slug_map.get(self._canonical_slug(actor_text))
+                    or actor_text
+                ).strip()
             if actor_text and actor_text not in seen_actor_ids:
                 seen_actor_ids.add(actor_text)
                 existing_actor_ids.append(actor_text)
@@ -2934,8 +2943,6 @@ class TextGameEngineGateway(EngineGateway):
         if not isinstance(beats, list):
             visibility["visible_actor_ids"] = existing_actor_ids
             return visibility
-
-        slug_map = self._player_slug_to_actor_ids(campaign_id)
 
         def _add_actor_slug(raw_slug: object) -> None:
             actor_text = slug_map.get(self._canonical_slug(str(raw_slug or "")))
@@ -3288,6 +3295,17 @@ class TextGameEngineGateway(EngineGateway):
             scene_output,
             actor_id=request.actor_id,
         )
+        if narrator_turn is not None:
+            actual_visible_actor_ids = self._viewer_actor_ids_for_turn(campaign_id, narrator_turn)
+            merged_actor_ids: list[str] = []
+            for raw_actor_id in list(turn_visibility.get("visible_actor_ids") or []):
+                actor_id_text = str(raw_actor_id or "").strip()
+                if actor_id_text and actor_id_text not in merged_actor_ids:
+                    merged_actor_ids.append(actor_id_text)
+            for actor_id_text in actual_visible_actor_ids:
+                if actor_id_text and actor_id_text not in merged_actor_ids:
+                    merged_actor_ids.append(actor_id_text)
+            turn_visibility["visible_actor_ids"] = merged_actor_ids
 
         # Extract latest scene image prompt from outbox (if generated this turn)
         image_prompt: str | None = None
@@ -3486,6 +3504,11 @@ class TextGameEngineGateway(EngineGateway):
 
         def _add_aware_actor(raw_actor_id: object) -> None:
             actor_id = str(raw_actor_id or "").strip()
+            if actor_id:
+                actor_id = str(
+                    slug_map.get(self._canonical_slug(actor_id))
+                    or actor_id
+                ).strip()
             if actor_id and actor_id not in seen_actor_ids:
                 seen_actor_ids.add(actor_id)
                 aware_actor_ids.append(actor_id)
@@ -4947,6 +4970,26 @@ class TextGameEngineGateway(EngineGateway):
         rows = []
         for turn in page:
             meta = self._parse_json(turn.meta_json, {})
+            if isinstance(meta, dict):
+                scene_output = meta.get("scene_output") if isinstance(meta.get("scene_output"), dict) else None
+                resolved_visibility = self._resolve_turn_visibility(campaign_id, meta.get("visibility"))
+                resolved_turn_visibility = self._augment_turn_visibility_with_scene_awareness(
+                    campaign_id,
+                    resolved_visibility,
+                    scene_output,
+                    actor_id=str(turn.actor_id or "").strip() or None,
+                )
+                actual_visible_actor_ids = self._viewer_actor_ids_for_turn(campaign_id, turn)
+                merged_actor_ids: list[str] = []
+                for raw_actor_id in list(resolved_turn_visibility.get("visible_actor_ids") or []):
+                    actor_id_text = str(raw_actor_id or "").strip()
+                    if actor_id_text and actor_id_text not in merged_actor_ids:
+                        merged_actor_ids.append(actor_id_text)
+                for actor_id_text in actual_visible_actor_ids:
+                    if actor_id_text and actor_id_text not in merged_actor_ids:
+                        merged_actor_ids.append(actor_id_text)
+                resolved_turn_visibility["visible_actor_ids"] = merged_actor_ids
+                meta["turn_visibility"] = resolved_turn_visibility
             rows.append({
                 "id": turn.id,
                 "kind": turn.kind,
@@ -5000,6 +5043,36 @@ class TextGameEngineGateway(EngineGateway):
                 viewer_location_key,
             )
         )
+
+    def _viewer_actor_ids_for_turn(self, campaign_id: str, turn: Turn) -> list[str]:
+        visible_actor_ids: list[str] = []
+        with self._session_factory() as session:
+            players = session.query(Player).filter(Player.campaign_id == campaign_id).all()
+        if not players:
+            return visible_actor_ids
+        player_registry = self._emulator._campaign_player_registry(  # noqa: SLF001
+            campaign_id,
+            self._session_factory,
+        )
+        for player in players:
+            actor_id_text = str(player.actor_id or "").strip()
+            if not actor_id_text:
+                continue
+            player_state = self._emulator.get_player_state(player)
+            viewer_slug = str(
+                (player_registry.get("by_actor_id", {}).get(actor_id_text, {}) or {}).get("slug")
+                or self._emulator._player_visibility_slug(actor_id_text)  # noqa: SLF001
+                or ""
+            ).strip()
+            viewer_location_key = self._emulator._room_key_from_player_state(player_state)  # noqa: SLF001
+            if self._emulator._turn_visible_to_viewer(  # noqa: SLF001
+                turn,
+                actor_id_text,
+                viewer_slug,
+                viewer_location_key,
+            ):
+                visible_actor_ids.append(actor_id_text)
+        return visible_actor_ids
 
     def _delete_turn_memory_embeddings(self, campaign_id: str, turn_id: int) -> None:
         raw_memory = getattr(self._emulator, "_memory_port", None)
