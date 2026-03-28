@@ -73,9 +73,10 @@ class RealtimeHub:
     def _event_visible_to_subscription(cls, sub: RealtimeSubscription, payload: dict) -> bool:
         payload_type = str(payload.get("type") or "").strip().lower()
         event_session_id = cls._session_id_for_event(payload)
+        session_mismatch = False
         if sub.session_id:
             if event_session_id is not None and event_session_id != sub.session_id:
-                return False
+                session_mismatch = True
         elif event_session_id is not None and payload_type in cls._SESSION_SCOPED_TYPES:
             return False
 
@@ -83,6 +84,8 @@ class RealtimeHub:
             return True
 
         if payload_type == "turn_progress":
+            if session_mismatch:
+                return False
             event_actor_id = cls._actor_id_for_event(payload)
             if not event_actor_id or not sub.actor_id:
                 return False
@@ -104,6 +107,8 @@ class RealtimeHub:
             allowed = {str(item or "").strip() for item in raw_actor_ids if str(item or "").strip()}
             if sub.actor_id in allowed:
                 return True
+        if session_mismatch:
+            return False
         if scope == "local":
             return False
         return False

@@ -767,25 +767,37 @@
           return false;
         }
         const selectedSurface = String(selectedSession.surface || "").trim().toLowerCase();
-        if (selectedSurface !== "web_shared") {
-          return false;
-        }
         const visibility = this.turnVisibilityForRow(turn);
         const scope = String(visibility.scope || "").trim().toLowerCase();
-        if (scope === "public") {
-          return true;
-        }
-        if (scope !== "local") {
-          return false;
-        }
         const actorId = (this.turnForm.actor_id || "").trim();
         const visibleActorIds = Array.isArray(visibility.visible_actor_ids)
           ? visibility.visible_actor_ids.map((value) => String(value || "").trim()).filter(Boolean)
           : [];
-        if (actorId && String(turn.actor_id || "").trim() === actorId) {
-          return true;
+        const actorCanSeeTurn = !!(
+          actorId && (
+            String(turn.actor_id || "").trim() === actorId
+            || visibleActorIds.includes(actorId)
+            || scope === "public"
+          )
+        );
+        if (selectedSurface === "web_shared") {
+          return actorCanSeeTurn && (scope === "public" || scope === "local");
         }
-        return !!(actorId && visibleActorIds.includes(actorId));
+        const metadata = selectedSession.metadata && typeof selectedSession.metadata === "object"
+          ? selectedSession.metadata
+          : {};
+        const ownerActorId = String(metadata.owner_actor_id || "").trim();
+        if (
+          actorCanSeeTurn
+          && (
+            selectedSurface === "discord"
+            || (selectedSurface === "web_private" && ownerActorId && ownerActorId === actorId)
+            || (selectedSurface === "web_direct" && actorId)
+          )
+        ) {
+          return scope === "public" || scope === "local" || visibleActorIds.includes(actorId);
+        }
+        return false;
       },
 
       populateTurnStreamFromHistory(scrollToBottom) {
