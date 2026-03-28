@@ -3613,12 +3613,113 @@ class TextGameEngineGateway(EngineGateway):
                 str(item or "").strip() for item in target_players
             )
             event.setdefault("scope", "targeted" if has_targets else "global")
+            event["event_key"] = self._emulator._calendar_event_key(event)  # noqa: SLF001
             shaped_events.append(event)
 
         return {
             "game_time": effective_game_time,
             "events": shaped_events,
         }
+
+    async def update_calendar_event_visibility(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        visibility: str,
+        actor_id: str | None = None,
+    ) -> dict:
+        visibility_value = str(visibility or "").strip().lower()
+        if visibility_value not in {"public", "private"}:
+            raise ValueError("visibility must be `public` or `private`.")
+        actor_id_text = str(actor_id or "").strip()
+        if not actor_id_text:
+            raise ValueError("actor_id is required for calendar visibility updates.")
+
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id_text)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id_text}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+            raw_calendar = state.get("calendar")
+            if not isinstance(raw_calendar, list):
+                raw_calendar = []
+                state["calendar"] = raw_calendar
+
+            player_state = self._emulator.get_player_state(player)
+            current_game_time, _global_game_time, _time_model, _calendar_policy = self._emulator._current_game_time_for_prompt(  # noqa: SLF001
+                state,
+                player_state,
+            )
+            current_day = int(current_game_time.get("day", 1) or 1)
+            current_hour = int(current_game_time.get("hour", 8) or 8)
+            match_key = str(event_key or "").strip().lower()
+            updated = False
+            for raw_event in raw_calendar:
+                if not isinstance(raw_event, dict):
+                    continue
+                normalized = self._emulator._calendar_normalize_event(  # noqa: SLF001
+                    raw_event,
+                    current_day=current_day,
+                    current_hour=current_hour,
+                )
+                if not isinstance(normalized, dict):
+                    continue
+                normalized_key = self._emulator._calendar_event_key(normalized).lower()  # noqa: SLF001
+                if normalized_key != match_key:
+                    continue
+                if visibility_value == "public":
+                    for key in (
+                        "target_players",
+                        "target_player",
+                        "targets",
+                        "target",
+                        "participants",
+                        "participant",
+                        "players",
+                        "player",
+                        "player_id",
+                        "user_id",
+                        "target_user_id",
+                        "target_user_ids",
+                        "who",
+                    ):
+                        raw_event.pop(key, None)
+                else:
+                    raw_event["target_players"] = [actor_id_text]
+                    for key in (
+                        "target_player",
+                        "targets",
+                        "target",
+                        "participants",
+                        "participant",
+                        "players",
+                        "player",
+                        "player_id",
+                        "user_id",
+                        "target_user_id",
+                        "target_user_ids",
+                        "who",
+                    ):
+                        raw_event.pop(key, None)
+                updated = True
+                break
+            if not updated:
+                raise KeyError(f"Unknown calendar event: {match_key}")
+            campaign.state_json = json.dumps(state, ensure_ascii=True)
+            session.commit()
+
+        return await self.get_calendar(campaign_id, actor_id=actor_id_text)
 
     async def get_roster(self, campaign_id: str) -> dict:
         with self._session_factory() as session:

@@ -24,6 +24,10 @@ class TurnEditRequest(BaseModel):
     content: str
 
 
+class CalendarVisibilityUpdateRequest(BaseModel):
+    visibility: str
+
+
 class SessionCreateRequest(BaseModel):
     surface: str
     surface_key: str

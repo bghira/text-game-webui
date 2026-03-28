@@ -679,6 +679,35 @@ button:disabled {
   line-height: 1.35;
 }
 
+.calendar-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.28rem;
+}
+
+.calendar-visibility-button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-secondary);
+  border-radius: 999px;
+  padding: 0.12rem 0.45rem;
+  font-size: 0.67rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.calendar-visibility-button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.calendar-visibility-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .calendar-empty {
   margin: 0.3rem 0 0.5rem;
   font-size: 0.75rem;

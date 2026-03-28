@@ -115,6 +115,14 @@ class EngineGateway(Protocol):
     async def get_map(self, campaign_id: str, actor_id: str) -> str: ...
     async def get_timers(self, campaign_id: str) -> dict: ...
     async def get_calendar(self, campaign_id: str, actor_id: str | None = None) -> dict: ...
+    async def update_calendar_event_visibility(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        visibility: str,
+        actor_id: str | None = None,
+    ) -> dict: ...
     async def get_roster(self, campaign_id: str) -> dict: ...
     async def upsert_roster_character(
         self,
@@ -686,6 +694,7 @@ Legend: @ current player
             "game_time": {"day": 1, "hour": 9, "minute": 0},
             "events": [
                 {
+                    "event_key": "concierge-callback:1:11",
                     "name": "Concierge callback",
                     "fire_day": 1,
                     "fire_hour": 11,
@@ -695,6 +704,17 @@ Legend: @ current player
                 }
             ],
         }
+
+    async def update_calendar_event_visibility(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        visibility: str,
+        actor_id: str | None = None,
+    ) -> dict:
+        _ = event_key, visibility, actor_id
+        return await self.get_calendar(campaign_id, actor_id=actor_id)
 
     async def get_roster(self, campaign_id: str) -> dict:
         campaign = self._require_campaign(campaign_id)

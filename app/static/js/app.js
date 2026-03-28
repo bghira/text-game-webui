@@ -300,6 +300,8 @@
         keep_alive: "30m",
         ollama_options_json: "{}",
       },
+      settingsLocked: false,
+      settingsLockMessage: "",
       settingsSaving: false,
       settingsStatus: { ok: null, message: "" },
 
@@ -579,6 +581,7 @@
       gameTime: {},
       calendarEvents: [],
       calendarPanelOpen: true,
+      calendarVisibilityUpdating: {},
       campaignSummary: "",
 
       async init() {
@@ -888,7 +891,12 @@
       async loadSettingsForm() {
         try {
           const data = await this.api("/api/settings");
-          this.settingsForm.completion_mode = data.completion_mode || "ollama";
+          this.settingsLocked = data.locked === true;
+          this.settingsLockMessage = data.lock_message || "";
+          this.settingsForm.completion_mode =
+            data.completion_mode ||
+            this.runtimeInfo.tge_completion_mode ||
+            "ollama";
           this.settingsForm.base_url = data.base_url || "";
           this.settingsForm.model = data.model || "";
           this.settingsForm.temperature = typeof data.temperature === "number" ? data.temperature : 0.8;
@@ -929,6 +937,10 @@
       },
 
       async testConnection() {
+        if (this.settingsLocked) {
+          this.settingsStatus = { ok: false, message: this.settingsLockMessage || "LLM settings are managed by DTM." };
+          return;
+        }
         this.settingsSaving = true;
         this.settingsStatus = { ok: null, message: "Testing connection..." };
         try {
@@ -946,6 +958,10 @@
       },
 
       async applySettings() {
+        if (this.settingsLocked) {
+          this.settingsStatus = { ok: false, message: this.settingsLockMessage || "LLM settings are managed by DTM." };
+          return;
+        }
         this.settingsSaving = true;
         this.settingsStatus = { ok: null, message: "Applying..." };
         try {
@@ -1438,6 +1454,44 @@
         if (status === "missed") return `Missed Day ${day} ${hour}:${minute}`;
         if (day > 0) return `Day ${day} ${hour}:${minute}`;
         return `${hour}:${minute}`;
+      },
+
+      async setCalendarEventVisibility(event, visibility) {
+        this.resetError();
+        if (!this.selectedCampaignId || !event || typeof event !== "object") {
+          return;
+        }
+        const eventKey = String(event.event_key || "").trim();
+        if (!eventKey) {
+          this.errorMessage = "Calendar event key missing.";
+          return;
+        }
+        const targetVisibility = String(visibility || "").trim().toLowerCase();
+        if (!["public", "private"].includes(targetVisibility)) {
+          return;
+        }
+        this.calendarVisibilityUpdating = {
+          ...this.calendarVisibilityUpdating,
+          [eventKey]: true,
+        };
+        try {
+          const body = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/calendar/${encodeURIComponent(eventKey)}/visibility`,
+            {
+              method: "POST",
+              body: JSON.stringify({ visibility: targetVisibility }),
+            },
+          );
+          this.calendarText = formatJson(body);
+          this.calendarEvents = Array.isArray(body.events) ? body.events : [];
+          this.statusMessage = `Marked calendar event ${targetVisibility}.`;
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          const next = { ...this.calendarVisibilityUpdating };
+          delete next[eventKey];
+          this.calendarVisibilityUpdating = next;
+        }
       },
 
       syncTurnSessionSelection() {

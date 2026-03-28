@@ -33,6 +33,7 @@ from app.services.schemas import (
     AttributeSetRequest,
     AvatarActionRequest,
     AvatarGenerateRequest,
+    CalendarVisibilityUpdateRequest,
     CampaignRuleUpdate,
     CampaignFlagsUpdate,
     CharacterPortraitRequest,
@@ -1103,6 +1104,27 @@ async def get_calendar(
         _not_found(err)
 
 
+@router.post("/campaigns/{campaign_id}/calendar/{event_key}/visibility")
+async def update_calendar_event_visibility(
+    campaign_id: str,
+    event_key: str,
+    payload: CalendarVisibilityUpdateRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.update_calendar_event_visibility(
+            campaign_id,
+            event_key,
+            visibility=payload.visibility,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
 @router.get("/campaigns/{campaign_id}/roster")
 async def get_roster(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:
@@ -1380,14 +1402,17 @@ async def debug_snapshot(campaign_id: str, gateway: EngineGateway = Depends(get_
 
 
 @router.get("/settings")
-async def get_settings(request: Request) -> dict:
+async def get_settings(request: Request, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     settings = request.app.state.settings
     try:
         ollama_options = json.loads(settings.tge_ollama_options_json or "{}")
     except (json.JSONDecodeError, TypeError):
         ollama_options = {}
+    completion_mode = settings.tge_completion_mode
+    if request.app.state.gateway_backend == "tge":
+        completion_mode = str(getattr(gateway, "completion_mode", completion_mode) or completion_mode)
     return {
-        "completion_mode": settings.tge_completion_mode,
+        "completion_mode": completion_mode,
         "base_url": settings.tge_llm_base_url,
         "model": settings.tge_llm_model,
         "temperature": settings.tge_llm_temperature,
@@ -1396,6 +1421,13 @@ async def get_settings(request: Request) -> dict:
         "keep_alive": settings.tge_ollama_keep_alive,
         "ollama_options": ollama_options,
         "gateway_backend": settings.gateway_backend,
+        "locked": bool(settings.tge_sync_with_dtm),
+        "lock_message": (
+            "LLM settings are managed by DTM while sync_zork_backend is enabled. "
+            "Use Discord-side backend controls instead."
+            if settings.tge_sync_with_dtm
+            else ""
+        ),
     }
 
 
@@ -1411,6 +1443,11 @@ async def update_settings(
 
     if not isinstance(gateway, TextGameEngineGateway):
         raise HTTPException(status_code=400, detail="Gateway does not support reconfiguration.")
+    if request.app.state.settings.tge_sync_with_dtm:
+        raise HTTPException(
+            status_code=400,
+            detail="LLM settings are managed by DTM while sync_zork_backend is enabled.",
+        )
     raw = payload.model_dump()
     merged = {}
     for k, v in raw.items():

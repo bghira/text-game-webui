@@ -123,6 +123,22 @@
                 <span class="calendar-title" x-text="event.title || event.name || event.event_key || 'Untitled event'"></span>
                 <small class="calendar-time" x-text="calendarSidebarTimeLabel(event)"></small>
               </div>
+              <div class="calendar-actions">
+                <button
+                  type="button"
+                  class="calendar-visibility-button"
+                  :class="{ active: (event.scope || '') === 'global' }"
+                  @click="setCalendarEventVisibility(event, 'public')"
+                  :disabled="calendarVisibilityUpdating[event.event_key || '']"
+                >Public</button>
+                <button
+                  type="button"
+                  class="calendar-visibility-button"
+                  :class="{ active: (event.scope || '') === 'targeted' }"
+                  @click="setCalendarEventVisibility(event, 'private')"
+                  :disabled="calendarVisibilityUpdating[event.event_key || '']"
+                >Private</button>
+              </div>
               <template x-if="event.location">
                 <p class="calendar-location" x-text="event.location"></p>
               </template>
@@ -2146,30 +2162,41 @@
         <template x-if="runtimeInfo.gateway_backend && runtimeInfo.gateway_backend !== 'tge'">
           <p class="settings-note" style="margin-top:0">Backend is <strong x-text="runtimeInfo.gateway_backend"></strong>. LLM settings only apply to the tge backend.</p>
         </template>
+        <template x-if="settingsLocked">
+          <p class="settings-note" style="margin-top:0">
+            Managed by DTM sync.
+            <span x-text="settingsLockMessage || 'Use Discord-side backend controls instead.'"></span>
+          </p>
+        </template>
 
         <div class="settings-group">
           <p class="settings-group-title">Connection</p>
           <div class="stack compact">
             <label>
               Model
-              <select x-model="settingsForm.model" x-show="ollamaModels.length > 0">
+              <select x-model="settingsForm.model" x-show="ollamaModels.length > 0 && settingsForm.completion_mode === 'ollama'" :disabled="settingsSaving || settingsLocked">
                 <template x-for="m in ollamaModels" :key="m.name">
                   <option :value="m.name" x-text="m.name"></option>
                 </template>
               </select>
-              <input x-model="settingsForm.model" placeholder="model name" x-show="ollamaModels.length === 0" />
+              <input x-model="settingsForm.model" placeholder="model name" x-show="ollamaModels.length === 0 || settingsForm.completion_mode !== 'ollama'" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
               Base URL
-              <input x-model="settingsForm.base_url" placeholder="http://127.0.0.1:11434" @change="loadOllamaModels()" />
+              <input x-model="settingsForm.base_url" placeholder="http://127.0.0.1:11434" @change="loadOllamaModels()" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
               Completion Mode
-              <select x-model="settingsForm.completion_mode" @change="loadOllamaModels()">
+              <select x-model="settingsForm.completion_mode" @change="loadOllamaModels()" :disabled="settingsSaving || settingsLocked">
+                <option value="zai">Z.ai</option>
                 <option value="ollama">Ollama</option>
                 <option value="openai">OpenAI Compatible</option>
+                <option value="codex">Codex</option>
+                <option value="claude">Claude</option>
+                <option value="gemini">Gemini</option>
+                <option value="opencode">Opencode</option>
                 <option value="deterministic">Deterministic (no LLM)</option>
               </select>
             </label>
@@ -2181,17 +2208,17 @@
           <div class="stack compact">
             <label>
               Temperature: <strong x-text="Number(settingsForm.temperature).toFixed(2)"></strong>
-              <input type="range" min="0" max="2" step="0.05" x-model.number="settingsForm.temperature" />
+              <input type="range" min="0" max="2" step="0.05" x-model.number="settingsForm.temperature" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
               Max Tokens
-              <input type="number" x-model.number="settingsForm.max_tokens" min="64" max="65536" />
+              <input type="number" x-model.number="settingsForm.max_tokens" min="64" max="65536" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
               Timeout (seconds)
-              <input type="number" x-model.number="settingsForm.timeout_seconds" min="1" max="600" />
+              <input type="number" x-model.number="settingsForm.timeout_seconds" min="1" max="600" :disabled="settingsSaving || settingsLocked" />
             </label>
           </div>
         </div>
@@ -2201,25 +2228,25 @@
           <div class="stack compact">
             <label>
               Keep-Alive
-              <input x-model="settingsForm.keep_alive" placeholder="30m" />
+              <input x-model="settingsForm.keep_alive" placeholder="30m" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <details>
               <summary>Advanced Options</summary>
               <label>
                 Options JSON
-                <textarea x-model="settingsForm.ollama_options_json" rows="3" placeholder="{}"></textarea>
+                <textarea x-model="settingsForm.ollama_options_json" rows="3" placeholder="{}" :disabled="settingsSaving || settingsLocked"></textarea>
               </label>
             </details>
           </div>
         </div>
 
         <div class="drawer-actions">
-          <button type="button" @click="testConnection()" :disabled="settingsSaving">Test Connection</button>
-          <button type="button" @click="applySettings()" :disabled="settingsSaving" class="btn-primary">Apply Changes</button>
+          <button type="button" @click="testConnection()" :disabled="settingsSaving || settingsLocked">Test Connection</button>
+          <button type="button" @click="applySettings()" :disabled="settingsSaving || settingsLocked" class="btn-primary">Apply Changes</button>
         </div>
 
-        <p class="settings-note">Settings persist across restarts after clicking Apply.</p>
+        <p class="settings-note" x-show="!settingsLocked">Settings persist across restarts after clicking Apply.</p>
         <p class="settings-status" :class="settingsStatus.ok === false ? 'error' : 'status'" x-show="settingsStatus.message" x-text="settingsStatus.message"></p>
       </div>
 
