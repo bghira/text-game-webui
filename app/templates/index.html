@@ -406,6 +406,9 @@
                     </template>
                   </div>
                   <div class="turn-player-meta">
+                    <template x-if="entry.meta && entry.meta.pending_mention_note">
+                      <small class="turn-player-footnote" x-text="entry.meta.pending_mention_note"></small>
+                    </template>
                     <small class="turn-time" x-text="entry.at"></small>
                     <template x-if="entry._backendTurnId > 0">
                       <span class="turn-actions">
@@ -540,16 +543,36 @@
         </div>
         <form class="action-bar" @submit.prevent="submitTurn()">
           <span class="action-prompt">&gt;</span>
-          <textarea
-            x-model="turnForm.action"
-            placeholder="What do you do?"
-            class="action-input"
-            required
-            id="action-input"
-            rows="1"
-            @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
-            @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
-          ></textarea>
+          <div class="action-input-shell">
+            <textarea
+              x-model="turnForm.action"
+              placeholder="What do you do?"
+              class="action-input"
+              required
+              id="action-input"
+              rows="1"
+              @keydown="handleComposerKeydown($event)"
+              @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; updateMentionAutocomplete($event)"
+              @click="updateMentionAutocomplete($event)"
+              @keyup="updateMentionAutocomplete($event)"
+              @blur="setTimeout(() => closeMentionAutocomplete(), 120)"
+            ></textarea>
+            <template x-if="composerMentionActive()">
+              <div class="mention-menu">
+                <template x-for="(candidate, index) in filteredMentionCandidates()" :key="candidate.actor_id">
+                  <button
+                    type="button"
+                    class="mention-option"
+                    :class="{ active: mentionState.selectedIndex === index }"
+                    @mousedown.prevent="applyMentionCandidate(candidate)"
+                  >
+                    <span class="mention-option-name" x-text="candidate.name"></span>
+                    <span class="mention-option-id" x-text="'@' + candidate.actor_id"></span>
+                  </button>
+                </template>
+              </div>
+            </template>
+          </div>
           <button
             type="submit"
             :disabled="!selectedCampaignId || imageGenerating > 0"

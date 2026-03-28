@@ -18,6 +18,7 @@ class TurnRequest(BaseModel):
     actor_id: str
     action: str
     session_id: str | None = None
+    mentioned_actor_ids: list[str] = Field(default_factory=list)
 
 
 class TurnEditRequest(BaseModel):

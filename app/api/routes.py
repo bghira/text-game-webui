@@ -13,6 +13,7 @@ import time
 from datetime import UTC, datetime
 from typing import NoReturn
 from urllib import request as urllib_request
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -114,6 +115,75 @@ def _linked_display_name(request: Request) -> str:
 
 def _coerced_actor_id(request: Request, provided: str | None = None) -> str:
     return _linked_actor_id(request) or str(provided or "").strip()
+
+
+def _coerced_mentioned_actor_ids(payload: TurnRequest) -> list[str]:
+    actor_id = str(payload.actor_id or "").strip()
+    seen: set[str] = set()
+    rows: list[str] = []
+    for raw in list(payload.mentioned_actor_ids or []):
+        target_actor_id = str(raw or "").strip()
+        if not target_actor_id or target_actor_id == actor_id or target_actor_id in seen:
+            continue
+        seen.add(target_actor_id)
+        rows.append(target_actor_id)
+    return rows
+
+
+async def _publish_pending_mentions(
+    request: Request,
+    campaign_id: str,
+    payload: TurnRequest,
+) -> tuple[str | None, list[str]]:
+    target_actor_ids = _coerced_mentioned_actor_ids(payload)
+    if not target_actor_ids:
+        return None, []
+    pending_id = uuid4().hex
+    for target_actor_id in target_actor_ids:
+        try:
+            await request.app.state.realtime.publish_to_actor(
+                campaign_id,
+                target_actor_id,
+                {
+                    "type": "pending_mention",
+                    "actor_id": target_actor_id,
+                    "payload": {
+                        "pending_id": pending_id,
+                        "source_actor_id": str(payload.actor_id or "").strip(),
+                        "source_session_id": str(payload.session_id or "").strip() or None,
+                        "action_text": str(payload.action or "").strip(),
+                    },
+                },
+            )
+        except Exception:
+            pass
+    return pending_id, target_actor_ids
+
+
+async def _clear_pending_mentions(
+    request: Request,
+    campaign_id: str,
+    pending_id: str | None,
+    target_actor_ids: list[str],
+) -> None:
+    pending_text = str(pending_id or "").strip()
+    if not pending_text or not target_actor_ids:
+        return
+    for target_actor_id in target_actor_ids:
+        try:
+            await request.app.state.realtime.publish_to_actor(
+                campaign_id,
+                target_actor_id,
+                {
+                    "type": "pending_mention_clear",
+                    "actor_id": target_actor_id,
+                    "payload": {
+                        "pending_id": pending_text,
+                    },
+                },
+            )
+        except Exception:
+            pass
 
 
 @router.get("/health")
@@ -467,12 +537,18 @@ async def submit_turn(
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
     payload.actor_id = _coerced_actor_id(request, payload.actor_id)
+    pending_id, pending_targets = await _publish_pending_mentions(request, campaign_id, payload)
     try:
         result = await gateway.submit_turn(campaign_id, payload)
     except KeyError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
         _not_found(err)
     except ValueError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
         _bad_request(err)
+    except Exception:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        raise
     await _publish_turn_events(
         request,
         campaign_id,
@@ -486,6 +562,7 @@ async def submit_turn(
         actor_display_name=_linked_display_name(request),
         action_text=payload.action,
     )
+    await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
     return result.model_dump()
 
 
@@ -498,6 +575,7 @@ async def submit_turn_stream(
 ) -> StreamingResponse:
     from app.services.schemas import TurnResult as TurnResultModel
     payload.actor_id = _coerced_actor_id(request, payload.actor_id)
+    pending_id, pending_targets = await _publish_pending_mentions(request, campaign_id, payload)
 
     # Collect all events *before* streaming so turn execution and realtime
     # publishing are not cancelled if the client disconnects mid-stream.
@@ -528,8 +606,13 @@ async def submit_turn_stream(
             elif event_type == "error":
                 break
     except KeyError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
         error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
     except ValueError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+    except Exception as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
         error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
 
     # Publish realtime events unconditionally — not tied to client connection.
@@ -547,6 +630,7 @@ async def submit_turn_stream(
             actor_display_name=_linked_display_name(request),
             action_text=payload.action,
         )
+    await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
 
     async def _sse():
         if error_event:

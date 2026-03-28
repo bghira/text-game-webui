@@ -1103,6 +1103,13 @@ button:disabled {
   flex-shrink: 0;
 }
 
+.turn-player-footnote {
+  max-width: 22rem;
+  color: var(--ink-muted);
+  text-align: right;
+  line-height: 1.35;
+}
+
 .turn-player-body {
   display: flex;
   flex-direction: column;
@@ -1536,6 +1543,12 @@ pre {
   transition: border-color var(--transition), box-shadow var(--transition);
 }
 
+.action-input-shell {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
 .action-bar:focus-within {
   border-color: var(--accent);
   box-shadow: var(--action-bar-focus-shadow), var(--shadow-sm);
@@ -1583,6 +1596,51 @@ pre {
 .action-input:focus {
   box-shadow: none;
   outline: none;
+}
+
+.mention-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 0.45rem);
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  box-shadow: var(--shadow-md);
+  z-index: 30;
+}
+
+.mention-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.mention-option:hover,
+.mention-option.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border-hover);
+}
+
+.mention-option-name {
+  font-weight: 600;
+}
+
+.mention-option-id {
+  font-size: 0.76rem;
+  color: var(--ink-muted);
 }
 
 .action-submit {

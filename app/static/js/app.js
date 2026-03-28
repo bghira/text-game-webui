@@ -379,6 +379,14 @@
         action: "",
         session_id: "",
       },
+      rosterCharacters: [],
+      mentionState: {
+        open: false,
+        query: "",
+        start: -1,
+        end: -1,
+        selectedIndex: 0,
+      },
       _turnQueues: {},
       _turnQueueDraining: false,
       dtmLink: {
@@ -1300,6 +1308,196 @@
         });
       },
 
+      closeMentionAutocomplete() {
+        this.mentionState = {
+          open: false,
+          query: "",
+          start: -1,
+          end: -1,
+          selectedIndex: 0,
+        };
+      },
+
+      mentionablePlayers() {
+        const selfActorId = String(this.turnForm.actor_id || "").trim();
+        return (Array.isArray(this.rosterCharacters) ? this.rosterCharacters : [])
+          .filter((row) => row && row.player === true)
+          .map((row) => ({
+            actor_id: String(row.slug || "").trim(),
+            name: String(row.name || row.slug || "").trim(),
+          }))
+          .filter((row) => row.actor_id && row.actor_id !== selfActorId);
+      },
+
+      filteredMentionCandidates() {
+        if (!this.mentionState.open) return [];
+        const query = String(this.mentionState.query || "").trim().toLowerCase();
+        return this.mentionablePlayers()
+          .filter((row) => {
+            if (!query) return true;
+            return row.name.toLowerCase().includes(query) || row.actor_id.toLowerCase().includes(query);
+          })
+          .slice(0, 8);
+      },
+
+      composerMentionActive() {
+        return this.mentionState.open && this.filteredMentionCandidates().length > 0;
+      },
+
+      _activeMentionMatch(value, caret) {
+        const text = String(value || "");
+        const cursor = Math.max(0, Number(caret) || 0);
+        const prefix = text.slice(0, cursor);
+        const match = prefix.match(/(?:^|\s)@([^\s@]{0,64})$/);
+        if (!match || typeof match.index !== "number") return null;
+        const mentionToken = String(match[0] || "");
+        const atIndex = prefix.length - mentionToken.length + mentionToken.lastIndexOf("@");
+        if (atIndex < 0) return null;
+        return {
+          query: String(match[1] || ""),
+          start: atIndex,
+          end: cursor,
+        };
+      },
+
+      updateMentionAutocomplete(event) {
+        const input = event && event.target ? event.target : document.getElementById("action-input");
+        if (!input) {
+          this.closeMentionAutocomplete();
+          return;
+        }
+        const match = this._activeMentionMatch(this.turnForm.action, input.selectionStart);
+        if (!match) {
+          this.closeMentionAutocomplete();
+          return;
+        }
+        this.mentionState = {
+          open: true,
+          query: match.query,
+          start: match.start,
+          end: match.end,
+          selectedIndex: this.mentionState.open ? this.mentionState.selectedIndex : 0,
+        };
+        if (!this.filteredMentionCandidates().length) {
+          this.closeMentionAutocomplete();
+        }
+      },
+
+      applyMentionCandidate(candidate) {
+        if (!candidate || !candidate.actor_id) return;
+        const input = document.getElementById("action-input");
+        const start = Number(this.mentionState.start);
+        const end = Number(this.mentionState.end);
+        if (!input || start < 0 || end < start) {
+          this.closeMentionAutocomplete();
+          return;
+        }
+        const before = this.turnForm.action.slice(0, start);
+        const after = this.turnForm.action.slice(end);
+        const insertion = `@${candidate.name} `;
+        this.turnForm.action = `${before}${insertion}${after}`;
+        this.closeMentionAutocomplete();
+        this.$nextTick(() => {
+          const caret = before.length + insertion.length;
+          input.focus();
+          input.setSelectionRange(caret, caret);
+          input.style.height = "auto";
+          input.style.height = `${input.scrollHeight}px`;
+        });
+      },
+
+      handleComposerKeydown(event) {
+        if (this.composerMentionActive()) {
+          const candidates = this.filteredMentionCandidates();
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            this.mentionState.selectedIndex = (this.mentionState.selectedIndex + 1) % candidates.length;
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            event.preventDefault();
+            this.mentionState.selectedIndex = (this.mentionState.selectedIndex - 1 + candidates.length) % candidates.length;
+            return;
+          }
+          if (event.key === "Enter" || event.key === "Tab") {
+            event.preventDefault();
+            this.applyMentionCandidate(candidates[this.mentionState.selectedIndex] || candidates[0]);
+            return;
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            this.closeMentionAutocomplete();
+            return;
+          }
+        }
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          if (this.turnForm.action.trim()) {
+            event.target.closest("form").requestSubmit();
+          }
+        }
+      },
+
+      _escapeRegExp(text) {
+        return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      },
+
+      mentionedActorIdsFromAction(text) {
+        const actionText = String(text || "");
+        if (!actionText) return [];
+        const seen = new Set();
+        const rows = this.mentionablePlayers()
+          .map((row) => ({
+            ...row,
+            aliases: [row.name, row.actor_id].filter(Boolean),
+          }))
+          .sort((a, b) => b.name.length - a.name.length);
+        const results = [];
+        for (const row of rows) {
+          const matched = row.aliases.some((alias) => {
+            const pattern = new RegExp(`(^|[^\\w])@${this._escapeRegExp(alias)}(?=$|[\\s.,!?;:])`, "i");
+            return pattern.test(actionText);
+          });
+          if (matched && !seen.has(row.actor_id)) {
+            seen.add(row.actor_id);
+            results.push(row.actor_id);
+          }
+        }
+        return results;
+      },
+
+      upsertPendingMention(payload) {
+        const data = payload && typeof payload === "object" ? payload : {};
+        const pendingId = String(data.pending_id || "").trim();
+        const actionText = String(data.action_text || "").trim();
+        if (!pendingId || !actionText) return;
+        const meta = {
+          actor_id: String(data.source_actor_id || "").trim(),
+          actor_name: "",
+          pending_mention: true,
+          pending_mention_id: pendingId,
+          pending_mention_note: "Pending cross-player action. Your turns may not be aware of this until the result resolves.",
+          source_session_id: String(data.source_session_id || "").trim() || null,
+        };
+        const existing = this.turnStream.find((entry) => entry && entry.meta && entry.meta.pending_mention_id === pendingId);
+        if (existing) {
+          existing.text = actionText;
+          existing.meta = { ...(existing.meta || {}), ...meta };
+          existing.at = nowLabel();
+          return;
+        }
+        this.pushStream("player", actionText, meta);
+      },
+
+      clearPendingMention(pendingId) {
+        const pendingText = String(pendingId || "").trim();
+        if (!pendingText) return;
+        this.turnStream = this.turnStream.filter((entry) => {
+          const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+          return meta.pending_mention_id !== pendingText;
+        });
+      },
+
       upsertRemoteProgress(text, meta) {
         const label = String(text || "").trim();
         if (!label) return;
@@ -1413,8 +1611,10 @@
           actor_id: String(payload.actor_id || "").trim(),
           action: String(payload.action || "").trim(),
           session_id: payload.session_id || null,
+          mentioned_actor_ids: Array.isArray(payload.mentioned_actor_ids) ? payload.mentioned_actor_ids.slice() : [],
         });
         this.turnForm.action = "";
+        this.closeMentionAutocomplete();
         const count = this._turnQueues[key].length;
         this.statusMessage = count === 1 ? "Queued 1 action." : `Queued ${count} actions.`;
       },
@@ -2673,6 +2873,7 @@
         this.calendarText = "";
         this.calendarEvents = [];
         this.rosterText = "";
+        this.rosterCharacters = [];
         this.playerStateText = "";
         this.mediaText = "";
         this.sessionsText = "";
@@ -2685,6 +2886,7 @@
         this.setupMode = false;
         this.setupPhase = null;
         this.setupResponse = "";
+        this.closeMentionAutocomplete();
         this.sceneImages = {};
         this.literaryStyles = {};
         this.sourceSearchResults = [];
@@ -2861,6 +3063,12 @@
           if (payload.type === "timers" && payload.payload) {
             this.pushStream("timers", formatJson(payload.payload), payload.payload);
             this.timersText = formatJson(payload.payload);
+          }
+          if (payload.type === "pending_mention" && payload.payload) {
+            this.upsertPendingMention(payload.payload);
+          }
+          if (payload.type === "pending_mention_clear" && payload.payload) {
+            this.clearPendingMention(payload.payload.pending_id);
           }
           if (payload.type === "turn_refresh") {
             this.clearRemoteProgress();
@@ -3137,6 +3345,7 @@
           actor_id: this.turnForm.actor_id.trim(),
           action: this.turnForm.action.trim(),
           session_id: this.selectedSessionId || null,
+          mentioned_actor_ids: this.mentionedActorIdsFromAction(this.turnForm.action),
         };
         if (!payload.action) return;
         if (this.submitting) {
@@ -3211,6 +3420,7 @@
               }
             }
             this.turnForm.action = "";
+            this.closeMentionAutocomplete();
             if (body.state_update && body.state_update.game_time) {
               this.gameTime = body.state_update.game_time;
             }
@@ -3283,6 +3493,7 @@
             }
 
             this.turnForm.action = "";
+            this.closeMentionAutocomplete();
           }
 
           await Promise.all([
@@ -3395,6 +3606,7 @@
         }
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster`);
+          this.rosterCharacters = Array.isArray(body.characters) ? body.characters.slice() : [];
           this.rosterText = formatJson(body);
         } catch (_err) {
           /* background refresh */
@@ -4122,6 +4334,12 @@
         const actor = String(actorId || "").trim();
         if (actor && actor === String(this.turnForm.actor_id || "").trim()) {
           return this.resolveCharacterName(actor);
+        }
+        const rosterMatch = (Array.isArray(this.rosterCharacters) ? this.rosterCharacters : []).find((row) => {
+          return row && String(row.slug || "").trim() === actor;
+        });
+        if (rosterMatch && String(rosterMatch.name || "").trim()) {
+          return String(rosterMatch.name || "").trim();
         }
         return actor || fallback || "Unknown";
       },
