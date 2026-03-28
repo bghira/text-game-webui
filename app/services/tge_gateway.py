@@ -3565,7 +3565,11 @@ class TextGameEngineGateway(EngineGateway):
                 shaped_events.append({"value": raw, "scope": "global"})
                 continue
             event = dict(raw)
-            if actor_id_text and event.get("target_players") and not event.get("targeted_to_active_player"):
+            if actor_id_text and event.get("target_players") and not self._emulator._calendar_event_targets_player(  # noqa: SLF001
+                raw,
+                actor_id=actor_id_text,
+                player_state=player_state,
+            ):
                 continue
             target_players = event.get("target_players")
             has_targets = isinstance(target_players, list) and any(

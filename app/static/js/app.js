@@ -1224,6 +1224,36 @@
         });
       },
 
+      upsertRemoteProgress(text, meta) {
+        const label = String(text || "").trim();
+        if (!label) return;
+        const existing = this.turnStream.find((entry) => entry && entry.meta && entry.meta.remote_progress);
+        if (existing) {
+          existing.text = label;
+          existing.at = nowLabel();
+          existing.meta = {
+            ...(existing.meta || {}),
+            ...(meta && typeof meta === "object" ? meta : {}),
+            remote_progress: true,
+          };
+          this.$nextTick(() => {
+            const stream = document.getElementById("turn-stream");
+            if (stream) stream.scrollTop = stream.scrollHeight;
+          });
+          return;
+        }
+        this.pushStream("notice", label, {
+          ...(meta && typeof meta === "object" ? meta : {}),
+          remote_progress: true,
+        });
+      },
+
+      clearRemoteProgress() {
+        this.turnStream = this.turnStream.filter(
+          (entry) => !(entry && entry.meta && entry.meta.remote_progress),
+        );
+      },
+
       currentSessionRecord() {
         if (!this.selectedSessionId) {
           return null;
@@ -1310,6 +1340,21 @@
         );
       },
 
+      _surfaceTurnSubmitError(error, { queued = false } = {}) {
+        const text = String(error || "").trim() || "Turn submission failed.";
+        if (this._isQueueRetryableTurnError(text)) {
+          this.statusMessage = queued
+            ? "Queued action is waiting for the current turn to clear."
+            : text;
+          this.pushStream("notice", text, {
+            turn_submit_error: true,
+            retryable: true,
+          });
+          return;
+        }
+        this.errorMessage = text;
+      },
+
       async _drainQueuedTurns() {
         if (this._turnQueueDraining || this.submitting) return;
         const key = this.currentTurnQueueKey();
@@ -1340,7 +1385,7 @@
                 await new Promise((resolve) => setTimeout(resolve, 500));
                 continue;
               }
-              this.errorMessage = String(result.error);
+              this._surfaceTurnSubmitError(result.error, { queued: true });
             }
           }
         } finally {
@@ -1349,7 +1394,16 @@
       },
 
       sidebarCalendarEvents() {
-        const rows = Array.isArray(this.calendarEvents) ? [...this.calendarEvents] : [];
+        const actorId = String(this.turnForm.actor_id || "").trim();
+        const rows = (Array.isArray(this.calendarEvents) ? [...this.calendarEvents] : []).filter((event) => {
+          if (!event || typeof event !== "object") return true;
+          const targets = Array.isArray(event.target_players) ? event.target_players : [];
+          const hasTargets = targets.some((item) => String(item || "").trim());
+          if (!hasTargets) return true;
+          if (event.targeted_to_active_player === true) return true;
+          if (!actorId) return false;
+          return targets.some((item) => String(item || "").trim() === actorId);
+        });
         rows.sort((a, b) => {
           const dayA = Number(a && a.fire_day) || 0;
           const dayB = Number(b && b.fire_day) || 0;
@@ -2658,6 +2712,7 @@
             this.timersText = formatJson(payload.payload);
           }
           if (payload.type === "turn_refresh") {
+            this.clearRemoteProgress();
             this._scheduleRealtimeTurnRefresh();
           }
           if (payload.type === "roster" && payload.payload) {
@@ -2697,6 +2752,14 @@
             if (streamEntry) {
               this._typePhase(streamEntry.id, label);
             }
+          } else if (payload.type === "turn_progress" && payload.payload) {
+            const label = this._turnProgressLabel(payload.payload.phase, payload.payload);
+            this.statusMessage = label;
+            this.upsertRemoteProgress(label, {
+              phase: payload.payload.phase || "",
+              actor_id: payload.actor_id || "",
+              session_id: payload.session_id || "",
+            });
           }
         };
         this.socket.onerror = () => {
@@ -2817,6 +2880,7 @@
 
       _handleStreamEvent(eventType, data, streamEntryId) {
         if (eventType === "phase") {
+          this.clearRemoteProgress();
           const label = this._turnProgressLabel(data.phase, data);
           this.statusMessage = label;
           if (streamEntryId && data.phase !== "narrating") {
@@ -2837,6 +2901,7 @@
           if (entry) entry.text = this._streamingNarration;
           this._scrollStream();
         } else if (eventType === "complete") {
+          this.clearRemoteProgress();
           this._clearPhaseTyper();
           const entry = this.turnStream.find((e) => e.id === streamEntryId);
           if (entry) {
@@ -2885,6 +2950,7 @@
             this.gameTime = data.state_update.game_time;
           }
         } else if (eventType === "error") {
+          this.clearRemoteProgress();
           this.errorMessage = data.message || "Streaming error";
         }
       },
@@ -2915,7 +2981,7 @@
         }
         const result = await this._submitTurnPayload(this.selectedCampaignId, payload, { queued: false });
         if (!result.ok) {
-          this.errorMessage = String(result.error);
+          this._surfaceTurnSubmitError(result.error, { queued: false });
         }
         await this._drainQueuedTurns();
       },
@@ -2925,12 +2991,15 @@
         this._submittingTurn = true;
         this.statusMessage = queued ? "Processing queued action..." : "Submitting turn...";
         let backendTurnId = 0;
+        let optimisticPlayerEntryId = 0;
         try {
           if (payload.action) {
             this.pushStream("player", payload.action, {
               actor_id: payload.actor_id,
               actor_name: this.resolveActorDisplayName(payload.actor_id, "", payload.actor_id),
+              pending_submit: true,
             });
+            optimisticPlayerEntryId = this.turnCounter;
           }
 
           if (!this.runtimeInfo.streaming_supported) {
@@ -3082,6 +3151,9 @@
           this.statusMessage = queued ? "Queued action submitted." : "Turn submitted.";
           return { ok: true };
         } catch (error) {
+          if (optimisticPlayerEntryId > 0) {
+            this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
+          }
           return { ok: false, error };
         } finally {
           this._clearPhaseTyper();
