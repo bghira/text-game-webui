@@ -94,8 +94,6 @@ class RealtimeHub:
         scope = str(visibility.get("scope") or "public").strip().lower()
         if scope in {"", "public"}:
             return True
-        if scope == "local" and sub.session_id and event_session_id and sub.session_id == event_session_id:
-            return True
         if not sub.actor_id:
             return False
         event_actor_id = cls._actor_id_for_event(payload)
@@ -106,6 +104,8 @@ class RealtimeHub:
             allowed = {str(item or "").strip() for item in raw_actor_ids if str(item or "").strip()}
             if sub.actor_id in allowed:
                 return True
+        if scope == "local":
+            return False
         return False
 
     async def publish(self, campaign_id: str, payload: dict) -> None:

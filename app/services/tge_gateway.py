@@ -2866,6 +2866,57 @@ class TextGameEngineGateway(EngineGateway):
         visibility["location_key"] = str(visibility.get("location_key") or "").strip() or None
         return visibility
 
+    def _augment_turn_visibility_with_scene_awareness(
+        self,
+        campaign_id: str,
+        turn_visibility: dict[str, Any],
+        scene_output: dict[str, Any] | None,
+        *,
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        visibility = dict(turn_visibility) if isinstance(turn_visibility, dict) else {}
+        existing_actor_ids: list[str] = []
+        seen_actor_ids: set[str] = set()
+
+        def _add_actor_id(raw_actor_id: object) -> None:
+            actor_text = str(raw_actor_id or "").strip()
+            if actor_text and actor_text not in seen_actor_ids:
+                seen_actor_ids.add(actor_text)
+                existing_actor_ids.append(actor_text)
+
+        for raw_actor_id in list(visibility.get("visible_actor_ids") or []):
+            _add_actor_id(raw_actor_id)
+        _add_actor_id(actor_id)
+
+        if not isinstance(scene_output, dict):
+            visibility["visible_actor_ids"] = existing_actor_ids
+            return visibility
+        beats = scene_output.get("beats")
+        if not isinstance(beats, list):
+            visibility["visible_actor_ids"] = existing_actor_ids
+            return visibility
+
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
+
+        def _add_actor_slug(raw_slug: object) -> None:
+            actor_text = slug_map.get(self._canonical_slug(str(raw_slug or "")))
+            if actor_text:
+                _add_actor_id(actor_text)
+
+        for beat in beats:
+            if not isinstance(beat, dict):
+                continue
+            for raw_actor_id in list(beat.get("visible_actor_ids") or beat.get("aware_actor_ids") or []):
+                _add_actor_id(raw_actor_id)
+            for raw_slug in list(beat.get("actors") or []):
+                _add_actor_slug(raw_slug)
+            for raw_slug in list(beat.get("listeners") or []):
+                _add_actor_slug(raw_slug)
+            _add_actor_slug(beat.get("speaker"))
+
+        visibility["visible_actor_ids"] = existing_actor_ids
+        return visibility
+
     @staticmethod
     def _parse_json(text: str | None, default: Any) -> Any:
         if not text:
@@ -3192,6 +3243,12 @@ class TextGameEngineGateway(EngineGateway):
                 raw_scene = turn_meta.get("scene_output")
                 if isinstance(raw_scene, dict) and isinstance(raw_scene.get("beats"), list):
                     scene_output = raw_scene
+        turn_visibility = self._augment_turn_visibility_with_scene_awareness(
+            campaign_id,
+            turn_visibility,
+            scene_output,
+            actor_id=request.actor_id,
+        )
 
         # Extract latest scene image prompt from outbox (if generated this turn)
         image_prompt: str | None = None
