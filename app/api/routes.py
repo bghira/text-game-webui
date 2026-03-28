@@ -403,7 +403,14 @@ async def update_session(
     return {"session": row}
 
 
-async def _publish_turn_events(request: Request, campaign_id: str, result, gateway) -> None:
+async def _publish_turn_events(
+    request: Request,
+    campaign_id: str,
+    result,
+    gateway,
+    *,
+    action_text: str | None = None,
+) -> None:
     """Publish turn, media, and timer events via the realtime layer."""
     await request.app.state.realtime.publish(
         campaign_id,
@@ -411,7 +418,10 @@ async def _publish_turn_events(request: Request, campaign_id: str, result, gatew
             "type": "turn",
             "session_id": result.session_id,
             "actor_id": result.actor_id,
-            "payload": result.model_dump(),
+            "payload": {
+                **result.model_dump(),
+                "action_text": str(action_text or "").strip() or None,
+            },
         },
     )
     if result.image_prompt:
@@ -463,7 +473,13 @@ async def submit_turn(
         _not_found(err)
     except ValueError as err:
         _bad_request(err)
-    await _publish_turn_events(request, campaign_id, result, gateway)
+    await _publish_turn_events(
+        request,
+        campaign_id,
+        result,
+        gateway,
+        action_text=payload.action,
+    )
     await gateway.queue_discord_mirror(
         campaign_id,
         result,
@@ -518,7 +534,13 @@ async def submit_turn_stream(
 
     # Publish realtime events unconditionally — not tied to client connection.
     if final_result:
-        await _publish_turn_events(request, campaign_id, final_result, gateway)
+        await _publish_turn_events(
+            request,
+            campaign_id,
+            final_result,
+            gateway,
+            action_text=payload.action,
+        )
         await gateway.queue_discord_mirror(
             campaign_id,
             final_result,

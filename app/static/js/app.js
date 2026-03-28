@@ -711,8 +711,9 @@
         const entries = [];
         let counter = 0;
         let lastGameTime = null;
+        const selectedSession = this.currentSessionRecord();
         for (const turn of turns) {
-          if (sessionFilter && turn.session_id && turn.session_id !== sessionFilter) continue;
+          if (!this.turnBelongsInSelectedSession(turn, selectedSession, sessionFilter)) continue;
           if (turn.kind === "narrator" || turn.kind === "player") {
             counter++;
             const meta = turn.meta || {};
@@ -738,6 +739,53 @@
           }
         }
         return { entries, counter, lastGameTime };
+      },
+
+      turnVisibilityForRow(turn) {
+        const meta = turn && turn.meta && typeof turn.meta === "object" ? turn.meta : {};
+        if (meta.visibility && typeof meta.visibility === "object") {
+          return meta.visibility;
+        }
+        if (meta.turn_visibility && typeof meta.turn_visibility === "object") {
+          return meta.turn_visibility;
+        }
+        if (turn && turn.turn_visibility && typeof turn.turn_visibility === "object") {
+          return turn.turn_visibility;
+        }
+        return {};
+      },
+
+      turnBelongsInSelectedSession(turn, selectedSession, sessionFilter) {
+        if (!sessionFilter) {
+          return true;
+        }
+        const turnSessionId = String(turn && turn.session_id || "").trim();
+        if (turnSessionId && turnSessionId === sessionFilter) {
+          return true;
+        }
+        if (!selectedSession || !turn || typeof turn !== "object") {
+          return false;
+        }
+        const selectedSurface = String(selectedSession.surface || "").trim().toLowerCase();
+        if (selectedSurface !== "web_shared") {
+          return false;
+        }
+        const visibility = this.turnVisibilityForRow(turn);
+        const scope = String(visibility.scope || "").trim().toLowerCase();
+        if (scope === "public") {
+          return true;
+        }
+        if (scope !== "local") {
+          return false;
+        }
+        const actorId = (this.turnForm.actor_id || "").trim();
+        const visibleActorIds = Array.isArray(visibility.visible_actor_ids)
+          ? visibility.visible_actor_ids.map((value) => String(value || "").trim()).filter(Boolean)
+          : [];
+        if (actorId && String(turn.actor_id || "").trim() === actorId) {
+          return true;
+        }
+        return !!(actorId && visibleActorIds.includes(actorId));
       },
 
       populateTurnStreamFromHistory(scrollToBottom) {
@@ -2722,10 +2770,30 @@
             return;
           }
           if (payload.type === "turn" && payload.payload) {
+            const selectedSession = this.currentSessionRecord();
+            const turnForSession = {
+              session_id: payload.session_id || "",
+              actor_id: payload.actor_id || "",
+              turn_visibility: payload.payload.turn_visibility || {},
+            };
+            const shouldRenderInCurrentSession = this.turnBelongsInSelectedSession(
+              turnForSession,
+              selectedSession,
+              this.selectedSessionId,
+            );
             /* Suppress echo: if we just submitted a turn, skip the WS echo to avoid duplicates */
             const isOwnEcho = this._submittingTurn
               && payload.actor_id === (this.turnForm.actor_id || "").trim();
-            if (!isOwnEcho) {
+            if (!isOwnEcho && shouldRenderInCurrentSession) {
+              const remoteActionText = String(payload.payload.action_text || "").trim();
+              if (remoteActionText) {
+                this.pushStream("player", remoteActionText, {
+                  actor_id: payload.actor_id || "",
+                  actor_name: payload.payload.actor_name || "",
+                  turn_visibility: payload.payload.turn_visibility || {},
+                  session_id: payload.session_id || "",
+                });
+              }
               normalizeTurnNotices(payload.payload).forEach((notice) => {
                 this.pushStream("notice", notice, { notice });
               });
