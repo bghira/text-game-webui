@@ -2883,22 +2883,127 @@ details summary {
   margin-top: 0.25rem;
 }
 
+/* ---- Sidebar toggle (hidden on desktop) ---- */
+
+.sidebar-toggle {
+  display: none;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.55rem;
+  font-size: 1.15rem;
+  cursor: pointer;
+  line-height: 1;
+  color: var(--ink);
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
 /* ---- Responsive ---- */
 
 @media (max-width: 768px) {
-  .layout {
-    grid-template-columns: 1fr;
+  .sidebar-toggle {
+    display: block;
   }
 
+  .layout {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: calc(100vh - 58px);
+    padding: 0.6rem;
+    gap: 0.6rem;
+  }
+
+  /* Sidebar becomes a fixed overlay drawer */
   .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 300px;
+    max-width: 85vw;
     max-height: none;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    border-radius: 0;
+    border-right: 1px solid var(--line);
+    box-shadow: none;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .sidebar.sidebar-open {
+    transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    background: rgba(0, 0, 0, 0.4);
+  }
+
+  /* Main column takes full viewport height */
+  .main-column {
+    min-height: calc(100vh - 80px);
   }
 
   .turn-stream {
-    height: 40vh;
+    height: calc(100vh - 300px);
+    min-height: 200px;
   }
 
+  /* Compact topbar */
+  .topbar {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .topbar h1 {
+    font-size: 0.95rem;
+  }
+
+  /* Compact action bar on mobile */
+  .action-bar-avatar {
+    display: none;
+  }
+
+  .action-bar-wrapper {
+    gap: 0.4rem;
+  }
+
+  .char-hud {
+    padding: 0.3rem 0;
+  }
+
+  /* Settings drawer full width */
   .settings-drawer {
     width: 100vw;
+  }
+
+  /* Modals */
+  .modal-panel {
+    max-width: 95vw;
+    max-height: 90vh;
+    margin: 0.5rem;
+  }
+
+  /* Song player compact */
+  .song-player {
+    padding: 0.4rem;
+  }
+
+  .song-embed-wrap {
+    padding-bottom: 56.25%;
   }
 }

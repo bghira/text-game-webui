@@ -124,6 +124,7 @@
       debugMode: localStorage.getItem("debugMode") === "true",
       settingsOpen: false,
       settingsTab: "llm",
+      sidebarOpen: false,
       modal: null,
       theme: document.documentElement.getAttribute("data-theme") || localStorage.getItem("theme") || "light",
       themes: [],
@@ -1192,6 +1193,7 @@
       },
 
       selectSession(sessionId) {
+        this.$store.app.sidebarOpen = false;
         this.selectedSessionId = sessionId || "";
         if (this.selectedSessionId) {
           localStorage.setItem("selectedSessionId", this.selectedSessionId);
@@ -2205,6 +2207,7 @@
       },
 
       async selectCampaign(campaignId, restoreSessionId) {
+        this.$store.app.sidebarOpen = false;
         this.resetError();
         this.selectedCampaignId = campaignId;
         localStorage.setItem("selectedCampaignId", campaignId);

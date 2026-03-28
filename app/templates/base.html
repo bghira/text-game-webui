@@ -41,7 +41,10 @@
   </head>
   <body>
     <header class="topbar">
-      <h1>{{ app_name or "text-game-webui" }}</h1>
+      <div class="topbar-left" x-data>
+        <button type="button" class="sidebar-toggle" title="Toggle sidebar" @click="$store.app.sidebarOpen = !$store.app.sidebarOpen" aria-label="Toggle sidebar">&#x2630;</button>
+        <h1>{{ app_name or "text-game-webui" }}</h1>
+      </div>
       <div class="topbar-controls" x-data>
         <label class="debug-toggle">
           <input type="checkbox" :checked="$store.app.debugMode" @change="$store.app.toggleDebugMode()" />

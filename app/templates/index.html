@@ -18,7 +18,7 @@
   <div class="dtm-linked-shell">
 
   <!-- ====== SIDEBAR ====== -->
-  <aside class="panel sidebar">
+  <aside class="panel sidebar" :class="{ 'sidebar-open': $store.app.sidebarOpen }" @click.outside="$store.app.sidebarOpen = false">
     <!-- Campaign Selector -->
     <div class="campaign-selector-row">
       <select :value="selectedCampaignId || ''" @change="$event.target.value && selectCampaign($event.target.value)">
@@ -289,6 +289,7 @@
       </div>
     </template>
   </aside>
+  <div class="sidebar-backdrop" x-show="$store.app.sidebarOpen" @click="$store.app.sidebarOpen = false" x-cloak></div>
 
   <!-- ====== MAIN COLUMN ====== -->
   <section class="panel main-column">
