@@ -740,12 +740,7 @@
       populateTurnStreamFromHistory(scrollToBottom) {
         if (!this.recentTurns || this.recentTurns.length === 0) return;
         const sessionId = this.selectedSessionId;
-        let result = this._buildTurnEntries(this.recentTurns, sessionId);
-        /* If session filter produced zero entries but we have turns, show
-           all turns rather than a blank stream. */
-        if (result.entries.length === 0 && sessionId) {
-          result = this._buildTurnEntries(this.recentTurns, null);
-        }
+        const result = this._buildTurnEntries(this.recentTurns, sessionId);
         this.turnCounter = result.counter;
         this.turnStream = result.entries;
         /* Apply turn-derived game time only when we don't already have

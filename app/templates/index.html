@@ -18,7 +18,7 @@
   <div class="dtm-linked-shell">
 
   <!-- ====== SIDEBAR ====== -->
-  <aside class="panel sidebar" :class="{ 'sidebar-open': $store.app.sidebarOpen }" @click.outside="$store.app.sidebarOpen = false">
+  <aside class="panel sidebar" :class="{ 'sidebar-open': $store.app.sidebarOpen }">
     <!-- Campaign Selector -->
     <div class="campaign-selector-row">
       <select :value="selectedCampaignId || ''" @change="$event.target.value && selectCampaign($event.target.value)">

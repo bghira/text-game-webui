@@ -55,6 +55,8 @@ body {
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   box-shadow: 0 1px 3px rgba(31, 40, 37, 0.05);
+  position: relative;
+  z-index: 1002;
 }
 
 .topbar h1 {
@@ -3137,6 +3139,8 @@ details summary {
   cursor: pointer;
   line-height: 1;
   color: var(--ink);
+  position: relative;
+  z-index: 1003;
 }
 
 .topbar-left {
