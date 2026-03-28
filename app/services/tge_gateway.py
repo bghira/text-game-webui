@@ -4596,6 +4596,204 @@ class TextGameEngineGateway(EngineGateway):
             })
         return {"turns": rows, "count": len(rows), "has_more": has_more}
 
+    def _viewer_can_access_turn(
+        self,
+        campaign_id: str,
+        turn: Turn,
+        *,
+        actor_id: str | None = None,
+    ) -> bool:
+        actor_id_text = str(actor_id or "").strip()
+        if not actor_id_text:
+            return True
+        with self._session_factory() as session:
+            campaign_players = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .all()
+            )
+            player = next(
+                (row for row in campaign_players if str(row.actor_id) == actor_id_text),
+                None,
+            )
+        if player is None:
+            return False
+        player_state = self._emulator.get_player_state(player)
+        player_registry = self._emulator._campaign_player_registry(  # noqa: SLF001
+            campaign_id,
+            self._session_factory,
+        )
+        viewer_slug = str(
+            (player_registry.get("by_actor_id", {}).get(actor_id_text, {}) or {}).get("slug")
+            or self._emulator._player_visibility_slug(actor_id_text)  # noqa: SLF001
+            or ""
+        ).strip()
+        viewer_location_key = self._emulator._room_key_from_player_state(player_state)  # noqa: SLF001
+        return bool(
+            self._emulator._turn_visible_to_viewer(  # noqa: SLF001
+                turn,
+                actor_id_text,
+                viewer_slug,
+                viewer_location_key,
+            )
+        )
+
+    def _delete_turn_memory_embeddings(self, campaign_id: str, turn_id: int) -> None:
+        raw_memory = getattr(self._emulator, "_memory_port", None)
+        if raw_memory is None or int(turn_id or 0) <= 0:
+            return
+        if hasattr(raw_memory, "delete_turn_embeddings"):
+            raw_memory.delete_turn_embeddings(campaign_id, int(turn_id))
+            return
+        cid = None
+        if hasattr(raw_memory, "_maybe_int_campaign_id"):
+            try:
+                cid = raw_memory._maybe_int_campaign_id(campaign_id)
+            except Exception:
+                cid = None
+        if cid is None:
+            return
+        try:
+            from discord_tron_master.classes.zork_memory import ZorkMemory
+
+            conn = ZorkMemory._get_conn()
+            conn.execute(
+                "DELETE FROM turn_embeddings WHERE campaign_id = ? AND turn_id = ?",
+                (cid, int(turn_id)),
+            )
+            conn.execute(
+                "DELETE FROM turn_embedding_visible_players WHERE campaign_id = ? AND turn_id = ?",
+                (cid, int(turn_id)),
+            )
+            conn.execute(
+                "DELETE FROM turn_embedding_aware_npcs WHERE campaign_id = ? AND turn_id = ?",
+                (cid, int(turn_id)),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug(
+                "WebUI turn delete memory cleanup skipped for campaign=%s turn=%s",
+                campaign_id,
+                turn_id,
+                exc_info=True,
+            )
+
+    async def edit_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        content: str,
+        actor_id: str | None = None,
+    ) -> dict:
+        text = str(content or "").strip()
+        if not text:
+            raise ValueError("Turn content is required.")
+        actor_id_text = str(actor_id or "").strip()
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            turn = (
+                session.query(Turn)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Turn.id == int(turn_id))
+                .first()
+            )
+            if turn is None:
+                raise KeyError(f"Unknown turn in campaign: {turn_id}")
+            if not self._viewer_can_access_turn(campaign_id, turn, actor_id=actor_id_text):
+                raise KeyError(f"Unknown turn in campaign: {turn_id}")
+            meta = self._parse_json(turn.meta_json, {})
+            if not isinstance(meta, dict):
+                meta = {}
+            if str(getattr(turn, "kind", "") or "").strip().lower() == "narrator":
+                meta.pop("scene_output", None)
+            turn.content = text
+            turn.meta_json = json.dumps(meta, ensure_ascii=False)
+            session.query(Embedding).filter(Embedding.turn_id == int(turn.id)).delete(
+                synchronize_session=False,
+            )
+            session.commit()
+            updated_turn_id = int(turn.id or 0)
+            updated_kind = str(turn.kind or "")
+            updated_actor_id = str(turn.actor_id or "")
+            updated_session_id = str(turn.session_id or "")
+            embed_meta = self._emulator._safe_turn_meta(turn)  # noqa: SLF001
+            embed_visibility = embed_meta.get("visibility")
+        if self._emulator._memory_port is not None and text and updated_turn_id > 0:
+            try:
+                self._emulator._memory_port.store_turn_embedding(
+                    turn_id=updated_turn_id,
+                    campaign_id=campaign_id,
+                    actor_id=updated_actor_id or None,
+                    kind=updated_kind or "narrator",
+                    content=text,
+                    metadata=self._emulator._turn_embedding_metadata(  # noqa: SLF001
+                        visibility=embed_visibility if isinstance(embed_visibility, dict) else None,
+                        actor_player_slug=embed_meta.get("actor_player_slug"),
+                        location_key=embed_meta.get("location_key"),
+                        session_id=updated_session_id or None,
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "WebUI turn edit embedding refresh skipped for campaign=%s turn=%s",
+                    campaign_id,
+                    updated_turn_id,
+                    exc_info=True,
+                )
+        return {
+            "ok": True,
+            "turn_id": updated_turn_id,
+            "actor_id": updated_actor_id,
+            "session_id": updated_session_id,
+            "kind": updated_kind,
+            "content": text,
+        }
+
+    async def delete_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        actor_id: str | None = None,
+    ) -> dict:
+        actor_id_text = str(actor_id or "").strip()
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            turn = (
+                session.query(Turn)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Turn.id == int(turn_id))
+                .first()
+            )
+            if turn is None:
+                raise KeyError(f"Unknown turn in campaign: {turn_id}")
+            if not self._viewer_can_access_turn(campaign_id, turn, actor_id=actor_id_text):
+                raise KeyError(f"Unknown turn in campaign: {turn_id}")
+            deleted_actor_id = str(turn.actor_id or "")
+            deleted_session_id = str(turn.session_id or "")
+            deleted_kind = str(turn.kind or "")
+            session.query(Snapshot).filter(Snapshot.turn_id == int(turn.id)).delete(
+                synchronize_session=False,
+            )
+            session.query(Embedding).filter(Embedding.turn_id == int(turn.id)).delete(
+                synchronize_session=False,
+            )
+            session.delete(turn)
+            session.commit()
+        self._delete_turn_memory_embeddings(campaign_id, int(turn_id))
+        return {
+            "ok": True,
+            "turn_id": int(turn_id),
+            "actor_id": deleted_actor_id,
+            "session_id": deleted_session_id,
+            "kind": deleted_kind,
+        }
+
     async def get_campaign_persona(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)

@@ -137,7 +137,6 @@
 
     <h2>Rooms</h2>
     <div class="stack compact">
-      <button type="button" @click="ensureSharedWindow()" :disabled="!selectedCampaignId">Shared Room</button>
       <div class="private-window-row">
         <select x-model="sessions.quick_private_kind" class="private-kind-select">
           <option value="solo">Solo</option>
@@ -160,7 +159,7 @@
           <span class="campaign-button-label" x-text="sessionDisplayLabel(row)"></span>
         </button>
       </template>
-      <p x-show="sessionsList.length === 0 && selectedCampaignId" class="sidebar-hint">Click "Shared Room" to open a room.</p>
+      <p x-show="sessionsList.length === 0 && selectedCampaignId" class="sidebar-hint">No rooms available.</p>
     </div>
 
     <h2>Status</h2>
@@ -316,7 +315,7 @@
       <small x-text="selectedCampaignId ? `${selectedCampaignId} • ${currentSessionLabel()}` : 'No campaign selected'"></small>
     </div>
 
-    <div class="turn-stream" id="turn-stream">
+    <div class="turn-stream" id="turn-stream" @click="handleTurnStreamClick($event)">
       <div x-show="_turnStreamLoadingOlder" class="turn-stream-loading">
         <small>Loading older turns...</small>
       </div>
@@ -324,26 +323,98 @@
         <article class="turn-entry" :class="'turn-type-' + entry.type">
           <template x-if="entry.type === 'narrator'">
             <div class="turn-narrator">
-              <div class="narrator-text" :class="{ 'streaming': entry._streaming, 'phase-text': entry._phaseText }" x-html="entry._streaming ? renderSimpleMarkdown(entry.text) : renderNarratorHtml(entry)"></div>
-              <span class="turn-footer">
-                <template x-if="entry.meta && entry.meta._game_time && entry.meta._game_time.day">
-                  <small class="turn-game-time" x-text="'Day ' + entry.meta._game_time.day + ', ' + String(entry.meta._game_time.hour||0).padStart(2,'0') + ':' + String(entry.meta._game_time.minute||0).padStart(2,'0')"></small>
-                </template>
-                <small class="turn-time" x-text="entry.at"></small>
-                <template x-if="entry._backendTurnId > 0 && !entry._streaming">
-                  <button type="button" class="rewind-btn" title="Rewind to this turn" aria-label="Rewind to this turn"
-                    @click="rewindToTurnId(entry._backendTurnId)" :disabled="submitting">&#x23EA;</button>
-                </template>
-              </span>
+              <template x-if="!turnIsCollapsed(entry)">
+                <div>
+                  <template x-if="!turnIsEditing(entry)">
+                    <div class="narrator-text" :class="{ 'streaming': entry._streaming, 'phase-text': entry._phaseText }" x-html="entry._streaming ? renderSimpleMarkdown(entry.text) : renderNarratorHtml(entry)"></div>
+                  </template>
+                  <template x-if="turnIsEditing(entry)">
+                    <div class="turn-editor">
+                      <textarea class="turn-editor-input" x-model="editingTurnDraft" rows="6"></textarea>
+                      <div class="turn-editor-actions">
+                        <button type="button" @click="saveTurnEdit(entry)" :disabled="submitting || turnMutationBusy">Save</button>
+                        <button type="button" @click="cancelTurnEdit()" :disabled="turnMutationBusy">Cancel</button>
+                      </div>
+                    </div>
+                  </template>
+                  <span class="turn-footer">
+                    <template x-if="entry.meta && entry.meta._game_time && entry.meta._game_time.day">
+                      <small class="turn-game-time" x-text="'Day ' + entry.meta._game_time.day + ', ' + String(entry.meta._game_time.hour||0).padStart(2,'0') + ':' + String(entry.meta._game_time.minute||0).padStart(2,'0')"></small>
+                    </template>
+                    <small class="turn-time" x-text="entry.at"></small>
+                    <template x-if="entry._backendTurnId > 0 && !entry._streaming">
+                      <span class="turn-actions">
+                        <button type="button" class="turn-action-btn rewind-btn" title="Rewind to this turn" aria-label="Rewind to this turn"
+                          @click="rewindToTurnId(entry._backendTurnId)" :disabled="submitting">&#x23EA;</button>
+                        <button type="button" class="turn-action-btn" title="Edit this turn" aria-label="Edit this turn"
+                          @click="startTurnEdit(entry)" :disabled="turnMutationBusy">&#x270E;</button>
+                        <button type="button" class="turn-action-btn" :title="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'" :aria-label="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'"
+                          @click="toggleTurnCollapsed(entry)">&#x1F648;</button>
+                        <button type="button" class="turn-action-btn" title="Copy turn text" aria-label="Copy turn text"
+                          @click="copyTurnText(entry)">&#x1F4CB;</button>
+                        <button type="button" class="turn-action-btn turn-delete-btn" title="Delete this turn" aria-label="Delete this turn"
+                          @click="deleteTurnEntry(entry)" :disabled="turnMutationBusy">&#x1F5D1;</button>
+                      </span>
+                    </template>
+                  </span>
+                </div>
+              </template>
+              <template x-if="turnIsCollapsed(entry)">
+                <div class="turn-collapsed">
+                  <span>Turn collapsed</span>
+                  <span class="turn-actions">
+                    <button type="button" class="turn-action-btn" @click="toggleTurnCollapsed(entry)">Show</button>
+                    <button type="button" class="turn-action-btn" @click="copyTurnText(entry)">Copy</button>
+                  </span>
+                </div>
+              </template>
             </div>
           </template>
           <template x-if="entry.type === 'player'">
             <div class="turn-player">
-              <div class="turn-player-body">
-                <span class="turn-player-actor" x-text="turnEntryActorLabel(entry)"></span>
-                <div class="player-action-text" x-html="renderSimpleMarkdown(entry.text)"></div>
-              </div>
-              <small class="turn-time" x-text="entry.at"></small>
+              <template x-if="!turnIsCollapsed(entry)">
+                <div class="turn-player-shell">
+                  <div class="turn-player-body">
+                    <span class="turn-player-actor" x-text="turnEntryActorLabel(entry)"></span>
+                    <template x-if="!turnIsEditing(entry)">
+                      <div class="player-action-text" x-html="renderSimpleMarkdown(entry.text)"></div>
+                    </template>
+                    <template x-if="turnIsEditing(entry)">
+                      <div class="turn-editor">
+                        <textarea class="turn-editor-input" x-model="editingTurnDraft" rows="4"></textarea>
+                        <div class="turn-editor-actions">
+                          <button type="button" @click="saveTurnEdit(entry)" :disabled="submitting || turnMutationBusy">Save</button>
+                          <button type="button" @click="cancelTurnEdit()" :disabled="turnMutationBusy">Cancel</button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="turn-player-meta">
+                    <small class="turn-time" x-text="entry.at"></small>
+                    <template x-if="entry._backendTurnId > 0">
+                      <span class="turn-actions">
+                        <button type="button" class="turn-action-btn" title="Edit this turn" aria-label="Edit this turn"
+                          @click="startTurnEdit(entry)" :disabled="turnMutationBusy">&#x270E;</button>
+                        <button type="button" class="turn-action-btn" :title="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'" :aria-label="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'"
+                          @click="toggleTurnCollapsed(entry)">&#x1F648;</button>
+                        <button type="button" class="turn-action-btn" title="Copy turn text" aria-label="Copy turn text"
+                          @click="copyTurnText(entry)">&#x1F4CB;</button>
+                        <button type="button" class="turn-action-btn turn-delete-btn" title="Delete this turn" aria-label="Delete this turn"
+                          @click="deleteTurnEntry(entry)" :disabled="turnMutationBusy">&#x1F5D1;</button>
+                      </span>
+                    </template>
+                  </div>
+                </div>
+              </template>
+              <template x-if="turnIsCollapsed(entry)">
+                <div class="turn-collapsed">
+                  <span x-text="turnEntryActorLabel(entry) + ' turn collapsed'"></span>
+                  <span class="turn-actions">
+                    <button type="button" class="turn-action-btn" @click="toggleTurnCollapsed(entry)">Show</button>
+                    <button type="button" class="turn-action-btn" @click="copyTurnText(entry)">Copy</button>
+                  </span>
+                </div>
+              </template>
             </div>
           </template>
           <template x-if="entry.type === 'notice'">

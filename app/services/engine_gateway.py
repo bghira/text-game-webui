@@ -171,6 +171,21 @@ class EngineGateway(Protocol):
         offset: int = 0,
         actor_id: str | None = None,
     ) -> dict: ...
+    async def edit_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        content: str,
+        actor_id: str | None = None,
+    ) -> dict: ...
+    async def delete_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        actor_id: str | None = None,
+    ) -> dict: ...
     async def get_campaign_persona(self, campaign_id: str) -> dict: ...
     async def set_campaign_persona(self, campaign_id: str, persona: str) -> dict: ...
     async def get_puzzle_hint(self, campaign_id: str) -> dict: ...
@@ -1193,6 +1208,54 @@ Legend: @ current player
                 }
             )
         return {"turns": page_rows, "count": len(page_rows), "has_more": start > 0}
+
+    async def edit_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        content: str,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        text = str(content or "").strip()
+        if not text:
+            raise ValueError("Turn content is required.")
+        for row in self._turns[campaign_id]:
+            if int(row.get("id") or 0) != int(turn_id):
+                continue
+            row["content"] = text
+            return {
+                "ok": True,
+                "turn_id": int(turn_id),
+                "actor_id": str(row.get("actor_id") or actor_id or ""),
+                "session_id": str(row.get("session_id") or ""),
+                "kind": str(row.get("kind") or ""),
+                "content": text,
+            }
+        raise KeyError(f"Unknown turn in campaign: {turn_id}")
+
+    async def delete_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        rows = self._turns[campaign_id]
+        for idx, row in enumerate(rows):
+            if int(row.get("id") or 0) != int(turn_id):
+                continue
+            removed = rows.pop(idx)
+            return {
+                "ok": True,
+                "turn_id": int(turn_id),
+                "actor_id": str(removed.get("actor_id") or actor_id or ""),
+                "session_id": str(removed.get("session_id") or ""),
+                "kind": str(removed.get("kind") or ""),
+            }
+        raise KeyError(f"Unknown turn in campaign: {turn_id}")
 
     async def get_campaign_persona(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)

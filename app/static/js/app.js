@@ -108,9 +108,14 @@
     const rendered = parts.map((part) => {
       if (part.type === "code") {
         const label = part.lang
-          ? `<div class="discord-code-label">${escapeHtml(part.lang)}</div>`
+          ? `<span class="discord-code-label">${escapeHtml(part.lang)}</span>`
           : "";
-        return `<pre class="discord-code-block">${label}<code>${escapeHtml(part.text)}</code></pre>`;
+        return (
+          `<div class="discord-code-block">`
+          + `<div class="discord-code-toolbar">${label}<button type="button" class="code-copy-btn">Copy</button></div>`
+          + `<pre><code>${escapeHtml(part.text)}</code></pre>`
+          + `</div>`
+        );
       }
       return String(part.text || "")
         .split(/\n{2,}/)
@@ -527,6 +532,10 @@
       chaptersPanelOpen: true,
       rewindTargetTurn: "",
       rewindStatus: "",
+      collapsedTurnIds: {},
+      editingTurnKey: "",
+      editingTurnDraft: "",
+      turnMutationBusy: false,
 
       /* Player attributes */
       playerAttributes: null,
@@ -781,6 +790,82 @@
         return this.turnStream.filter(
           (entry) => entry.type === "narrator" || entry.type === "player" || entry.type === "notice" || entry.type === "image_prompt" || entry.type === "dice"
         );
+      },
+
+      entryTurnKey(entry) {
+        if (!entry || typeof entry !== "object") return "";
+        const backend = Number(entry._backendTurnId) || 0;
+        if (backend > 0) return `turn:${backend}`;
+        return `entry:${entry.id || ""}`;
+      },
+
+      turnIsCollapsed(entry) {
+        const key = this.entryTurnKey(entry);
+        return !!(key && this.collapsedTurnIds[key]);
+      },
+
+      toggleTurnCollapsed(entry) {
+        const key = this.entryTurnKey(entry);
+        if (!key) return;
+        this.collapsedTurnIds = {
+          ...this.collapsedTurnIds,
+          [key]: !this.collapsedTurnIds[key],
+        };
+      },
+
+      turnIsEditing(entry) {
+        return this.editingTurnKey && this.editingTurnKey === this.entryTurnKey(entry);
+      },
+
+      startTurnEdit(entry) {
+        if (!entry || !entry._backendTurnId) return;
+        this.editingTurnKey = this.entryTurnKey(entry);
+        this.editingTurnDraft = String(entry.text || "");
+      },
+
+      cancelTurnEdit() {
+        this.editingTurnKey = "";
+        this.editingTurnDraft = "";
+      },
+
+      async copyToClipboard(text, successMessage) {
+        const value = String(text || "");
+        if (!value) return;
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(value);
+        } else {
+          const area = document.createElement("textarea");
+          area.value = value;
+          area.setAttribute("readonly", "readonly");
+          area.style.position = "absolute";
+          area.style.left = "-9999px";
+          document.body.appendChild(area);
+          area.select();
+          document.execCommand("copy");
+          document.body.removeChild(area);
+        }
+        this.statusMessage = successMessage || "Copied.";
+      },
+
+      async copyTurnText(entry) {
+        try {
+          await this.copyToClipboard(entry && entry.text ? entry.text : "", "Turn text copied.");
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      handleTurnStreamClick(event) {
+        const button = event && event.target && typeof event.target.closest === "function"
+          ? event.target.closest(".code-copy-btn")
+          : null;
+        if (!button) return;
+        const code = button.closest(".discord-code-block")?.querySelector("code");
+        if (!code) return;
+        event.preventDefault();
+        this.copyToClipboard(code.textContent || "", "Code block copied.").catch((error) => {
+          this.errorMessage = String(error);
+        });
       },
 
       /* Deduplicated actor list for the current campaign */
@@ -1329,8 +1414,17 @@
         if (!sessionId || sessionId === this.selectedSessionId) return false;
         const lastSeen = this.sessionLastSeen[sessionId];
         const lastSeenMs = lastSeen ? Date.parse(lastSeen) : undefined;
+        const selectedSessionId = String(this.selectedSessionId || "").trim();
         for (const turn of this.recentTurns) {
           if (turn.session_id !== sessionId || !turn.created_at) continue;
+          const meta = turn && turn.meta && typeof turn.meta === "object" ? turn.meta : {};
+          const visibility = meta.visibility && typeof meta.visibility === "object"
+            ? meta.visibility
+            : (meta.turn_visibility && typeof meta.turn_visibility === "object" ? meta.turn_visibility : {});
+          const scope = String(visibility.scope || "").trim().toLowerCase();
+          if (selectedSessionId && (scope === "public" || scope === "local")) {
+            continue;
+          }
           // Never visited — any turn means unseen
           if (lastSeenMs === undefined) return true;
           if (Date.parse(turn.created_at) > lastSeenMs) return true;
@@ -2144,7 +2238,6 @@
           this.rewindStatus = `Rewound to turn ${turnId} at ${nowLabel()}.`;
           this.rewindTargetTurn = "";
           this._resetPagination();
-          this.pushStream("notice", `Rewound to turn ${turnId}`, { rewind: true });
           /* Reload all state after rewind */
           await Promise.all([
             this.loadTimers(),
@@ -2161,6 +2254,12 @@
             this.loadChapterList(),
             this.loadSceneImages(),
           ]);
+          /* Rebuild visible turn stream from the now-shorter history.
+             Clear first so rewind-to-zero doesn't leave stale entries. */
+          this.turnStream = [];
+          this.turnCounter = 0;
+          this.populateTurnStreamFromHistory();
+          this.pushStream("notice", `Rewound to turn ${turnId}`, { rewind: true });
         } catch (error) {
           this.errorMessage = String(error);
         }
@@ -2169,6 +2268,55 @@
       async rewindToTurn() {
         const turnId = parseInt(this.rewindTargetTurn, 10);
         await this.rewindToTurnId(turnId);
+      },
+
+      async saveTurnEdit(entry) {
+        this.resetError();
+        const turnId = Number(entry && entry._backendTurnId) || 0;
+        const text = String(this.editingTurnDraft || "").trim();
+        if (!this.selectedCampaignId || turnId <= 0) return;
+        if (!text) {
+          this.errorMessage = "Turn text cannot be empty.";
+          return;
+        }
+        this.turnMutationBusy = true;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/turns/${turnId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ content: text }),
+          });
+          this.cancelTurnEdit();
+          this._resetPagination();
+          await this.loadRecentTurns(30);
+          this.populateTurnStreamFromHistory();
+          this.statusMessage = `Updated turn ${turnId}.`;
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          this.turnMutationBusy = false;
+        }
+      },
+
+      async deleteTurnEntry(entry) {
+        this.resetError();
+        const turnId = Number(entry && entry._backendTurnId) || 0;
+        if (!this.selectedCampaignId || turnId <= 0) return;
+        if (!confirm(`Delete turn ${turnId} from the database? This removes only this turn.`)) return;
+        this.turnMutationBusy = true;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/turns/${turnId}`, {
+            method: "DELETE",
+          });
+          this.cancelTurnEdit();
+          this._resetPagination();
+          await this.loadRecentTurns(30);
+          this.populateTurnStreamFromHistory();
+          this.statusMessage = `Deleted turn ${turnId}.`;
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          this.turnMutationBusy = false;
+        }
       },
 
       async refreshCampaigns() {
@@ -2237,7 +2385,6 @@
           const campaign = body.campaign;
           await this.refreshCampaigns();
           await this.selectCampaign(campaign.id);
-          await this.ensureSharedWindow();
 
           // 2. Wait for all file reads to complete
           if (this.campaignForm.files.length > 0) {
@@ -2385,6 +2532,12 @@
           this.loadSessions(restoreSessionId ? { skipConnect: true } : undefined),
           this.loadRecentTurns(),
         ]);
+        if (!this.sessionsList.some((row) => row && row.surface === "web_shared")) {
+          await this.ensureSharedWindow({
+            select: !this.selectedSessionId,
+            silent: true,
+          });
+        }
         this.populateTurnStreamFromHistory();
         /* Remaining data loads — fire-and-forget so the UI stays responsive. */
         Promise.all([
@@ -3097,7 +3250,13 @@
         } catch (_err) {
           return;
         }
-        const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+        const sessions = Array.isArray(body.sessions) ? body.sessions.slice() : [];
+        sessions.sort((a, b) => {
+          const aShared = a && a.surface === "web_shared" ? 1 : 0;
+          const bShared = b && b.surface === "web_shared" ? 1 : 0;
+          if (aShared !== bShared) return bShared - aShared;
+          return String(a && a.created_at || "").localeCompare(String(b && b.created_at || ""));
+        });
         this.sessionsList = sessions;
         this.sessionsText = formatJson(body);
         if (this.selectedSessionId) {
@@ -3122,6 +3281,8 @@
           if (preferred && preferred.id) {
             this.selectedSessionId = preferred.id;
             localStorage.setItem("selectedSessionId", preferred.id);
+            this.sessionLastSeen[preferred.id] = isoNow();
+            this._persistSessionLastSeen();
             this.syncTurnSessionSelection();
           }
         }
@@ -3163,8 +3324,10 @@
         }
       },
 
-      async ensureSharedWindow() {
-        this.resetError();
+      async ensureSharedWindow({ select = true, silent = false } = {}) {
+        if (!silent) {
+          this.resetError();
+        }
         if (!this.selectedCampaignId) {
           return;
         }
@@ -3175,11 +3338,13 @@
           });
           this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
           await this.loadSessions();
-          if (body.session && body.session.id) {
+          if (select && body.session && body.session.id) {
             this.selectSession(body.session.id);
           }
         } catch (error) {
-          this.errorMessage = String(error);
+          if (!silent) {
+            this.errorMessage = String(error);
+          }
         }
       },
 
@@ -3576,7 +3741,6 @@
           w.campaignId = campaign.id;
           await this.refreshCampaigns();
           await this.selectCampaign(campaign.id);
-          await this.ensureSharedWindow();
 
           // Ingest files
           const allTexts = [];

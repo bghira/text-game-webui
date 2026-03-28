@@ -61,6 +61,7 @@ from app.services.schemas import (
     SourceMaterialDigestIngest,
     SourceMaterialIngest,
     SourceMaterialSearchRequest,
+    TurnEditRequest,
     TurnRequest,
 )
 
@@ -749,6 +750,76 @@ async def get_recent_turns(
         )
     except KeyError as err:
         _not_found(err)
+
+
+@router.patch("/campaigns/{campaign_id}/turns/{turn_id}")
+async def edit_turn(
+    campaign_id: str,
+    turn_id: int,
+    payload: TurnEditRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        result = await gateway.edit_turn(
+            campaign_id,
+            turn_id,
+            content=payload.content,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn_refresh",
+            "actor_id": result.get("actor_id"),
+            "session_id": result.get("session_id"),
+            "payload": {
+                "turn_id": int(result.get("turn_id") or 0),
+                "actor_id": result.get("actor_id"),
+                "session_id": result.get("session_id"),
+                "source": "webui",
+                "operation": "edit",
+            },
+        },
+    )
+    return result
+
+
+@router.delete("/campaigns/{campaign_id}/turns/{turn_id}")
+async def delete_turn(
+    campaign_id: str,
+    turn_id: int,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        result = await gateway.delete_turn(
+            campaign_id,
+            turn_id,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn_refresh",
+            "actor_id": result.get("actor_id"),
+            "session_id": result.get("session_id"),
+            "payload": {
+                "turn_id": int(result.get("turn_id") or 0),
+                "actor_id": result.get("actor_id"),
+                "session_id": result.get("session_id"),
+                "source": "webui",
+                "operation": "delete",
+            },
+        },
+    )
+    return result
 
 
 @router.get("/campaigns/{campaign_id}/persona")

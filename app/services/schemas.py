@@ -20,6 +20,10 @@ class TurnRequest(BaseModel):
     session_id: str | None = None
 
 
+class TurnEditRequest(BaseModel):
+    content: str
+
+
 class SessionCreateRequest(BaseModel):
     surface: str
     surface_key: str
