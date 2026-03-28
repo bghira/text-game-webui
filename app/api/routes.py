@@ -160,6 +160,59 @@ async def _publish_pending_mentions(
     return pending_id, target_actor_ids
 
 
+async def _shared_pending_session_id(
+    gateway: EngineGateway,
+    campaign_id: str,
+    payload: TurnRequest,
+) -> str | None:
+    source_session_id = str(payload.session_id or "").strip()
+    if not source_session_id:
+        return None
+    try:
+        sessions = await gateway.list_sessions(campaign_id)
+    except Exception:
+        return None
+    for row in sessions:
+        if str(row.get("id") or "").strip() != source_session_id:
+            continue
+        surface = str(row.get("surface") or "").strip().lower()
+        enabled = row.get("enabled")
+        if surface == "web_shared" and enabled is not False:
+            return source_session_id
+        return None
+    return None
+
+
+async def _publish_pending_shared_turn(
+    request: Request,
+    campaign_id: str,
+    payload: TurnRequest,
+    gateway: EngineGateway,
+) -> tuple[str | None, str | None]:
+    shared_session_id = await _shared_pending_session_id(gateway, campaign_id, payload)
+    if not shared_session_id:
+        return None, None
+    pending_id = uuid4().hex
+    try:
+        await request.app.state.realtime.publish(
+            campaign_id,
+            {
+                "type": "pending_shared_turn",
+                "session_id": shared_session_id,
+                "payload": {
+                    "pending_id": pending_id,
+                    "source_actor_id": str(payload.actor_id or "").strip(),
+                    "source_actor_name": _linked_display_name(request),
+                    "source_session_id": str(payload.session_id or "").strip() or None,
+                    "action_text": str(payload.action or "").strip(),
+                },
+            },
+        )
+    except Exception:
+        return None, None
+    return pending_id, shared_session_id
+
+
 async def _clear_pending_mentions(
     request: Request,
     campaign_id: str,
@@ -184,6 +237,31 @@ async def _clear_pending_mentions(
             )
         except Exception:
             pass
+
+
+async def _clear_pending_shared_turn(
+    request: Request,
+    campaign_id: str,
+    pending_id: str | None,
+    session_id: str | None,
+) -> None:
+    pending_text = str(pending_id or "").strip()
+    session_text = str(session_id or "").strip()
+    if not pending_text or not session_text:
+        return
+    try:
+        await request.app.state.realtime.publish(
+            campaign_id,
+            {
+                "type": "pending_shared_turn_clear",
+                "session_id": session_text,
+                "payload": {
+                    "pending_id": pending_text,
+                },
+            },
+        )
+    except Exception:
+        pass
 
 
 @router.get("/health")
@@ -538,16 +616,40 @@ async def submit_turn(
 ) -> dict:
     payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     pending_id, pending_targets = await _publish_pending_mentions(request, campaign_id, payload)
+    shared_pending_id, shared_pending_session_id = await _publish_pending_shared_turn(
+        request,
+        campaign_id,
+        payload,
+        gateway,
+    )
     try:
         result = await gateway.submit_turn(campaign_id, payload)
     except KeyError as err:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_session_id,
+        )
         _not_found(err)
     except ValueError as err:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_session_id,
+        )
         _bad_request(err)
     except Exception:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_session_id,
+        )
         raise
     await _publish_turn_events(
         request,
@@ -563,6 +665,12 @@ async def submit_turn(
         action_text=payload.action,
     )
     await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+    await _clear_pending_shared_turn(
+        request,
+        campaign_id,
+        shared_pending_id,
+        shared_pending_session_id,
+    )
     return result.model_dump()
 
 
@@ -576,6 +684,12 @@ async def submit_turn_stream(
     from app.services.schemas import TurnResult as TurnResultModel
     payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     pending_id, pending_targets = await _publish_pending_mentions(request, campaign_id, payload)
+    shared_pending_id, shared_pending_session_id = await _publish_pending_shared_turn(
+        request,
+        campaign_id,
+        payload,
+        gateway,
+    )
 
     # Collect all events *before* streaming so turn execution and realtime
     # publishing are not cancelled if the client disconnects mid-stream.
@@ -607,12 +721,30 @@ async def submit_turn_stream(
                 break
     except KeyError as err:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_session_id,
+        )
         error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
     except ValueError as err:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_session_id,
+        )
         error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
     except Exception as err:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_session_id,
+        )
         error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
 
     # Publish realtime events unconditionally — not tied to client connection.
@@ -631,6 +763,12 @@ async def submit_turn_stream(
             action_text=payload.action,
         )
     await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+    await _clear_pending_shared_turn(
+        request,
+        campaign_id,
+        shared_pending_id,
+        shared_pending_session_id,
+    )
 
     async def _sse():
         if error_event:

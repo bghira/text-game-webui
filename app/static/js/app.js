@@ -1328,6 +1328,10 @@
           .map((row) => ({
             actor_id: String(row.slug || "").trim(),
             name: String(row.name || row.slug || "").trim(),
+            aliases: [
+              String(row.name || row.slug || "").trim(),
+              String(row.slug || "").trim(),
+            ].filter(Boolean),
           }))
           .filter((row) => row.actor_id && row.actor_id !== selfActorId);
       },
@@ -1347,17 +1351,27 @@
         return this.mentionState.open && this.filteredMentionCandidates().length > 0;
       },
 
+      _isMentionPrefixBoundaryChar(ch) {
+        return !ch || /[\s([{'"`]/.test(ch);
+      },
+
+      _isMentionSuffixBoundaryChar(ch) {
+        return !ch || !/[A-Za-z0-9_]/.test(ch);
+      },
+
       _activeMentionMatch(value, caret) {
         const text = String(value || "");
         const cursor = Math.max(0, Number(caret) || 0);
         const prefix = text.slice(0, cursor);
-        const match = prefix.match(/(?:^|\s)@([^\s@]{0,64})$/);
-        if (!match || typeof match.index !== "number") return null;
-        const mentionToken = String(match[0] || "");
-        const atIndex = prefix.length - mentionToken.length + mentionToken.lastIndexOf("@");
+        const atIndex = prefix.lastIndexOf("@");
         if (atIndex < 0) return null;
+        const before = atIndex > 0 ? prefix.charAt(atIndex - 1) : "";
+        if (!this._isMentionPrefixBoundaryChar(before)) return null;
+        const query = prefix.slice(atIndex + 1);
+        if (query.includes("\n") || query.includes("\r")) return null;
+        if (query.length > 80) return null;
         return {
-          query: String(match[1] || ""),
+          query,
           start: atIndex,
           end: cursor,
         };
@@ -1452,18 +1466,38 @@
         const rows = this.mentionablePlayers()
           .map((row) => ({
             ...row,
-            aliases: [row.name, row.actor_id].filter(Boolean),
+            aliases: Array.isArray(row.aliases) ? row.aliases.filter(Boolean) : [row.name, row.actor_id].filter(Boolean),
           }))
-          .sort((a, b) => b.name.length - a.name.length);
-        const results = [];
-        for (const row of rows) {
-          const matched = row.aliases.some((alias) => {
-            const pattern = new RegExp(`(^|[^\\w])@${this._escapeRegExp(alias)}(?=$|[\\s.,!?;:])`, "i");
-            return pattern.test(actionText);
+          .sort((a, b) => {
+            const aLen = Math.max(...a.aliases.map((alias) => String(alias || "").length), 0);
+            const bLen = Math.max(...b.aliases.map((alias) => String(alias || "").length), 0);
+            return bLen - aLen;
           });
-          if (matched && !seen.has(row.actor_id)) {
-            seen.add(row.actor_id);
-            results.push(row.actor_id);
+        const results = [];
+        for (let index = 0; index < actionText.length; index += 1) {
+          if (actionText.charAt(index) !== "@") continue;
+          const before = index > 0 ? actionText.charAt(index - 1) : "";
+          if (!this._isMentionPrefixBoundaryChar(before)) continue;
+          const remaining = actionText.slice(index + 1);
+          for (const row of rows) {
+            let matchedAlias = null;
+            for (const alias of row.aliases) {
+              const aliasText = String(alias || "");
+              if (!aliasText) continue;
+              if (remaining.length < aliasText.length) continue;
+              if (remaining.slice(0, aliasText.length).toLowerCase() !== aliasText.toLowerCase()) continue;
+              const nextChar = remaining.charAt(aliasText.length);
+              if (!this._isMentionSuffixBoundaryChar(nextChar)) continue;
+              matchedAlias = aliasText;
+              break;
+            }
+            if (!matchedAlias) continue;
+            if (!seen.has(row.actor_id)) {
+              seen.add(row.actor_id);
+              results.push(row.actor_id);
+            }
+            index += matchedAlias.length;
+            break;
           }
         }
         return results;
@@ -1492,12 +1526,47 @@
         this.pushStream("player", actionText, meta);
       },
 
+      upsertPendingSharedTurn(payload) {
+        const data = payload && typeof payload === "object" ? payload : {};
+        const pendingId = String(data.pending_id || "").trim();
+        const actionText = String(data.action_text || "").trim();
+        const sourceActorId = String(data.source_actor_id || "").trim();
+        const currentActorId = String(this.turnForm.actor_id || "").trim();
+        if (!pendingId || !actionText) return;
+        if (sourceActorId && currentActorId && sourceActorId === currentActorId) return;
+        const meta = {
+          actor_id: sourceActorId,
+          actor_name: String(data.source_actor_name || "").trim(),
+          pending_shared_turn: true,
+          pending_shared_turn_id: pendingId,
+          pending_mention_note: "Pending cross-player action. Your turns may not be aware of this until the result resolves.",
+          source_session_id: String(data.source_session_id || "").trim() || null,
+        };
+        const existing = this.turnStream.find((entry) => entry && entry.meta && entry.meta.pending_shared_turn_id === pendingId);
+        if (existing) {
+          existing.text = actionText;
+          existing.meta = { ...(existing.meta || {}), ...meta };
+          existing.at = nowLabel();
+          return;
+        }
+        this.pushStream("player", actionText, meta);
+      },
+
       clearPendingMention(pendingId) {
         const pendingText = String(pendingId || "").trim();
         if (!pendingText) return;
         this.turnStream = this.turnStream.filter((entry) => {
           const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
           return meta.pending_mention_id !== pendingText;
+        });
+      },
+
+      clearPendingSharedTurn(pendingId) {
+        const pendingText = String(pendingId || "").trim();
+        if (!pendingText) return;
+        this.turnStream = this.turnStream.filter((entry) => {
+          const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+          return meta.pending_shared_turn_id !== pendingText;
         });
       },
 
@@ -3073,6 +3142,12 @@
           }
           if (payload.type === "pending_mention_clear" && payload.payload) {
             this.clearPendingMention(payload.payload.pending_id);
+          }
+          if (payload.type === "pending_shared_turn" && payload.payload) {
+            this.upsertPendingSharedTurn(payload.payload);
+          }
+          if (payload.type === "pending_shared_turn_clear" && payload.payload) {
+            this.clearPendingSharedTurn(payload.payload.pending_id);
           }
           if (payload.type === "turn_refresh") {
             this.clearRemoteProgress();

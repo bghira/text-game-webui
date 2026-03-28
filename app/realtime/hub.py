@@ -14,7 +14,16 @@ class RealtimeSubscription:
 
 class RealtimeHub:
     # Event types that carry session/actor scope and must honour visibility rules.
-    _SESSION_SCOPED_TYPES: frozenset[str] = frozenset({"turn", "media", "timers", "turn_progress"})
+    _SESSION_SCOPED_TYPES: frozenset[str] = frozenset(
+        {
+            "turn",
+            "media",
+            "timers",
+            "turn_progress",
+            "pending_shared_turn",
+            "pending_shared_turn_clear",
+        }
+    )
 
     def __init__(self) -> None:
         self._subs: dict[str, set[RealtimeSubscription]] = defaultdict(set)
