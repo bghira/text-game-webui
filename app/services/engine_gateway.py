@@ -1147,13 +1147,36 @@ Legend: @ current player
     ) -> dict:
         self._require_campaign(campaign_id)
         all_turns = self._turns[campaign_id]
+        player_labels: dict[str, str] = {}
+        for actor_key, payload in self._players[campaign_id].items():
+            label = ""
+            if isinstance(payload, dict):
+                state = payload.get("state")
+                if isinstance(state, dict):
+                    raw_name = state.get("character_name")
+                    if isinstance(raw_name, dict):
+                        label = str(raw_name.get("name") or "").strip()
+                    elif raw_name is not None:
+                        label = str(raw_name).strip()
+            player_labels[str(actor_key)] = label or str(actor_key)
         total = len(all_turns)
         safe_offset = max(0, offset)
         safe_limit = max(1, limit)
         end = total - safe_offset
         start = max(0, end - safe_limit)
         page = all_turns[start:end] if end > 0 else []
-        return {"turns": page, "count": len(page), "has_more": start > 0}
+        page_rows = []
+        for row in page:
+            if not isinstance(row, dict):
+                continue
+            actor_key = str(row.get("actor_id") or "")
+            page_rows.append(
+                {
+                    **row,
+                    "actor_name": player_labels.get(actor_key, actor_key),
+                }
+            )
+        return {"turns": page_rows, "count": len(page_rows), "has_more": start > 0}
 
     async def get_campaign_persona(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)

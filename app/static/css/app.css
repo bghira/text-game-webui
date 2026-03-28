@@ -1045,6 +1045,21 @@ button:disabled {
   gap: 0.55rem;
 }
 
+.turn-player-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+  min-width: 0;
+}
+
+.turn-player-actor {
+  font-size: 0.68rem;
+  color: var(--ink-muted);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
 .player-action-text {
   font-size: 0.8rem;
   color: var(--player-action-text);

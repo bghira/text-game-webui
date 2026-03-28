@@ -623,7 +623,10 @@
               type: turn.kind === "player" ? "player" : "narrator",
               at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
               text: renderDiscordTimestamps(stripTrailingInventory(turn.content || "[No content]")),
-              meta: {},
+              meta: {
+                actor_id: turn.actor_id || "",
+                actor_name: turn.actor_name || "",
+              },
               _backendTurnId: turn.id || null,
             };
             if (meta.game_time) {
@@ -2651,7 +2654,10 @@
         let backendTurnId = 0;
         try {
           if (payload.action) {
-            this.pushStream("player", payload.action, { actor_id: payload.actor_id });
+            this.pushStream("player", payload.action, {
+              actor_id: payload.actor_id,
+              actor_name: this.resolveActorDisplayName(payload.actor_id, "", payload.actor_id),
+            });
           }
 
           if (!this.runtimeInfo.streaming_supported) {
@@ -3588,6 +3594,21 @@
       renderNarratorHtml(entry) {
         const scene = entry.meta && entry.meta.scene_output;
         return renderSceneOutputHtml(scene, entry.text);
+      },
+
+      resolveActorDisplayName(actorId, actorName, fallback) {
+        const explicit = String(actorName || "").trim();
+        if (explicit) return explicit;
+        const actor = String(actorId || "").trim();
+        if (actor && actor === String(this.turnForm.actor_id || "").trim()) {
+          return this.resolveCharacterName(actor);
+        }
+        return actor || fallback || "Unknown";
+      },
+
+      turnEntryActorLabel(entry) {
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        return this.resolveActorDisplayName(meta.actor_id, meta.actor_name, "");
       },
 
       _scrollWizardConversation() {

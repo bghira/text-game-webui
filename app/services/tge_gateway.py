@@ -4480,13 +4480,27 @@ class TextGameEngineGateway(EngineGateway):
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
             player = None
+            player_labels: dict[str, str] = {}
+            campaign_players = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .all()
+            )
+            for row in campaign_players:
+                state = self._parse_json(row.state_json, {})
+                label = ""
+                if isinstance(state, dict):
+                    raw_name = state.get("character_name")
+                    if isinstance(raw_name, dict):
+                        label = str(raw_name.get("name") or "").strip()
+                    elif raw_name is not None:
+                        label = str(raw_name).strip()
+                player_labels[str(row.actor_id)] = label or str(row.actor_id)
             actor_id_text = str(actor_id or "").strip()
             if actor_id_text:
-                player = (
-                    session.query(Player)
-                    .filter(Player.campaign_id == campaign_id)
-                    .filter(Player.actor_id == actor_id_text)
-                    .first()
+                player = next(
+                    (row for row in campaign_players if str(row.actor_id) == actor_id_text),
+                    None,
                 )
                 if player is None:
                     raise KeyError(f"Unknown player in campaign: {actor_id_text}")
@@ -4533,6 +4547,7 @@ class TextGameEngineGateway(EngineGateway):
                 "id": turn.id,
                 "kind": turn.kind,
                 "actor_id": turn.actor_id,
+                "actor_name": player_labels.get(str(turn.actor_id), str(turn.actor_id or "")),
                 "session_id": turn.session_id,
                 "content": turn.content,
                 "meta": meta,

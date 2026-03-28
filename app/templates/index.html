@@ -339,7 +339,10 @@
           </template>
           <template x-if="entry.type === 'player'">
             <div class="turn-player">
-              <span class="player-action-text" x-text="entry.text"></span>
+              <div class="turn-player-body">
+                <span class="turn-player-actor" x-text="turnEntryActorLabel(entry)"></span>
+                <span class="player-action-text" x-text="entry.text"></span>
+              </div>
               <small class="turn-time" x-text="entry.at"></small>
             </div>
           </template>
