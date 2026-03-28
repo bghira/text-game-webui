@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -68,6 +69,16 @@ _ZORK_LOG_RETENTION = 100
 _DEFAULT_PROVIDER_MODELS = {
     "zai": "glm-5.1",
 }
+
+
+@dataclass
+class _CampaignRuntime:
+    signature: tuple[Any, ...]
+    completion_mode: str
+    completion_port: Any
+    llm: Any
+    game_engine: GameEngine
+    emulator: ZorkEmulator
 
 
 def _zork_log_component(value: object, label: str = "id") -> str:
@@ -2386,49 +2397,19 @@ class TextGameEngineGateway(EngineGateway):
         def _uow_factory():
             return SQLAlchemyUnitOfWork(self._session_factory)
 
-        ollama_options = self._parse_json_object(
-            settings.tge_ollama_options_json,
-            "TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON",
-        )
-        completion_port = self._build_completion_port(
-            mode=self._completion_mode,
-            base_url=settings.tge_llm_base_url,
-            api_key=settings.tge_llm_api_key,
-            model=settings.tge_llm_model,
-            timeout_seconds=settings.tge_llm_timeout_seconds,
-            keep_alive=settings.tge_ollama_keep_alive,
-            ollama_options=ollama_options,
-        )
-        if self._completion_mode == "deterministic":
-            llm = EngineDeterministicLLM()
-        else:
-            llm = EngineToolAwareLLM(
-                session_factory=self._session_factory,
-                completion_port=completion_port,
-                temperature=settings.tge_llm_temperature,
-                max_tokens=settings.tge_llm_max_tokens,
-                turn_visibility_default_resolver=self._session_visibility_default,
-            )
-
-        self._game_engine = GameEngine(uow_factory=_uow_factory, llm=llm)
         self._uow_factory = _uow_factory
-        self._emulator = ZorkEmulator(
-            game_engine=self._game_engine,
-            session_factory=self._session_factory,
-            completion_port=completion_port,
-            map_completion_port=completion_port,
-            memory_port=None,
-            imdb_port=None,
-            media_port=None,
-        )
-        self._completion_port = completion_port
-        self._llm = llm
+        default_signature = self._campaign_runtime_signature(None)
+        default_runtime = self._build_campaign_runtime(default_signature)
+        self._game_engine = default_runtime.game_engine
+        self._emulator = default_runtime.emulator
+        self._completion_port = default_runtime.completion_port
+        self._llm = default_runtime.llm
         self._reconfigure_lock = threading.Lock()
-        self._turn_llm_lock = asyncio.Lock()
+        self._campaign_runtime_lock = threading.Lock()
+        self._actor_turn_lock_guard = threading.Lock()
+        self._campaign_runtimes: dict[str, _CampaignRuntime] = {}
+        self._actor_turn_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._probe_timeout_seconds = max(int(settings.tge_runtime_probe_timeout_seconds or 8), 1)
-        if isinstance(llm, EngineToolAwareLLM):
-            llm.bind_emulator(self._emulator)
-            llm.set_log_callback(_zork_log)
 
     @property
     def completion_mode(self) -> str:
@@ -2438,6 +2419,112 @@ class TextGameEngineGateway(EngineGateway):
     def _pick(merged: dict[str, Any], key: str, fallback: Any) -> Any:
         val = merged.get(key)
         return val if val is not None else fallback
+
+    def _campaign_runtime_signature(self, campaign_id: str | None) -> tuple[Any, ...]:
+        override = self._campaign_backend_override(campaign_id) if campaign_id else None
+        mode = str(
+            (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
+        ).strip().lower()
+        model = str(
+            (override or {}).get("model")
+            or self._default_model_for_mode(mode)
+            or self._settings.tge_llm_model
+            or ""
+        ).strip()
+        base_url = str(self._settings.tge_llm_base_url or "").strip()
+        api_key = str(self._settings.tge_llm_api_key or "").strip()
+        temperature = float(self._settings.tge_llm_temperature)
+        max_tokens = int(self._settings.tge_llm_max_tokens)
+        timeout_seconds = int(self._settings.tge_llm_timeout_seconds)
+        keep_alive = str(self._settings.tge_ollama_keep_alive or "").strip()
+        ollama_options_json = str(self._settings.tge_ollama_options_json or "{}")
+        return (
+            mode,
+            model,
+            base_url,
+            api_key,
+            temperature,
+            max_tokens,
+            timeout_seconds,
+            keep_alive,
+            ollama_options_json,
+        )
+
+    def _build_campaign_runtime(self, signature: tuple[Any, ...]) -> _CampaignRuntime:
+        (
+            mode,
+            model,
+            base_url,
+            api_key,
+            temperature,
+            max_tokens,
+            timeout_seconds,
+            keep_alive,
+            ollama_options_json,
+        ) = signature
+        ollama_options = self._parse_json_object(
+            ollama_options_json,
+            "TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON",
+        )
+        completion_port = self._build_completion_port(
+            mode=mode,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            keep_alive=keep_alive,
+            ollama_options=ollama_options,
+        )
+        if mode == "deterministic":
+            llm = EngineDeterministicLLM()
+        else:
+            llm = EngineToolAwareLLM(
+                session_factory=self._session_factory,
+                completion_port=completion_port,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                turn_visibility_default_resolver=self._session_visibility_default,
+            )
+        game_engine = GameEngine(uow_factory=self._uow_factory, llm=llm)
+        emulator = ZorkEmulator(
+            game_engine=game_engine,
+            session_factory=self._session_factory,
+            completion_port=completion_port,
+            map_completion_port=completion_port,
+            memory_port=None,
+            imdb_port=None,
+            media_port=None,
+        )
+        if isinstance(llm, EngineToolAwareLLM):
+            llm.bind_emulator(emulator)
+            llm.set_log_callback(_zork_log)
+        return _CampaignRuntime(
+            signature=signature,
+            completion_mode=str(mode),
+            completion_port=completion_port,
+            llm=llm,
+            game_engine=game_engine,
+            emulator=emulator,
+        )
+
+    def _campaign_runtime(self, campaign_id: str) -> _CampaignRuntime:
+        signature = self._campaign_runtime_signature(campaign_id)
+        with self._campaign_runtime_lock:
+            runtime = self._campaign_runtimes.get(campaign_id)
+            if runtime is not None and runtime.signature == signature:
+                return runtime
+            runtime = self._build_campaign_runtime(signature)
+            self._campaign_runtimes[campaign_id] = runtime
+            return runtime
+
+    def _turn_lock_for(self, campaign_id: str, actor_id: str | None) -> asyncio.Lock:
+        key = (str(campaign_id).strip(), str(actor_id or "__campaign__").strip() or "__campaign__")
+        with self._actor_turn_lock_guard:
+            lock = self._actor_turn_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._actor_turn_locks[key] = lock
+            return lock
 
     def _campaign_backend_override(self, campaign_id: str) -> dict[str, str] | None:
         with self._session_factory() as session:
@@ -2516,7 +2603,7 @@ class TextGameEngineGateway(EngineGateway):
 
             # -- swap or rebuild the LLM instance --
             need_new_llm = False
-            if mode == "deterministic" and not isinstance(self._llm, DeterministicLLM):
+            if mode == "deterministic" and not isinstance(self._llm, EngineDeterministicLLM):
                 need_new_llm = True
             elif mode != "deterministic" and not isinstance(self._llm, EngineToolAwareLLM):
                 need_new_llm = True
@@ -3016,6 +3103,8 @@ class TextGameEngineGateway(EngineGateway):
         self,
         campaign_id: str,
         request: TurnRequest,
+        *,
+        emulator: ZorkEmulator,
     ) -> tuple[int, str | None]:
         """Validate campaign, resolve session, and capture XP before the turn.
 
@@ -3037,7 +3126,7 @@ class TextGameEngineGateway(EngineGateway):
                 xp_before = int(player_before.xp or 0)
 
         self._enforce_session_access(campaign_id, request.actor_id, session_id)
-        self._emulator.get_or_create_player(campaign_id, request.actor_id)
+        emulator.get_or_create_player(campaign_id, request.actor_id)
         return xp_before, session_id
 
     def _build_turn_result(
@@ -3159,7 +3248,12 @@ class TextGameEngineGateway(EngineGateway):
         )
 
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
-        xp_before, session_id = self._pre_turn_setup(campaign_id, request)
+        runtime = self._campaign_runtime(campaign_id)
+        xp_before, session_id = self._pre_turn_setup(
+            campaign_id,
+            request,
+            emulator=runtime.emulator,
+        )
         log_token = self._begin_turn_log_scope(
             campaign_id,
             actor_id=request.actor_id,
@@ -3167,16 +3261,15 @@ class TextGameEngineGateway(EngineGateway):
             body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
         )
         try:
-            async with self._turn_llm_lock:
-                self._ensure_campaign_llm(campaign_id)
-                narration = await self._emulator.play_action(
+            async with self._turn_lock_for(campaign_id, request.actor_id):
+                narration = await runtime.emulator.play_action(
                     campaign_id=campaign_id,
                     actor_id=request.actor_id,
                     action=request.action,
                     session_id=session_id,
                     manage_claim=True,
                 )
-            notices = self._emulator.pop_turn_ephemeral_notices(
+            notices = runtime.emulator.pop_turn_ephemeral_notices(
                 campaign_id,
                 request.actor_id,
                 session_id,
@@ -3197,7 +3290,12 @@ class TextGameEngineGateway(EngineGateway):
         """Async generator yielding SSE event dicts for streaming turn resolution."""
         yield {"event": "phase", "data": {"phase": "starting"}}
 
-        xp_before, session_id = self._pre_turn_setup(campaign_id, request)
+        runtime = self._campaign_runtime(campaign_id)
+        xp_before, session_id = self._pre_turn_setup(
+            campaign_id,
+            request,
+            emulator=runtime.emulator,
+        )
 
         yield {"event": "phase", "data": {"phase": "generating"}}
 
@@ -3217,9 +3315,8 @@ class TextGameEngineGateway(EngineGateway):
                 body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
             )
             try:
-                async with self._turn_llm_lock:
-                    self._ensure_campaign_llm(campaign_id)
-                    result_box["narration"] = await self._emulator.play_action(
+                async with self._turn_lock_for(campaign_id, request.actor_id):
+                    result_box["narration"] = await runtime.emulator.play_action(
                         campaign_id=campaign_id,
                         actor_id=request.actor_id,
                         action=request.action,
@@ -3257,7 +3354,7 @@ class TextGameEngineGateway(EngineGateway):
             raise result_box["error"]
 
         narration = result_box["narration"]
-        notices = self._emulator.pop_turn_ephemeral_notices(
+        notices = runtime.emulator.pop_turn_ephemeral_notices(
             campaign_id,
             request.actor_id,
             session_id,
@@ -4637,6 +4734,7 @@ class TextGameEngineGateway(EngineGateway):
         on_rails: bool = False,
         attachment_text: str | None = None,
     ) -> dict:
+        runtime = self._campaign_runtime(campaign_id)
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
@@ -4649,9 +4747,8 @@ class TextGameEngineGateway(EngineGateway):
             body=f"actor_id={actor_id or ''}\non_rails={bool(on_rails)}\nattachment_text_present={bool(attachment_text)}",
         )
         try:
-            async with self._turn_llm_lock:
-                self._ensure_campaign_llm(campaign_id)
-                message = await self._emulator.start_campaign_setup(
+            async with self._turn_lock_for(campaign_id, actor_id):
+                message = await runtime.emulator.start_campaign_setup(
                     campaign_id,
                     actor_id=actor_id,
                     raw_name=campaign_name,
@@ -4670,6 +4767,7 @@ class TextGameEngineGateway(EngineGateway):
             self._end_turn_log_scope(log_token)
 
     async def handle_setup_message(self, campaign_id: str, actor_id: str, message: str) -> dict:
+        runtime = self._campaign_runtime(campaign_id)
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
@@ -4681,9 +4779,8 @@ class TextGameEngineGateway(EngineGateway):
             body=f"actor_id={actor_id}\nmessage={message}",
         )
         try:
-            async with self._turn_llm_lock:
-                self._ensure_campaign_llm(campaign_id)
-                response = await self._emulator.handle_setup_message(
+            async with self._turn_lock_for(campaign_id, actor_id):
+                response = await runtime.emulator.handle_setup_message(
                     campaign_id,
                     actor_id,
                     message,
