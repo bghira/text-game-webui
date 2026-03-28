@@ -3612,7 +3612,7 @@ class TextGameEngineGateway(EngineGateway):
             has_targets = isinstance(target_players, list) and any(
                 str(item or "").strip() for item in target_players
             )
-            event.setdefault("scope", "targeted" if has_targets else "global")
+            event["scope"] = "targeted" if has_targets else "global"
             event["event_key"] = self._emulator._calendar_event_key(event)  # noqa: SLF001
             shaped_events.append(event)
 
