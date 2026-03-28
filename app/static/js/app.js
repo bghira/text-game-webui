@@ -192,6 +192,7 @@
       _streamingNarration: "",
       _phaseTyper: null,
       imageGenerating: 0,
+      _realtimeRefreshTimer: null,
 
       /* Unseen activity tracking */
       sessionLastSeen: {},
@@ -2407,6 +2408,9 @@
             this.pushStream("timers", formatJson(payload.payload), payload.payload);
             this.timersText = formatJson(payload.payload);
           }
+          if (payload.type === "turn_refresh") {
+            this._scheduleRealtimeTurnRefresh();
+          }
           if (payload.type === "roster" && payload.payload) {
             this.pushStream("roster", formatJson(payload.payload));
             this.rosterText = formatJson(payload.payload);
@@ -2504,6 +2508,26 @@
           clearInterval(this._phaseTyper.timerId);
         }
         this._phaseTyper = null;
+      },
+
+      _scheduleRealtimeTurnRefresh() {
+        if (this._realtimeRefreshTimer) {
+          clearTimeout(this._realtimeRefreshTimer);
+        }
+        this._realtimeRefreshTimer = setTimeout(async () => {
+          this._realtimeRefreshTimer = null;
+          try {
+            await Promise.all([
+              this.loadRecentTurns(),
+              this.loadTimers(),
+              this.loadStoryState(),
+              this.loadChapterList(),
+              this.loadCalendar(),
+            ]);
+            this.populateTurnStreamFromHistory();
+          } catch (_err) {
+          }
+        }, 150);
       },
 
       _turnProgressLabel(phase, detail) {

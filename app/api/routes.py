@@ -84,6 +84,11 @@ class DtmLinkConfirmRequest(BaseModel):
     display_name: str = ""
 
 
+class InternalTurnRefreshRequest(BaseModel):
+    actor_id: str | None = None
+    session_id: str | None = None
+
+
 def get_gateway(request: Request) -> EngineGateway:
     return request.app.state.gateway
 
@@ -278,6 +283,38 @@ async def dtm_link_confirm(payload: DtmLinkConfirmRequest, request: Request) -> 
         "actor_id": str(row.get("actor_id") or ""),
         "display_name": str(row.get("display_name") or ""),
     }
+
+
+@router.post("/internal/campaigns/{campaign_id}/turns/refresh")
+async def internal_turn_refresh(
+    campaign_id: str,
+    payload: InternalTurnRefreshRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    settings = request.app.state.settings
+    provided_secret = str(request.headers.get(LINK_CONFIRM_HEADER) or "").strip()
+    expected_secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
+    if not provided_secret or provided_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Invalid link secret.")
+    try:
+        await gateway.debug_snapshot(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn_refresh",
+            "actor_id": str(payload.actor_id or "").strip() or None,
+            "session_id": str(payload.session_id or "").strip() or None,
+            "payload": {
+                "actor_id": str(payload.actor_id or "").strip() or None,
+                "session_id": str(payload.session_id or "").strip() or None,
+                "source": "discord",
+            },
+        },
+    )
+    return {"ok": True}
 
 
 @router.get("/campaigns")
