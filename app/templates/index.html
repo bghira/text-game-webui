@@ -328,7 +328,12 @@
     <!-- Turn Stream -->
     <div class="section-head">
       <h2>Turn Stream</h2>
-      <small x-text="selectedCampaignId ? `${selectedCampaignId} • ${currentSessionLabel()}` : 'No campaign selected'"></small>
+      <small>
+        <template x-if="$store.app.debugMode">
+          <span x-text="selectedCampaignId ? selectedCampaignId + ' • ' : ''"></span>
+        </template>
+        <span x-text="selectedCampaignId ? currentSessionLabel() : 'No campaign selected'"></span>
+      </small>
     </div>
 
     <div class="turn-stream" id="turn-stream" @click="handleTurnStreamClick($event)">

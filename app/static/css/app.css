@@ -949,7 +949,7 @@ button:disabled {
   justify-content: space-between;
   align-items: baseline;
   gap: 0.8rem;
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.35rem;
 }
 
 .section-head small {
@@ -1000,7 +1000,7 @@ button:disabled {
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   background: var(--surface-warm);
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.35rem;
   box-shadow: var(--shadow-inset);
 }
 
@@ -1516,7 +1516,7 @@ pre {
   display: flex;
   align-items: stretch;
   gap: 0.75rem;
-  margin-bottom: 0.6rem;
+  margin-bottom: 0.15rem;
 }
 
 .action-bar-column {
@@ -1702,7 +1702,7 @@ pre {
 
 .status,
 .error {
-  margin: 0.3rem 0 0;
+  margin: 0.15rem 0 0;
   font-size: 0.82rem;
 }
 
@@ -3335,8 +3335,8 @@ details summary {
     flex: 1 1 auto;
     height: auto;
     min-height: 0;
-    margin-bottom: 0.6rem;
-    padding-bottom: 1.25rem;
+    margin-bottom: 0;
+    padding-bottom: 0.4rem;
   }
 
   .section-head,
@@ -3347,14 +3347,18 @@ details summary {
     flex-shrink: 0;
   }
 
+  .section-head {
+    margin-bottom: 0.3rem;
+  }
+
   .action-bar-wrapper {
     position: sticky;
     bottom: var(--visual-viewport-bottom-gap, 0px);
     z-index: 6;
     margin-top: auto;
     margin-bottom: 0;
-    padding-top: 0.35rem;
-    padding-bottom: calc(0.35rem + env(safe-area-inset-bottom));
+    padding-top: 0.2rem;
+    padding-bottom: calc(0.2rem + env(safe-area-inset-bottom));
     background: var(--panel);
   }
 
@@ -3377,7 +3381,14 @@ details summary {
   }
 
   .char-hud {
-    padding: 0.3rem 0;
+    display: none;
+  }
+
+  .status,
+  .error {
+    margin: 0;
+    padding: 0 0.1rem;
+    font-size: 0.78rem;
   }
 
   /* Settings drawer full width */

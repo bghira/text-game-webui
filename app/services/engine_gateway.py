@@ -1169,7 +1169,7 @@ Legend: @ current player
             "replaced": old_value is not None,
         }
 
-    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict:
+    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int, *, session_id: str | None = None, actor_id: str | None = None) -> dict:
         self._require_campaign(campaign_id)
         return {"ok": False, "note": "InMemory backend — rewind not supported."}
 
