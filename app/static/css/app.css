@@ -3382,12 +3382,12 @@ details summary {
     gap: 0.4rem;
   }
 
-  .main-column .action-bar-column {
+  .action-bar-column {
     gap: 0;
   }
 
-  .main-column .action-bar-column > .char-hud {
-    display: none;
+  .char-hud {
+    display: none !important;
   }
 
   .status,
@@ -3420,11 +3420,11 @@ details summary {
 }
 
 @media (hover: none) and (pointer: coarse) {
-  .main-column .action-bar-column {
+  .action-bar-column {
     gap: 0;
   }
 
-  .main-column .action-bar-column > .char-hud {
-    display: none;
+  .char-hud {
+    display: none !important;
   }
 }
