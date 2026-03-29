@@ -599,6 +599,7 @@
       _turnStreamOffset: 0,
       _turnStreamHasMore: false,
       _turnStreamLoadingOlder: false,
+      _turnJumpInProgress: false,
       _scrollAnchorEntryId: 0,
       turnSearch: {
         open: false,
@@ -2713,9 +2714,15 @@
           localStorage.removeItem("selectedSessionId");
         }
         this.syncTurnSessionSelection();
+        this._resetPagination();
+        this.recentTurns = [];
         this.turnStream = [];
         this.connectSocket();
-        this.populateTurnStreamFromHistory();
+        this.loadRecentTurns(30, { force: true }).then(() => {
+          this.populateTurnStreamFromHistory();
+        }).catch(() => {
+          this.populateTurnStreamFromHistory();
+        });
         if (this.turnSearch.open && this.turnSearch.query.trim()) {
           this.runTurnSearch();
         }
@@ -5149,8 +5156,10 @@
       },
 
       /* ---- Recent turns (history) ---- */
-      async loadRecentTurns(limit) {
+      async loadRecentTurns(limit, options) {
         if (!this.selectedCampaignId) return;
+        const force = !!(options && typeof options === "object" && options.force === true);
+        if (this._turnJumpInProgress && !force) return;
         try {
           const lim = limit || 30;
           const params = new URLSearchParams();
@@ -5169,7 +5178,7 @@
       },
 
       async loadOlderTurns() {
-        if (this._turnStreamLoadingOlder || !this._turnStreamHasMore || !this.selectedCampaignId) return;
+        if (this._turnJumpInProgress || this._turnStreamLoadingOlder || !this._turnStreamHasMore || !this.selectedCampaignId) return;
         this._turnStreamLoadingOlder = true;
         try {
           const params = new URLSearchParams();
@@ -5279,10 +5288,66 @@
         if (this._recentTurnsContainTurnId(wanted)) {
           return true;
         }
-        while (!this._recentTurnsContainTurnId(wanted) && this._turnStreamHasMore) {
-          await this.loadOlderTurns();
+        if (!this.selectedCampaignId || this._turnJumpInProgress) {
+          return false;
         }
-        return this._recentTurnsContainTurnId(wanted);
+        this._turnJumpInProgress = true;
+        try {
+          let offset = Math.max(
+            Number(this._turnStreamOffset) || 0,
+            Array.isArray(this.recentTurns) ? this.recentTurns.length : 0,
+          );
+          let hasMore = this._turnStreamHasMore === true;
+          let changed = false;
+          const seenOffsets = new Set();
+          while (!this._recentTurnsContainTurnId(wanted) && hasMore) {
+            if (seenOffsets.has(offset)) {
+              break;
+            }
+            seenOffsets.add(offset);
+            const params = new URLSearchParams();
+            params.set("limit", "30");
+            params.set("offset", String(offset));
+            if (this.selectedSessionId) {
+              params.set("session_id", this.selectedSessionId);
+            }
+            const data = await this.api(
+              `/api/campaigns/${this.selectedCampaignId}/recent-turns?${params.toString()}`,
+            );
+            const older = Array.isArray(data.turns) ? data.turns : [];
+            if (older.length === 0) {
+              hasMore = false;
+              this._turnStreamHasMore = false;
+              break;
+            }
+            const seenTurnIds = new Set(
+              (Array.isArray(this.recentTurns) ? this.recentTurns : [])
+                .map((row) => Number(row && row.id) || 0)
+                .filter((value) => value > 0),
+            );
+            const dedupedOlder = older.filter((row) => {
+              const turnIdValue = Number(row && row.id) || 0;
+              if (turnIdValue <= 0) return true;
+              if (seenTurnIds.has(turnIdValue)) return false;
+              seenTurnIds.add(turnIdValue);
+              return true;
+            });
+            if (dedupedOlder.length) {
+              this.recentTurns = [...dedupedOlder, ...this.recentTurns];
+              changed = true;
+            }
+            offset += older.length;
+            hasMore = !!data.has_more;
+            this._turnStreamOffset = Math.max(Number(this._turnStreamOffset) || 0, offset);
+            this._turnStreamHasMore = hasMore;
+          }
+          if (changed) {
+            this.populateTurnStreamFromHistory(false);
+          }
+          return this._recentTurnsContainTurnId(wanted);
+        } finally {
+          this._turnJumpInProgress = false;
+        }
       },
 
       async jumpToSearchTurn(result) {
