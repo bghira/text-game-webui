@@ -1619,11 +1619,13 @@ pre {
   background: transparent;
   padding: 0.4rem 0.3rem;
   resize: none;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   line-height: 1.4;
   min-height: 1.4em;
   max-height: 8em;
   font-family: inherit;
+  field-sizing: content;
 }
 
 .action-input:focus {

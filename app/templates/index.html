@@ -560,7 +560,7 @@
               id="action-input"
               rows="1"
               @keydown="handleComposerKeydown($event)"
-              @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; updateMentionAutocomplete($event); ensureComposerVisible()"
+              @input="if(!CSS.supports('field-sizing','content')){$el.style.height='0';$el.style.height=$el.scrollHeight+'px'} updateMentionAutocomplete($event); ensureComposerVisible()"
               @click="updateMentionAutocomplete($event)"
               @keyup="updateMentionAutocomplete($event)"
               @focus="ensureComposerVisible()"
