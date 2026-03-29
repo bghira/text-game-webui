@@ -296,6 +296,10 @@
       turnCounter: 0,
       _queuedTurnSerial: 0,
       socket: null,
+      _campaignViewCache: {},
+      _activeProgressCampaignId: "",
+      _activeProgressSessionId: "",
+      _activeProgressLabel: "",
       socketReconnectTimer: null,
       turnStream: [],
       sessionsList: [],
@@ -331,7 +335,7 @@
         base_url: "http://127.0.0.1:11434",
         model: "",
         keep_alive: "30m",
-        timeout_seconds: 90,
+        timeout_seconds: 600,
         ollama_options_json: "{}",
       },
       browserLocalOllamaStatus: { ok: null, message: "" },
@@ -844,6 +848,16 @@
         if (!this.recentTurns || this.recentTurns.length === 0) {
           this.turnStream = [];
           this._rebuildQueuedTurnStreamEntries();
+          if (
+            this._activeProgressLabel
+            && String(this.selectedCampaignId || "").trim() === String(this._activeProgressCampaignId || "").trim()
+          ) {
+            this.upsertRemoteProgress(this._activeProgressLabel, {
+              phase: "inflight",
+              actor_id: String(this.turnForm.actor_id || "").trim(),
+              session_id: this._activeProgressSessionId || "",
+            });
+          }
           if (scrollToBottom !== false) this._scrollStream();
           return;
         }
@@ -859,6 +873,16 @@
           }
         }
         this._rebuildQueuedTurnStreamEntries();
+        if (
+          this._activeProgressLabel
+          && String(this.selectedCampaignId || "").trim() === String(this._activeProgressCampaignId || "").trim()
+        ) {
+          this.upsertRemoteProgress(this._activeProgressLabel, {
+            phase: "inflight",
+            actor_id: String(this.turnForm.actor_id || "").trim(),
+            session_id: this._activeProgressSessionId || "",
+          });
+        }
         if (scrollToBottom !== false) this._scrollStream();
       },
 
@@ -1123,7 +1147,7 @@
           this.browserLocalOllama.base_url = String(parsed.base_url || "").trim() || "http://127.0.0.1:11434";
           this.browserLocalOllama.model = String(parsed.model || "").trim();
           this.browserLocalOllama.keep_alive = String(parsed.keep_alive || "").trim() || "30m";
-          this.browserLocalOllama.timeout_seconds = Number(parsed.timeout_seconds) > 0 ? Number(parsed.timeout_seconds) : 90;
+          this.browserLocalOllama.timeout_seconds = Number(parsed.timeout_seconds) > 0 ? Number(parsed.timeout_seconds) : 600;
           this.browserLocalOllama.ollama_options_json = typeof parsed.ollama_options_json === "string"
             ? parsed.ollama_options_json
             : "{}";
@@ -1137,7 +1161,7 @@
           base_url: String(this.browserLocalOllama.base_url || "").trim() || "http://127.0.0.1:11434",
           model: String(this.browserLocalOllama.model || "").trim(),
           keep_alive: String(this.browserLocalOllama.keep_alive || "").trim() || "30m",
-          timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 90,
+          timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 600,
           ollama_options_json: String(this.browserLocalOllama.ollama_options_json || "{}"),
         };
         localStorage.setItem("browserLocalOllamaSettings", JSON.stringify(payload));
@@ -1164,7 +1188,7 @@
           base_url: String(this.browserLocalOllama.base_url || "").trim() || "http://127.0.0.1:11434",
           model,
           keep_alive: String(this.browserLocalOllama.keep_alive || "").trim() || "30m",
-          timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 90,
+          timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 600,
           ollama_options: ollamaOptions && typeof ollamaOptions === "object" ? ollamaOptions : {},
         };
       },
@@ -1550,6 +1574,71 @@
             stream.scrollTop = stream.scrollHeight;
           }
         });
+      },
+
+      _cloneStateValue(value) {
+        if (value == null) return value;
+        if (typeof structuredClone === "function") {
+          try {
+            return structuredClone(value);
+          } catch (_err) {
+          }
+        }
+        return JSON.parse(JSON.stringify(value));
+      },
+
+      _captureCampaignViewState(campaignId) {
+        const id = String(campaignId || "").trim();
+        if (!id) return;
+        this._campaignViewCache[id] = {
+          selectedSessionId: String(this.selectedSessionId || "").trim(),
+          turnStream: this._cloneStateValue(this.turnStream || []),
+          turnCounter: Number(this.turnCounter) || 0,
+          recentTurns: this._cloneStateValue(this.recentTurns || []),
+          gameTime: this._cloneStateValue(this.gameTime || {}),
+          campaignSummary: String(this.campaignSummary || ""),
+          statusMessage: String(this.statusMessage || ""),
+          errorMessage: String(this.errorMessage || ""),
+          _turnStreamOffset: Number(this._turnStreamOffset) || 0,
+          _turnStreamHasMore: this._turnStreamHasMore === true,
+        };
+      },
+
+      _restoreCampaignViewState(campaignId) {
+        const id = String(campaignId || "").trim();
+        const cached = id ? this._campaignViewCache[id] : null;
+        if (!cached || typeof cached !== "object") return false;
+        this.selectedSessionId = String(cached.selectedSessionId || "").trim();
+        this.turnStream = this._cloneStateValue(cached.turnStream || []);
+        this.turnCounter = Number(cached.turnCounter) || 0;
+        this.recentTurns = this._cloneStateValue(cached.recentTurns || []);
+        this.gameTime = this._cloneStateValue(cached.gameTime || {});
+        this.campaignSummary = String(cached.campaignSummary || "");
+        this.statusMessage = String(cached.statusMessage || "");
+        this.errorMessage = String(cached.errorMessage || "");
+        this._turnStreamOffset = Number(cached._turnStreamOffset) || 0;
+        this._turnStreamHasMore = cached._turnStreamHasMore === true;
+        return true;
+      },
+
+      async _refreshBackgroundCampaignView(campaignId, preferredSessionId) {
+        const id = String(campaignId || "").trim();
+        if (!id) return;
+        try {
+          const data = await this.api(`/api/campaigns/${id}/recent-turns?limit=30`);
+          const cached = this._campaignViewCache[id] && typeof this._campaignViewCache[id] === "object"
+            ? this._campaignViewCache[id]
+            : {};
+          this._campaignViewCache[id] = {
+            ...cached,
+            recentTurns: Array.isArray(data.turns) ? this._cloneStateValue(data.turns) : [],
+            _turnStreamOffset: Array.isArray(data.turns) ? data.turns.length : 0,
+            _turnStreamHasMore: !!data.has_more,
+            selectedSessionId: String(preferredSessionId || cached.selectedSessionId || "").trim(),
+            statusMessage: "Turn submitted.",
+          };
+        } catch (_err) {
+        }
       },
 
       closeMentionAutocomplete() {
@@ -3293,25 +3382,32 @@
       async selectCampaign(campaignId, restoreSessionId) {
         this.$store.app.sidebarOpen = false;
         this.resetError();
+        const previousCampaignId = String(this.selectedCampaignId || "").trim();
+        if (previousCampaignId) {
+          this._captureCampaignViewState(previousCampaignId);
+        }
+        const restoredFromCache = !restoreSessionId && this._restoreCampaignViewState(campaignId);
         this.selectedCampaignId = campaignId;
         localStorage.setItem("selectedCampaignId", campaignId);
-        this.selectedSessionId = restoreSessionId || "";
+        this.selectedSessionId = restoreSessionId || this.selectedSessionId || "";
         if (!restoreSessionId) localStorage.removeItem("selectedSessionId");
-        this.turnStream = [];
-        this._resetPagination();
+        if (!restoredFromCache) {
+          this.turnStream = [];
+          this._resetPagination();
+        }
         /* Reset unseen-activity tracking for previous campaign */
         this.sessionLastSeen = {};
         this._persistSessionLastSeen();
         this._stopUnseenPoll();
         /* Reset per-campaign derived state to prevent stale values */
-        this.gameTime = {};
-        this.campaignSummary = "";
+        this.gameTime = restoredFromCache ? this.gameTime : {};
+        this.campaignSummary = restoredFromCache ? this.campaignSummary : "";
         this.storyState = null;
         this.chapterList = null;
         this.playerData = null;
         this.playerStats = null;
         this.playerAttributes = null;
-        this.recentTurns = [];
+        this.recentTurns = restoredFromCache ? this.recentTurns : [];
         this.songQueue = [];
         this.songIndex = -1;
         this.campaignPersona = "";
@@ -3426,6 +3522,8 @@
         const suffix = params.toString() ? `?${params.toString()}` : "";
         const socketUrl = `${protocol}://${window.location.host}/ws/campaigns/${campaignId}${suffix}`;
         this.socket = new WebSocket(socketUrl);
+        this.socket._campaignId = campaignId;
+        this.socket._sessionId = String(this.selectedSessionId || "").trim();
         this.socket.onopen = () => {
           this.diagnostics.ws_state = "connected";
           this.diagnostics.ws_last_event_at = isoNow();
@@ -3568,6 +3666,9 @@
           }
           if (payload.type === "turn_progress" && payload.payload && this.submitting) {
             const label = this._turnProgressLabel(payload.payload.phase, payload.payload);
+            this._activeProgressCampaignId = String(campaignId || "").trim();
+            this._activeProgressSessionId = String(this.selectedSessionId || "").trim();
+            this._activeProgressLabel = label;
             this.statusMessage = label;
             const streamEntry = this.turnStream.find((e) => e._streaming);
             if (streamEntry) {
@@ -3575,6 +3676,9 @@
             }
           } else if (payload.type === "turn_progress" && payload.payload) {
             const label = this._turnProgressLabel(payload.payload.phase, payload.payload);
+            this._activeProgressCampaignId = String(campaignId || "").trim();
+            this._activeProgressSessionId = String(payload.session_id || this.selectedSessionId || "").trim();
+            this._activeProgressLabel = label;
             this.statusMessage = label;
             this.upsertRemoteProgress(label, {
               phase: payload.payload.phase || "",
@@ -3590,6 +3694,9 @@
             this.clearPendingSubmitUi();
             this._submittingTurn = false;
             this.submitting = false;
+            this._activeProgressCampaignId = "";
+            this._activeProgressSessionId = "";
+            this._activeProgressLabel = "";
             this.statusMessage = "Turn connection dropped. You can retry.";
           } else {
             this.errorMessage = "WebSocket error.";
@@ -3601,6 +3708,9 @@
             this.clearPendingSubmitUi();
             this._submittingTurn = false;
             this.submitting = false;
+            this._activeProgressCampaignId = "";
+            this._activeProgressSessionId = "";
+            this._activeProgressLabel = "";
             this.statusMessage = "Turn connection dropped. You can retry.";
           }
           if (event.target._deliberateClose) {
@@ -3712,10 +3822,24 @@
         return labels[phase] || (phase.charAt(0).toUpperCase() + phase.slice(1).replace(/_/g, " ") + "...");
       },
 
-      _handleStreamEvent(eventType, data, streamEntryId) {
+      _handleStreamEvent(eventType, data, streamEntryId, campaignId) {
+        const activeCampaignId = String(this.selectedCampaignId || "").trim();
+        const targetCampaignId = String(campaignId || activeCampaignId).trim();
+        if (targetCampaignId && activeCampaignId && targetCampaignId !== activeCampaignId) {
+          if (eventType === "complete") {
+            this._refreshBackgroundCampaignView(
+              targetCampaignId,
+              this._campaignViewCache[targetCampaignId]?.selectedSessionId || "",
+            );
+          }
+          return;
+        }
         if (eventType === "phase") {
           this.clearRemoteProgress();
           const label = this._turnProgressLabel(data.phase, data);
+          this._activeProgressCampaignId = String(campaignId || this.selectedCampaignId || "").trim();
+          this._activeProgressSessionId = String(this.selectedSessionId || "").trim();
+          this._activeProgressLabel = label;
           this.statusMessage = label;
           if (streamEntryId && data.phase !== "narrating") {
             this._typePhase(streamEntryId, label);
@@ -3737,6 +3861,9 @@
         } else if (eventType === "complete") {
           this.clearRemoteProgress();
           this._clearPhaseTyper();
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
           const entry = this.turnStream.find((e) => e.id === streamEntryId);
           if (entry) {
             entry._phaseText = false;
@@ -3785,6 +3912,9 @@
           }
         } else if (eventType === "error") {
           this.clearRemoteProgress();
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
           this.errorMessage = data.message || "Streaming error";
         }
       },
@@ -3844,6 +3974,9 @@
       async _submitTurnPayload(campaignId, payload, { queued = false, existingQueueEntryId = null } = {}) {
         this.submitting = true;
         this._submittingTurn = true;
+        this._activeProgressCampaignId = String(campaignId || "").trim();
+        this._activeProgressSessionId = String(payload && payload.session_id || this.selectedSessionId || "").trim();
+        this._activeProgressLabel = queued ? "Processing queued action..." : "Submitting turn...";
         this.statusMessage = queued ? "Processing queued action..." : "Submitting turn...";
         const shouldClearComposerOnResolve = !queued && !String(existingQueueEntryId || "").trim();
         let backendTurnId = 0;
@@ -3974,7 +4107,7 @@
                       if (currentEvent === "complete") {
                         backendTurnId = Number(parsed.turn_id) || 0;
                       }
-                      this._handleStreamEvent(currentEvent, parsed, streamEntryId);
+                      this._handleStreamEvent(currentEvent, parsed, streamEntryId, campaignId);
                     } catch (_e) {
                     }
                   }
@@ -3989,7 +4122,7 @@
                 if (currentEvent === "complete") {
                   backendTurnId = Number(parsed.turn_id) || 0;
                 }
-                this._handleStreamEvent(currentEvent, parsed, streamEntryId);
+                this._handleStreamEvent(currentEvent, parsed, streamEntryId, campaignId);
               } catch (_e) {
               }
             }
@@ -4000,39 +4133,52 @@
             }
           }
 
-          await Promise.all([
-            this.loadSessions(),
-            this.loadTimers(),
-            this.loadCalendar(),
-            this.loadRoster(),
-            this.loadPlayerState(),
-            this.loadPlayerStatistics(),
-            this.loadPlayerAttributes(),
-            this.loadMedia(),
-            this.loadDebugSnapshot(),
-            this.loadRecentTurns(),
-            this.loadStoryState(),
-            this.loadChapterList(),
-            this.loadSceneImages(),
-          ]);
-          if (backendTurnId > 0 && !this._recentTurnsContainTurnId(backendTurnId)) {
-            console.warn("recent-turns refresh missing completed turn", {
-              campaignId,
-              actorId: payload.actor_id,
-              sessionId: payload.session_id || null,
-              turnId: backendTurnId,
-            });
-            this.statusMessage = "Turn completed. History refresh has not caught up yet; keeping the live result.";
-            this._scheduleRecentTurnRecovery(backendTurnId);
-            return { ok: true };
+          if (String(this.selectedCampaignId || "").trim() === String(campaignId || "").trim()) {
+            await Promise.all([
+              this.loadSessions(),
+              this.loadTimers(),
+              this.loadCalendar(),
+              this.loadRoster(),
+              this.loadPlayerState(),
+              this.loadPlayerStatistics(),
+              this.loadPlayerAttributes(),
+              this.loadMedia(),
+              this.loadDebugSnapshot(),
+              this.loadRecentTurns(),
+              this.loadStoryState(),
+              this.loadChapterList(),
+              this.loadSceneImages(),
+            ]);
+            if (backendTurnId > 0 && !this._recentTurnsContainTurnId(backendTurnId)) {
+              console.warn("recent-turns refresh missing completed turn", {
+                campaignId,
+                actorId: payload.actor_id,
+                sessionId: payload.session_id || null,
+                turnId: backendTurnId,
+              });
+              this.statusMessage = "Turn completed. History refresh has not caught up yet; keeping the live result.";
+              this._scheduleRecentTurnRecovery(backendTurnId);
+              this._activeProgressCampaignId = "";
+              this._activeProgressSessionId = "";
+              this._activeProgressLabel = "";
+              return { ok: true };
+            }
+            this.populateTurnStreamFromHistory();
+            this.statusMessage = queued ? "Queued action submitted." : "Turn submitted.";
+          } else {
+            await this._refreshBackgroundCampaignView(campaignId, payload.session_id || "");
           }
-          this.populateTurnStreamFromHistory();
-          this.statusMessage = queued ? "Queued action submitted." : "Turn submitted.";
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
           return { ok: true };
         } catch (error) {
           if (optimisticPlayerEntryId > 0) {
             this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
           }
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
           return { ok: false, error };
         } finally {
           this._clearPhaseTyper();
@@ -4234,7 +4380,15 @@
           }
         }
         if (skipConnect) return;
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        const currentSocketCampaignId = this.socket ? String(this.socket._campaignId || "").trim() : "";
+        const currentSocketSessionId = this.socket ? String(this.socket._sessionId || "").trim() : "";
+        const selectedSessionId = String(this.selectedSessionId || "").trim();
+        if (
+          this.socket
+          && this.socket.readyState === WebSocket.OPEN
+          && currentSocketCampaignId === String(this.selectedCampaignId || "").trim()
+          && currentSocketSessionId === selectedSessionId
+        ) {
           return;
         }
         this.connectSocket();

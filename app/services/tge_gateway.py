@@ -336,10 +336,15 @@ class BrowserLLMRelayBroker:
                     },
                 },
             )
-            result = await asyncio.wait_for(
-                fut,
-                timeout=max(int(timeout_seconds or 0), 1) + 5,
-            )
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.shield(fut),
+                    timeout=max(int(timeout_seconds or 0), 1) + 30,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError(
+                    f"Browser-local Ollama timed out after {max(int(timeout_seconds or 0), 1)}s."
+                ) from exc
         finally:
             with self._lock:
                 self._pending.pop(request_id, None)
@@ -385,7 +390,7 @@ class BrowserOllamaCompletionPort:
         self._actor_id = str(actor_id or "").strip()
         self._base_url = str(base_url or "").strip()
         self._model = str(model or "").strip()
-        self._timeout_seconds = max(int(timeout_seconds or 90), 1)
+        self._timeout_seconds = max(int(timeout_seconds or 600), 1)
         self._keep_alive = str(keep_alive or "").strip()
         self._ollama_options = ollama_options if isinstance(ollama_options, dict) else {}
 
@@ -2753,7 +2758,7 @@ class TextGameEngineGateway(EngineGateway):
         if not model:
             raise ValueError("Browser-local Ollama requires a model name.")
         keep_alive = str(raw.get("keep_alive") or "").strip() or "30m"
-        timeout_seconds = int(raw.get("timeout_seconds") or 90)
+        timeout_seconds = int(raw.get("timeout_seconds") or 600)
         ollama_options = raw.get("ollama_options")
         if not isinstance(ollama_options, dict):
             ollama_options = {}
@@ -2779,7 +2784,7 @@ class TextGameEngineGateway(EngineGateway):
             actor_id=request.actor_id,
             base_url=str(override.get("base_url") or ""),
             model=str(override.get("model") or ""),
-            timeout_seconds=int(override.get("timeout_seconds") or 90),
+            timeout_seconds=int(override.get("timeout_seconds") or 600),
             keep_alive=str(override.get("keep_alive") or ""),
             ollama_options=override.get("ollama_options"),
         )
