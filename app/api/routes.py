@@ -29,7 +29,7 @@ from app.services.dtm_link_auth import (
     get_or_create_pending_link,
     issue_session_cookie_value,
 )
-from app.services.engine_gateway import FEATURES, EngineGateway
+from app.services.engine_gateway import FEATURES, EngineGateway, TurnCancelledError
 from app.services.schemas import (
     AttributeSetRequest,
     AvatarActionRequest,
@@ -64,6 +64,7 @@ from app.services.schemas import (
     SourceMaterialIngest,
     SourceMaterialSearchRequest,
     TurnEditRequest,
+    TurnCancelRequest,
     TurnRequest,
 )
 
@@ -662,6 +663,15 @@ async def submit_turn(
             shared_pending_targets,
         )
         _bad_request(err)
+    except TurnCancelledError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
+        raise HTTPException(status_code=409, detail=str(err)) from err
     except Exception:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
         await _clear_pending_shared_turn(
@@ -692,6 +702,24 @@ async def submit_turn(
         shared_pending_targets,
     )
     return result.model_dump()
+
+
+@router.post("/campaigns/{campaign_id}/turns/cancel")
+async def cancel_turn(
+    campaign_id: str,
+    payload: TurnCancelRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, payload.actor_id)
+    if not str(actor_id or "").strip():
+        raise HTTPException(status_code=400, detail="actor_id is required.")
+    try:
+        return await gateway.cancel_active_turn(campaign_id, str(actor_id))
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
 
 
 @router.post("/campaigns/{campaign_id}/turns/stream")
@@ -1026,6 +1054,7 @@ async def get_recent_turns(
     campaign_id: str,
     limit: int = 30,
     offset: int = 0,
+    session_id: str | None = None,
     request: Request = None,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
@@ -1036,6 +1065,35 @@ async def get_recent_turns(
             campaign_id,
             limit=limit,
             offset=offset,
+            session_id=session_id,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/turn-search")
+async def search_turns(
+    campaign_id: str,
+    q: str,
+    limit: int = 30,
+    offset: int = 0,
+    session_id: str | None = None,
+    request: Request = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    if offset < 0 or limit < 1:
+        _bad_request(ValueError("limit must be >= 1 and offset must be >= 0"))
+    query = str(q or "").strip()
+    if not query:
+        return {"results": [], "count": 0, "has_more": False}
+    try:
+        return await gateway.search_turns(
+            campaign_id,
+            query,
+            limit=limit,
+            offset=offset,
+            session_id=session_id,
             actor_id=_linked_actor_id(request),
         )
     except KeyError as err:

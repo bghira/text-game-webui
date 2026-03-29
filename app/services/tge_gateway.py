@@ -21,7 +21,7 @@ from app.services.schemas import CampaignSummary, MemoryStoreRequest, TurnReques
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
-from .engine_gateway import EngineGateway
+from .engine_gateway import EngineGateway, TurnCancelledError
 
 try:
     from text_game_engine.backends.factory import build_text_completion_port
@@ -85,6 +85,12 @@ class _CampaignRuntime:
     llm: Any
     game_engine: GameEngine
     emulator: ZorkEmulator
+
+
+@dataclass
+class _ActiveTurnTask:
+    task: asyncio.Task[Any]
+    session_id: str | None
 
 
 def _zork_log_component(value: object, label: str = "id") -> str:
@@ -2583,6 +2589,9 @@ class TextGameEngineGateway(EngineGateway):
             return SQLAlchemyUnitOfWork(self._session_factory)
 
         self._uow_factory = _uow_factory
+        self._injected_media_port: object | None = None
+        self._injected_timer_effects_port: object | None = None
+        self._injected_notification_port: object | None = None
         default_signature = self._campaign_runtime_signature(None)
         default_runtime = self._build_campaign_runtime(default_signature)
         self._game_engine = default_runtime.game_engine
@@ -2592,8 +2601,10 @@ class TextGameEngineGateway(EngineGateway):
         self._reconfigure_lock = threading.Lock()
         self._campaign_runtime_lock = threading.Lock()
         self._actor_turn_lock_guard = threading.Lock()
+        self._active_turn_tasks_guard = threading.Lock()
         self._campaign_runtimes: dict[str, _CampaignRuntime] = {}
         self._actor_turn_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._active_turn_tasks: dict[tuple[str, str], _ActiveTurnTask] = {}
         self._probe_timeout_seconds = max(int(settings.tge_runtime_probe_timeout_seconds or 8), 1)
         self._browser_llm_broker = BrowserLLMRelayBroker()
 
@@ -2721,6 +2732,14 @@ class TextGameEngineGateway(EngineGateway):
             imdb_port=None,
             media_port=None,
         )
+        # Inject ports that were set after gateway construction so per-campaign
+        # runtimes share the same notification/timer/media wiring as the default.
+        if self._injected_notification_port is not None:
+            emulator._notification_port = self._injected_notification_port
+        if self._injected_timer_effects_port is not None:
+            emulator._timer_effects_port = self._injected_timer_effects_port
+        if self._injected_media_port is not None:
+            emulator._media_port = self._injected_media_port
         if isinstance(llm, EngineToolAwareLLM):
             llm.bind_emulator(emulator)
             llm.set_log_callback(_zork_log)
@@ -2832,6 +2851,94 @@ class TextGameEngineGateway(EngineGateway):
                 lock = asyncio.Lock()
                 self._actor_turn_locks[key] = lock
             return lock
+
+    @staticmethod
+    def _active_turn_task_key(campaign_id: str, actor_id: str | None) -> tuple[str, str]:
+        return (
+            str(campaign_id or "").strip(),
+            str(actor_id or "").strip(),
+        )
+
+    def _register_active_turn_task(
+        self,
+        campaign_id: str,
+        actor_id: str | None,
+        task: asyncio.Task[Any] | None,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        if task is None:
+            return
+        key = self._active_turn_task_key(campaign_id, actor_id)
+        if not all(key):
+            return
+        with self._active_turn_tasks_guard:
+            self._active_turn_tasks[key] = _ActiveTurnTask(
+                task=task,
+                session_id=str(session_id or "").strip() or None,
+            )
+
+    def _unregister_active_turn_task(
+        self,
+        campaign_id: str,
+        actor_id: str | None,
+        task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        key = self._active_turn_task_key(campaign_id, actor_id)
+        if not all(key):
+            return
+        with self._active_turn_tasks_guard:
+            existing = self._active_turn_tasks.get(key)
+            if existing is None:
+                return
+            if task is not None and existing.task is not task:
+                return
+            self._active_turn_tasks.pop(key, None)
+
+    def _get_active_turn_task(self, campaign_id: str, actor_id: str | None) -> _ActiveTurnTask | None:
+        key = self._active_turn_task_key(campaign_id, actor_id)
+        if not all(key):
+            return None
+        with self._active_turn_tasks_guard:
+            return self._active_turn_tasks.get(key)
+
+    def _clear_active_turn_claims(self, campaign_id: str, actor_id: str | None) -> int:
+        campaign_id_text = str(campaign_id or "").strip()
+        actor_id_text = str(actor_id or "").strip()
+        if not campaign_id_text or not actor_id_text:
+            return 0
+        deleted = 0
+        try:
+            with self._session_factory() as session:
+                deleted = int(
+                    session.query(InflightTurn)
+                    .filter(InflightTurn.campaign_id == campaign_id_text)
+                    .filter(InflightTurn.actor_id == actor_id_text)
+                    .delete()
+                    or 0
+                )
+                session.commit()
+        except Exception:
+            logger.warning(
+                "Failed clearing inflight claim for cancelled turn campaign=%s actor=%s",
+                campaign_id_text,
+                actor_id_text,
+                exc_info=True,
+            )
+        try:
+            runtime = self._campaign_runtime(campaign_id_text)
+            runtime.emulator._clear_inflight_turn(campaign_id_text, actor_id_text)
+            claims = getattr(runtime.emulator, "_claims", None)
+            if isinstance(claims, dict):
+                claims.pop((campaign_id_text, actor_id_text), None)
+        except Exception:
+            logger.debug(
+                "Failed clearing emulator-local inflight state for cancelled turn campaign=%s actor=%s",
+                campaign_id_text,
+                actor_id_text,
+                exc_info=True,
+            )
+        return deleted
 
     def _campaign_backend_override(self, campaign_id: str) -> dict[str, str] | None:
         with self._session_factory() as session:
@@ -3637,6 +3744,13 @@ class TextGameEngineGateway(EngineGateway):
             emulator=runtime.emulator,
         )
         completion_override = self._browser_local_completion_port(campaign_id, request)
+        active_task = asyncio.current_task()
+        self._register_active_turn_task(
+            campaign_id,
+            request.actor_id,
+            active_task,
+            session_id=session_id,
+        )
         log_token = self._begin_turn_log_scope(
             campaign_id,
             actor_id=request.actor_id,
@@ -3665,7 +3779,15 @@ class TextGameEngineGateway(EngineGateway):
                 f"WEBUI TURN RESULT campaign={campaign_id}",
                 str(narration or "(empty)"),
             )
+        except asyncio.CancelledError as exc:
+            self._clear_active_turn_claims(campaign_id, request.actor_id)
+            raise TurnCancelledError("Turn cancelled.") from exc
         finally:
+            self._unregister_active_turn_task(
+                campaign_id,
+                request.actor_id,
+                active_task,
+            )
             self._end_turn_log_scope(log_token)
 
         if narration is None:
@@ -3693,7 +3815,7 @@ class TextGameEngineGateway(EngineGateway):
         async def on_progress(phase, detail=None):
             await progress_queue.put({"event": "phase", "data": {"phase": phase, **(detail or {})}})
 
-        result_box: dict = {"narration": None, "error": None}
+        result_box: dict = {"narration": None, "error": None, "cancelled": False}
 
         async def _run():
             log_token = self._begin_turn_log_scope(
@@ -3703,6 +3825,13 @@ class TextGameEngineGateway(EngineGateway):
                 body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
             )
             try:
+                active_task = asyncio.current_task()
+                self._register_active_turn_task(
+                    campaign_id,
+                    request.actor_id,
+                    active_task,
+                    session_id=session_id,
+                )
                 token = _TURN_COMPLETION_OVERRIDE.set(completion_override)
                 try:
                     async with self._turn_lock_for(campaign_id, request.actor_id):
@@ -3720,9 +3849,17 @@ class TextGameEngineGateway(EngineGateway):
                         )
                 finally:
                     _TURN_COMPLETION_OVERRIDE.reset(token)
+            except asyncio.CancelledError:
+                result_box["cancelled"] = True
+                self._clear_active_turn_claims(campaign_id, request.actor_id)
             except Exception as exc:
                 result_box["error"] = exc
             finally:
+                self._unregister_active_turn_task(
+                    campaign_id,
+                    request.actor_id,
+                    asyncio.current_task(),
+                )
                 self._end_turn_log_scope(log_token)
                 await progress_queue.put(_SENTINEL)
 
@@ -3741,6 +3878,10 @@ class TextGameEngineGateway(EngineGateway):
             except (asyncio.CancelledError, Exception):
                 pass
             raise
+
+        if result_box["cancelled"]:
+            yield {"event": "error", "data": {"message": "Turn cancelled."}}
+            return
 
         if result_box["error"] is not None:
             raise result_box["error"]
@@ -3846,6 +3987,38 @@ class TextGameEngineGateway(EngineGateway):
             ):
                 return
             raise
+
+    async def cancel_active_turn(self, campaign_id: str, actor_id: str) -> dict:
+        campaign_id_text = str(campaign_id or "").strip()
+        actor_id_text = str(actor_id or "").strip()
+        if not campaign_id_text:
+            raise KeyError("Unknown campaign")
+        if not actor_id_text:
+            raise ValueError("actor_id is required.")
+
+        active = self._get_active_turn_task(campaign_id_text, actor_id_text)
+        cancelled = False
+        session_id = None
+        if active is not None:
+            session_id = active.session_id
+            task = active.task
+            if task is not None and not task.done():
+                task.cancel()
+                cancelled = True
+                try:
+                    await asyncio.gather(task, return_exceptions=True)
+                except Exception:
+                    pass
+
+        cleared_claims = self._clear_active_turn_claims(campaign_id_text, actor_id_text)
+        self._unregister_active_turn_task(campaign_id_text, actor_id_text)
+        return {
+            "ok": True,
+            "cancelled": bool(cancelled or cleared_claims > 0),
+            "cleared_claims": int(cleared_claims),
+            "session_id": session_id,
+            "note": "Turn cancelled." if (cancelled or cleared_claims > 0) else "No active turn to cancel.",
+        }
 
     async def campaign_export(
         self,
@@ -5296,19 +5469,155 @@ class TextGameEngineGateway(EngineGateway):
         campaign_id: str,
         limit: int = 30,
         offset: int = 0,
+        session_id: str | None = None,
         actor_id: str | None = None,
     ) -> dict:
+        result = self._query_turn_rows(
+            campaign_id,
+            limit=limit,
+            offset=offset,
+            session_id=session_id,
+            actor_id=actor_id,
+        )
+        return {"turns": result["rows"], "count": result["count"], "has_more": result["has_more"]}
+
+    async def search_turns(
+        self,
+        campaign_id: str,
+        query: str,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict:
+        result = self._query_turn_rows(
+            campaign_id,
+            limit=limit,
+            offset=offset,
+            session_id=session_id,
+            actor_id=actor_id,
+            query=query,
+        )
+        return {"results": result["rows"], "count": result["count"], "has_more": result["has_more"]}
+
+    def _turn_row_for_webui(
+        self,
+        campaign_id: str,
+        turn: Turn,
+        player_labels: dict[str, str],
+    ) -> dict[str, Any]:
+        meta = self._parse_json(turn.meta_json, {})
+        if isinstance(meta, dict):
+            scene_output = meta.get("scene_output") if isinstance(meta.get("scene_output"), dict) else None
+            resolved_visibility = self._resolve_turn_visibility(campaign_id, meta.get("visibility"))
+            resolved_turn_visibility = self._augment_turn_visibility_with_scene_awareness(
+                campaign_id,
+                resolved_visibility,
+                scene_output,
+                actor_id=str(turn.actor_id or "").strip() or None,
+            )
+            actual_visible_actor_ids = self._viewer_actor_ids_for_turn(campaign_id, turn)
+            merged_actor_ids: list[str] = []
+            for raw_actor_id in list(resolved_turn_visibility.get("visible_actor_ids") or []):
+                actor_id_text = str(raw_actor_id or "").strip()
+                if actor_id_text and actor_id_text not in merged_actor_ids:
+                    merged_actor_ids.append(actor_id_text)
+            for actor_id_text in actual_visible_actor_ids:
+                if actor_id_text and actor_id_text not in merged_actor_ids:
+                    merged_actor_ids.append(actor_id_text)
+            resolved_turn_visibility["visible_actor_ids"] = merged_actor_ids
+            meta["turn_visibility"] = resolved_turn_visibility
+        return {
+            "id": turn.id,
+            "kind": turn.kind,
+            "actor_id": turn.actor_id,
+            "actor_name": player_labels.get(str(turn.actor_id), str(turn.actor_id or "")),
+            "session_id": turn.session_id,
+            "content": turn.content,
+            "meta": meta,
+            "created_at": turn.created_at.isoformat() if turn.created_at else None,
+        }
+
+    def _turn_row_matches_session(
+        self,
+        row: dict[str, Any],
+        selected_session: GameSession | None,
+        actor_id: str | None,
+    ) -> bool:
+        if selected_session is None:
+            return True
+        selected_session_id = str(getattr(selected_session, "id", "") or "").strip()
+        row_session_id = str(row.get("session_id") or "").strip()
+        if selected_session_id and row_session_id and row_session_id == selected_session_id:
+            return True
+        selected_surface = str(getattr(selected_session, "surface", "") or "").strip().lower()
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        visibility = meta.get("turn_visibility") if isinstance(meta.get("turn_visibility"), dict) else {}
+        scope = str(visibility.get("scope") or "").strip().lower()
+        actor_id_text = str(actor_id or "").strip()
+        visible_actor_ids = [
+            str(value or "").strip()
+            for value in list(visibility.get("visible_actor_ids") or [])
+            if str(value or "").strip()
+        ]
+        actor_can_see_turn = bool(
+            actor_id_text
+            and (
+                str(row.get("actor_id") or "").strip() == actor_id_text
+                or actor_id_text in visible_actor_ids
+                or scope == "public"
+            )
+        )
+        if selected_surface == "web_shared":
+            return actor_can_see_turn and scope in {"public", "local"}
+        metadata = self._parse_json(getattr(selected_session, "metadata_json", "{}"), {})
+        owner_actor_id = str(metadata.get("owner_actor_id") or "").strip()
+        if actor_can_see_turn and (
+            selected_surface == "discord"
+            or (selected_surface == "web_private" and owner_actor_id and owner_actor_id == actor_id_text)
+            or (selected_surface == "web_direct" and actor_id_text)
+        ):
+            return scope in {"public", "local"} or actor_id_text in visible_actor_ids
+        return False
+
+    def _query_turn_rows(
+        self,
+        campaign_id: str,
+        *,
+        limit: int,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        query_text = str(query or "").strip().lower()
+        if query_text:
+            raw_limit = int(limit or 0)
+            safe_limit = max(1, raw_limit) if raw_limit > 0 else 10000
+        else:
+            safe_limit = max(1, min(int(limit or 30), 100))
+        safe_offset = max(0, int(offset or 0))
+        needed = safe_limit + safe_offset + 1
+        batch_size = max(100, min(500, safe_limit * 4))
+        actor_id_text = str(actor_id or "").strip()
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
-            player = None
-            player_labels: dict[str, str] = {}
+            selected_session = None
+            session_id_text = str(session_id or "").strip()
+            if session_id_text:
+                selected_session = session.get(GameSession, session_id_text)
+                if selected_session is None or str(selected_session.campaign_id) != str(campaign_id):
+                    raise KeyError(f"Unknown session in campaign: {session_id_text}")
             campaign_players = (
                 session.query(Player)
                 .filter(Player.campaign_id == campaign_id)
                 .all()
             )
+            player_labels: dict[str, str] = {}
+            player = None
             for row in campaign_players:
                 state = self._parse_json(row.state_json, {})
                 label = ""
@@ -5319,84 +5628,62 @@ class TextGameEngineGateway(EngineGateway):
                     elif raw_name is not None:
                         label = str(raw_name).strip()
                 player_labels[str(row.actor_id)] = label or str(row.actor_id)
-            actor_id_text = str(actor_id or "").strip()
+                if actor_id_text and str(row.actor_id) == actor_id_text:
+                    player = row
+            viewer_slug = ""
+            viewer_location_key = ""
             if actor_id_text:
-                player = next(
-                    (row for row in campaign_players if str(row.actor_id) == actor_id_text),
-                    None,
-                )
                 if player is None:
                     raise KeyError(f"Unknown player in campaign: {actor_id_text}")
-        # Guard against pathological pagination requests by capping limit/offset.
-        safe_limit = max(1, min(limit, 100))
-        safe_offset = max(0, min(offset, 1000))
-        fetch_limit = safe_limit + safe_offset + 1
-        actor_id_text = str(actor_id or "").strip()
-        if actor_id_text:
-            fetch_limit = min(400, max(fetch_limit, fetch_limit * 4))
-        raw = self._emulator.get_recent_turns(campaign_id, limit=fetch_limit)
-        if actor_id_text:
-            assert player is not None
-            player_state = self._emulator.get_player_state(player)
-            player_registry = self._emulator._campaign_player_registry(  # noqa: SLF001
-                campaign_id,
-                self._session_factory,
-            )
-            viewer_slug = str(
-                (player_registry.get("by_actor_id", {}).get(actor_id_text, {}) or {}).get("slug")
-                or self._emulator._player_visibility_slug(actor_id_text)  # noqa: SLF001
-                or ""
-            ).strip()
-            viewer_location_key = self._emulator._room_key_from_player_state(player_state)  # noqa: SLF001
-            raw = [
-                turn
-                for turn in raw
-                if self._emulator._turn_visible_to_viewer(  # noqa: SLF001
-                    turn,
-                    actor_id_text,
-                    viewer_slug,
-                    viewer_location_key,
-                )
-            ]
-        # raw is oldest→newest
-        has_more = len(raw) >= fetch_limit
-        end_idx = len(raw) - safe_offset if safe_offset < len(raw) else 0
-        start_idx = max(0, end_idx - safe_limit)
-        page = raw[start_idx:end_idx] if end_idx > 0 else []
-        rows = []
-        for turn in page:
-            meta = self._parse_json(turn.meta_json, {})
-            if isinstance(meta, dict):
-                scene_output = meta.get("scene_output") if isinstance(meta.get("scene_output"), dict) else None
-                resolved_visibility = self._resolve_turn_visibility(campaign_id, meta.get("visibility"))
-                resolved_turn_visibility = self._augment_turn_visibility_with_scene_awareness(
+                player_state = self._emulator.get_player_state(player)
+                player_registry = self._emulator._campaign_player_registry(  # noqa: SLF001
                     campaign_id,
-                    resolved_visibility,
-                    scene_output,
-                    actor_id=str(turn.actor_id or "").strip() or None,
+                    self._session_factory,
                 )
-                actual_visible_actor_ids = self._viewer_actor_ids_for_turn(campaign_id, turn)
-                merged_actor_ids: list[str] = []
-                for raw_actor_id in list(resolved_turn_visibility.get("visible_actor_ids") or []):
-                    actor_id_text = str(raw_actor_id or "").strip()
-                    if actor_id_text and actor_id_text not in merged_actor_ids:
-                        merged_actor_ids.append(actor_id_text)
-                for actor_id_text in actual_visible_actor_ids:
-                    if actor_id_text and actor_id_text not in merged_actor_ids:
-                        merged_actor_ids.append(actor_id_text)
-                resolved_turn_visibility["visible_actor_ids"] = merged_actor_ids
-                meta["turn_visibility"] = resolved_turn_visibility
-            rows.append({
-                "id": turn.id,
-                "kind": turn.kind,
-                "actor_id": turn.actor_id,
-                "actor_name": player_labels.get(str(turn.actor_id), str(turn.actor_id or "")),
-                "session_id": turn.session_id,
-                "content": turn.content,
-                "meta": meta,
-                "created_at": turn.created_at.isoformat() if turn.created_at else None,
-            })
-        return {"turns": rows, "count": len(rows), "has_more": has_more}
+                viewer_slug = str(
+                    (player_registry.get("by_actor_id", {}).get(actor_id_text, {}) or {}).get("slug")
+                    or self._emulator._player_visibility_slug(actor_id_text)  # noqa: SLF001
+                    or ""
+                ).strip()
+                viewer_location_key = self._emulator._room_key_from_player_state(player_state)  # noqa: SLF001
+            matched_rows_desc: list[dict[str, Any]] = []
+            db_offset = 0
+            while len(matched_rows_desc) < needed:
+                batch = (
+                    session.query(Turn)
+                    .filter(Turn.campaign_id == campaign_id)
+                    .order_by(Turn.id.desc())
+                    .offset(db_offset)
+                    .limit(batch_size)
+                    .all()
+                )
+                if not batch:
+                    break
+                db_offset += len(batch)
+                for turn in batch:
+                    if actor_id_text and not self._emulator._turn_visible_to_viewer(  # noqa: SLF001
+                        turn,
+                        actor_id_text,
+                        viewer_slug,
+                        viewer_location_key,
+                    ):
+                        continue
+                    if query_text and query_text not in str(turn.content or "").lower():
+                        continue
+                    row = self._turn_row_for_webui(campaign_id, turn, player_labels)
+                    if not self._turn_row_matches_session(row, selected_session, actor_id_text):
+                        continue
+                    if query_text:
+                        row["preview"] = str(turn.content or "")[:280]
+                    matched_rows_desc.append(row)
+                    if len(matched_rows_desc) >= needed:
+                        break
+                if len(batch) < batch_size:
+                    break
+        has_more = len(matched_rows_desc) > (safe_offset + safe_limit)
+        page_desc = matched_rows_desc[safe_offset:safe_offset + safe_limit]
+        page_rows = list(reversed(page_desc))
+        return {"rows": page_rows, "count": len(page_rows), "has_more": has_more}
 
     def _viewer_can_access_turn(
         self,
@@ -6186,6 +6473,7 @@ class TextGameEngineGateway(EngineGateway):
         Safe because ZorkEmulator null-checks ``_media_port`` at every
         usage site before calling into it.
         """
+        self._injected_media_port = media_port
         self._emulator._media_port = media_port
 
     def set_timer_effects_port(self, port: object) -> None:
@@ -6194,6 +6482,7 @@ class TextGameEngineGateway(EngineGateway):
         Safe because ZorkEmulator null-checks ``_timer_effects_port``
         before calling into it.
         """
+        self._injected_timer_effects_port = port
         self._emulator._timer_effects_port = port
 
     def set_notification_port(self, port: object) -> None:
@@ -6202,4 +6491,5 @@ class TextGameEngineGateway(EngineGateway):
         Safe because ZorkEmulator null-checks ``_notification_port``
         before calling into it.
         """
+        self._injected_notification_port = port
         self._emulator._notification_port = port

@@ -50,6 +50,13 @@
           <input type="checkbox" :checked="$store.app.debugMode" @change="$store.app.toggleDebugMode()" />
           <span>Debug</span>
         </label>
+        <button
+          type="button"
+          class="gear-btn"
+          title="Pinned turns"
+          aria-label="Pinned turns"
+          @click="$store.app.pinsOpen = !$store.app.pinsOpen"
+        >&#x1F4CC;</button>
         <button type="button" class="gear-btn" title="Settings" @click="$store.app.settingsOpen = !$store.app.settingsOpen">&#9881;</button>
       </div>
     </header>

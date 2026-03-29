@@ -22,6 +22,10 @@ class TurnRequest(BaseModel):
     browser_local_ollama: dict[str, Any] | None = None
 
 
+class TurnCancelRequest(BaseModel):
+    actor_id: str | None = None
+
+
 class TurnEditRequest(BaseModel):
     content: str
 

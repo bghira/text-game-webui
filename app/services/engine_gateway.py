@@ -61,6 +61,10 @@ FEATURES = [
 ]
 
 
+class TurnCancelledError(Exception):
+    """Raised when a live web UI turn is explicitly cancelled by the user."""
+
+
 class EngineGateway(Protocol):
     async def list_campaigns(self, namespace: str) -> list[CampaignSummary]: ...
     async def list_campaigns_for_actor(self, actor_id: str) -> list[CampaignSummary]: ...
@@ -98,6 +102,7 @@ class EngineGateway(Protocol):
     async def effective_llm_settings(self, campaign_id: str | None = None) -> dict[str, object]: ...
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
     def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]: ...
+    async def cancel_active_turn(self, campaign_id: str, actor_id: str) -> dict: ...
     async def queue_discord_mirror(
         self,
         campaign_id: str,
@@ -194,6 +199,17 @@ class EngineGateway(Protocol):
         campaign_id: str,
         limit: int = 30,
         offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict: ...
+    async def search_turns(
+        self,
+        campaign_id: str,
+        query: str,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
         actor_id: str | None = None,
     ) -> dict: ...
     async def edit_turn(
@@ -593,6 +609,17 @@ class InMemoryEngineGateway:
         for i in range(0, len(narration), chunk_size):
             yield {"event": "token", "data": {"text": narration[i : i + chunk_size]}}
         yield {"event": "complete", "data": result.model_dump()}
+
+    async def cancel_active_turn(self, campaign_id: str, actor_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        _ = actor_id
+        return {
+            "ok": True,
+            "cancelled": False,
+            "cleared_claims": 0,
+            "session_id": None,
+            "note": "No active turn to cancel.",
+        }
 
     async def queue_discord_mirror(
         self,
@@ -1277,6 +1304,7 @@ Legend: @ current player
         campaign_id: str,
         limit: int = 30,
         offset: int = 0,
+        session_id: str | None = None,
         actor_id: str | None = None,
     ) -> dict:
         self._require_campaign(campaign_id)
@@ -1311,6 +1339,55 @@ Legend: @ current player
                 }
             )
         return {"turns": page_rows, "count": len(page_rows), "has_more": start > 0}
+
+    async def search_turns(
+        self,
+        campaign_id: str,
+        query: str,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        needle = str(query or "").strip().lower()
+        if not needle:
+            return {"results": [], "count": 0, "has_more": False}
+        rows = []
+        player_labels: dict[str, str] = {}
+        for actor_key, payload in self._players[campaign_id].items():
+            label = ""
+            if isinstance(payload, dict):
+                state = payload.get("state")
+                if isinstance(state, dict):
+                    raw_name = state.get("character_name")
+                    if isinstance(raw_name, dict):
+                        label = str(raw_name.get("name") or "").strip()
+                    elif raw_name is not None:
+                        label = str(raw_name).strip()
+            player_labels[str(actor_key)] = label or str(actor_key)
+        for row in reversed(self._turns[campaign_id]):
+            if not isinstance(row, dict):
+                continue
+            if session_id and str(row.get("session_id") or "").strip() != str(session_id or "").strip():
+                continue
+            content = str(row.get("content") or "")
+            if needle not in content.lower():
+                continue
+            actor_key = str(row.get("actor_id") or "")
+            rows.append(
+                {
+                    **row,
+                    "actor_name": player_labels.get(actor_key, actor_key),
+                    "preview": content[:280],
+                }
+            )
+        safe_offset = max(0, offset)
+        safe_limit = max(1, limit)
+        page = rows[safe_offset:safe_offset + safe_limit]
+        has_more = (safe_offset + safe_limit) < len(rows)
+        return {"results": page, "count": len(page), "has_more": has_more}
 
     async def edit_turn(
         self,

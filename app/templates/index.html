@@ -333,21 +333,57 @@
 
     <!-- Turn Stream -->
     <div class="section-head">
-      <h2>Turn Stream</h2>
-      <small>
-        <template x-if="$store.app.debugMode">
-          <span x-text="selectedCampaignId ? selectedCampaignId + ' • ' : ''"></span>
-        </template>
-        <span x-text="selectedCampaignId ? currentSessionLabel() : 'No campaign selected'"></span>
-      </small>
+      <div class="section-head-main">
+        <h2>Turn Stream</h2>
+        <small>
+          <template x-if="$store.app.debugMode">
+            <span x-text="selectedCampaignId ? selectedCampaignId + ' • ' : ''"></span>
+          </template>
+          <span x-text="selectedCampaignId ? currentSessionLabel() : 'No campaign selected'"></span>
+        </small>
+      </div>
+      <div class="section-head-actions">
+        <button type="button" class="turn-search-toggle" @click="toggleTurnSearch()" :disabled="!selectedCampaignId">
+          <span x-text="turnSearch.open ? 'Hide Search' : 'Search Turns'"></span>
+        </button>
+      </div>
     </div>
 
-    <div class="turn-stream" id="turn-stream" @click="handleTurnStreamClick($event)">
-      <div x-show="_turnStreamLoadingOlder" class="turn-stream-loading">
-        <small>Loading older turns...</small>
+    <div class="pins-overlay" x-show="$store.app.pinsOpen" x-cloak>
+      <div class="pins-overlay-card">
+        <div class="pins-overlay-header">
+          <strong>Pinned Turns</strong>
+          <button type="button" class="turn-action-btn pins-close-btn" @click="$store.app.pinsOpen = false">Close</button>
+        </div>
+        <div class="pins-overlay-body">
+          <template x-for="pin in pinnedTurnsForSelectedCampaign()" :key="'pin-' + pin.turn_id">
+            <article class="pins-entry">
+              <header class="pins-entry-head">
+                <strong x-text="pin.actor_name || pin.type || 'turn'"></strong>
+                <small x-text="pin.created_at ? new Date(pin.created_at).toLocaleString() : ('Turn ' + pin.turn_id)"></small>
+              </header>
+              <p class="pins-entry-preview" x-text="pin.preview || pin.text || ''"></p>
+              <div class="pins-entry-actions">
+                <button type="button" class="turn-search-jump" @click="jumpToPinnedTurn(pin)">Jump</button>
+                <button type="button" class="turn-action-btn turn-pin-btn pinned" @click="removePinnedTurn(pin.turn_id)">📌</button>
+              </div>
+            </article>
+          </template>
+          <p x-show="pinnedTurnsForSelectedCampaign().length === 0" class="turn-search-empty">
+            No pinned turns in this campaign.
+          </p>
+        </div>
       </div>
-      <template x-for="entry in visibleTurnStream()" :key="entry.id">
-        <article class="turn-entry" :id="'turn-entry-' + entry.id" :class="'turn-type-' + entry.type">
+    </div>
+
+    <div class="turn-stream-layout" :class="{ 'turn-search-open': turnSearch.open }">
+      <div class="turn-stream-shell">
+        <div class="turn-stream" id="turn-stream" @click="handleTurnStreamClick($event)">
+          <div x-show="_turnStreamLoadingOlder" class="turn-stream-loading">
+            <small>Loading older turns...</small>
+          </div>
+          <template x-for="entry in visibleTurnStream()" :key="entry.id">
+            <article class="turn-entry" :id="'turn-entry-' + entry.id" :class="'turn-type-' + entry.type">
           <template x-if="entry.type === 'narrator'">
             <div class="turn-narrator">
               <template x-if="!turnIsCollapsed(entry)">
@@ -371,6 +407,8 @@
                     <small class="turn-time" x-text="entry.at"></small>
                     <template x-if="entry._backendTurnId > 0 && !entry._streaming">
                       <span class="turn-actions">
+                        <button type="button" class="turn-action-btn turn-pin-btn" :class="{ pinned: turnIsPinned(entry) }" :title="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'" :aria-label="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'"
+                          @click="toggleTurnPinned(entry)">&#x1F4CC;</button>
                         <button type="button" class="turn-action-btn rewind-btn" title="Rewind to this turn" aria-label="Rewind to this turn"
                           @click="rewindToTurnId(entry._backendTurnId)" :disabled="submitting">&#x23EA;</button>
                         <button type="button" class="turn-action-btn" title="Edit this turn" aria-label="Edit this turn"
@@ -426,6 +464,10 @@
                     <small class="turn-time" x-text="entry.at"></small>
                     <template x-if="entry._backendTurnId > 0 || turnIsQueued(entry)">
                       <span class="turn-actions">
+                        <template x-if="entry._backendTurnId > 0">
+                          <button type="button" class="turn-action-btn turn-pin-btn" :class="{ pinned: turnIsPinned(entry) }" :title="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'" :aria-label="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'"
+                            @click="toggleTurnPinned(entry)">&#x1F4CC;</button>
+                        </template>
                         <button type="button" class="turn-action-btn" title="Edit this turn" aria-label="Edit this turn"
                           @click="startTurnEdit(entry)" :disabled="turnMutationBusy">&#x270E;</button>
                         <button type="button" class="turn-action-btn" :title="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'" :aria-label="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'"
@@ -520,11 +562,46 @@
               <pre x-text="entry.text"></pre>
             </div>
           </template>
-        </article>
-      </template>
-      <p x-show="turnStream.length === 0 && !selectedCampaignId" class="empty">No turns yet.</p>
-      <p x-show="turnStream.length === 0 && selectedCampaignId && setupMode" class="empty">Your campaign is ready for setup. Open <strong>Config</strong> from the sidebar to continue.</p>
-      <p x-show="turnStream.length === 0 && selectedCampaignId && !setupMode" class="empty">Type an action below to begin your adventure.</p>
+            </article>
+          </template>
+          <p x-show="turnStream.length === 0 && !selectedCampaignId" class="empty">No turns yet.</p>
+          <p x-show="turnStream.length === 0 && selectedCampaignId && setupMode" class="empty">Your campaign is ready for setup. Open <strong>Config</strong> from the sidebar to continue.</p>
+          <p x-show="turnStream.length === 0 && selectedCampaignId && !setupMode" class="empty">Type an action below to begin your adventure.</p>
+        </div>
+      </div>
+      <aside class="turn-search-rail" x-show="turnSearch.open" x-cloak>
+        <div class="turn-search-header">
+          <strong>Search</strong>
+          <small x-text="selectedCampaignId ? currentSessionLabel() : ''"></small>
+        </div>
+        <form class="turn-search-form" @submit.prevent="runTurnSearch()">
+          <input
+            type="search"
+            x-model="turnSearch.query"
+            placeholder="Search visible turns..."
+            :disabled="!selectedCampaignId"
+          />
+          <button type="submit" :disabled="!selectedCampaignId || turnSearch.loading">Find</button>
+        </form>
+        <p class="turn-search-status" x-show="turnSearch.status" x-text="turnSearch.status"></p>
+        <div class="turn-search-results">
+          <template x-for="result in turnSearch.results" :key="'search-' + result.id">
+            <article class="turn-search-result" :class="{ active: Number(turnSearch.highlightTurnId || 0) === Number(result.id || 0) }">
+              <header class="turn-search-result-head">
+                <strong x-text="result.actor_name || result.kind || 'turn'"></strong>
+                <small x-text="result.created_at ? new Date(result.created_at).toLocaleString() : ''"></small>
+              </header>
+              <p class="turn-search-preview" x-text="result.preview || result.content || ''"></p>
+              <div class="turn-search-result-actions">
+                <button type="button" class="turn-search-jump" @click="jumpToSearchTurn(result)">Jump</button>
+              </div>
+            </article>
+          </template>
+          <p x-show="turnSearch.open && !turnSearch.loading && turnSearch.results.length === 0 && !turnSearch.status" class="turn-search-empty">
+            Search results will appear here.
+          </p>
+        </div>
+      </aside>
     </div>
 
     <!-- Character HUD + Action Bar -->
