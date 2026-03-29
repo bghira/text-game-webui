@@ -2200,6 +2200,9 @@
           <p class="settings-note" style="margin-top:0">
             Uses this browser tab to call your own local Ollama for your turns only. This does not change the campaign backend for other players.
           </p>
+          <p class="settings-note" style="margin-top:0">
+            Your local Ollama must allow this web UI's browser origin via <code>OLLAMA_ORIGINS</code>, or browser requests to <code>/api/chat</code> will be blocked.
+          </p>
           <div class="stack compact">
             <label class="checkbox-inline">
               <input type="checkbox" x-model="browserLocalOllama.enabled" />

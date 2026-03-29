@@ -208,6 +208,27 @@
       .replace(/^-+|-+$/g, "");
   }
 
+  function browserLocalOllamaOriginHint(baseUrl) {
+    const origin = window.location && window.location.origin ? window.location.origin : "<webui-origin>";
+    const target = String(baseUrl || "").trim() || "http://127.0.0.1:11434";
+    return `Local Ollama at ${target} must allow this browser origin (${origin}). Set OLLAMA_ORIGINS to include it, then restart Ollama.`;
+  }
+
+  function formatBrowserLocalOllamaError(error, baseUrl) {
+    const raw = String(error || "").trim();
+    const lower = raw.toLowerCase();
+    if (
+      raw === "TypeError: Failed to fetch"
+      || lower.includes("failed to fetch")
+      || lower.includes("cors")
+      || lower.includes("access-control-allow-origin")
+      || lower.includes("http 403")
+    ) {
+      return `${raw || "Browser request failed."} ${browserLocalOllamaOriginHint(baseUrl)}`;
+    }
+    return raw || "Unknown browser-local Ollama error.";
+  }
+
   /* ---- Alpine Global Store ---- */
   document.addEventListener("alpine:init", () => {
     Alpine.store("app", {
@@ -971,11 +992,11 @@
             detail: "",
           },
         };
+        const baseUrl = String(data.base_url || this.browserLocalOllama.base_url || "").trim().replace(/\/$/, "");
         try {
           if (this.browserLocalOllama.enabled !== true) {
             throw new Error("Browser-local Ollama is not enabled in this browser.");
           }
-          const baseUrl = String(data.base_url || this.browserLocalOllama.base_url || "").trim().replace(/\/$/, "");
           const model = String(data.model || this.browserLocalOllama.model || "").trim();
           if (!baseUrl || !model) {
             throw new Error("Browser-local Ollama request is missing base URL or model.");
@@ -1025,7 +1046,7 @@
           reply.payload.detail = "";
         } catch (error) {
           reply.payload.ok = false;
-          reply.payload.detail = String(error);
+          reply.payload.detail = formatBrowserLocalOllamaError(error, baseUrl);
         }
         try {
           this.socket.send(JSON.stringify(reply));
@@ -1152,21 +1173,51 @@
         this.browserLocalOllamaStatus = { ok: null, message: "Testing browser-local Ollama..." };
         try {
           const cfg = this.browserLocalOllamaPayload();
-          const response = await fetch(`${String(cfg.base_url || "").replace(/\/$/, "")}/api/tags`);
+          const baseUrl = String(cfg.base_url || "").replace(/\/$/, "");
+          const response = await fetch(`${baseUrl}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: cfg.model,
+              stream: false,
+              keep_alive: cfg.keep_alive || "30m",
+              messages: [
+                { role: "user", content: "Reply with exactly: OK" },
+              ],
+              options: {
+                num_predict: 8,
+                temperature: 0,
+              },
+            }),
+          });
           if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
+            const raw = await response.text();
+            let parsed = {};
+            if (raw) {
+              try {
+                parsed = JSON.parse(raw);
+              } catch (_err) {
+                parsed = { detail: raw };
+              }
+            }
+            throw new Error(parsed.error || parsed.detail || `HTTP ${response.status}`);
           }
           const data = await response.json();
-          const models = Array.isArray(data.models) ? data.models : [];
-          const matched = models.some((row) => String(row && row.name || "").trim() === cfg.model);
+          const content = String(data?.message?.content || data?.response || "").trim();
           this.browserLocalOllamaStatus = {
-            ok: matched,
-            message: matched
-              ? "Browser-local Ollama is reachable and the model is available."
-              : "Browser-local Ollama is reachable, but that model was not found in /api/tags.",
+            ok: content.length > 0,
+            message: content.length > 0
+              ? "Browser-local Ollama is reachable via /api/chat and the model responded."
+              : "Browser-local Ollama reached /api/chat but returned empty content.",
           };
         } catch (err) {
-          this.browserLocalOllamaStatus = { ok: false, message: "Browser-local Ollama test failed: " + String(err) };
+          this.browserLocalOllamaStatus = {
+            ok: false,
+            message: "Browser-local Ollama test failed: " + formatBrowserLocalOllamaError(
+              err,
+              String(this.browserLocalOllama.base_url || "").trim()
+            ),
+          };
         }
       },
 
