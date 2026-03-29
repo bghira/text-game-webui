@@ -3382,7 +3382,11 @@ details summary {
     gap: 0.4rem;
   }
 
-  .char-hud {
+  .main-column .action-bar-column {
+    gap: 0;
+  }
+
+  .main-column .action-bar-column > .char-hud {
     display: none;
   }
 
@@ -3412,5 +3416,15 @@ details summary {
 
   .song-embed-wrap {
     padding-bottom: 56.25%;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .main-column .action-bar-column {
+    gap: 0;
+  }
+
+  .main-column .action-bar-column > .char-hud {
+    display: none;
   }
 }

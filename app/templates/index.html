@@ -560,7 +560,13 @@
               id="action-input"
               rows="1"
               @keydown="handleComposerKeydown($event)"
-              @input="if(!CSS.supports('field-sizing','content')){$el.style.height='0';$el.style.height=$el.scrollHeight+'px'} updateMentionAutocomplete($event); ensureComposerVisible()"
+              @input="
+                const _ts = document.getElementById('turn-stream');
+                const _bOff = _ts ? (_ts.scrollHeight - _ts.scrollTop - _ts.clientHeight) : 0;
+                if (!CSS.supports('field-sizing','content')) { $el.style.height = '0'; $el.style.height = $el.scrollHeight + 'px'; }
+                requestAnimationFrame(() => { if (_ts) _ts.scrollTop = _ts.scrollHeight - _ts.clientHeight - _bOff; });
+                updateMentionAutocomplete($event);
+              "
               @click="updateMentionAutocomplete($event)"
               @keyup="updateMentionAutocomplete($event)"
               @focus="ensureComposerVisible()"
