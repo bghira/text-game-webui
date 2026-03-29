@@ -1088,6 +1088,24 @@ button:disabled {
   padding: 0.35rem 0.7rem;
 }
 
+.turn-player-other {
+  background: color-mix(in srgb, var(--surface-dim) 62%, var(--surface-soft) 38%);
+  border-left: 3px solid color-mix(in srgb, var(--ink-muted) 55%, transparent);
+}
+
+.turn-player-queued {
+  background: color-mix(in srgb, var(--surface-dim) 72%, var(--accent) 28%);
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.turn-player-other .turn-player-actor {
+  color: color-mix(in srgb, var(--ink-muted) 72%, var(--ink) 28%);
+}
+
+.turn-player-other .player-action-text {
+  color: color-mix(in srgb, var(--player-action-text) 80%, var(--ink) 20%);
+}
+
 .turn-player-shell {
   display: flex;
   align-items: baseline;
@@ -1125,11 +1143,22 @@ button:disabled {
   text-transform: none;
 }
 
+.turn-player-queue-badge {
+  display: inline-flex;
+  width: fit-content;
+  font-size: 0.62rem;
+  line-height: 1;
+  padding: 0.18rem 0.38rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
 .player-action-text {
   font-size: 0.8rem;
   color: var(--player-action-text);
   line-height: 1.4;
-  font-style: italic;
   display: block;
   min-width: 0;
 }

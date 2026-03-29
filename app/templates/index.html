@@ -117,33 +117,33 @@
           <template x-if="sidebarCalendarEvents().length === 0">
             <p class="calendar-empty">No upcoming events.</p>
           </template>
-          <template x-for="(event, idx) in sidebarCalendarEvents()" :key="idx">
-            <div class="calendar-entry" :class="'calendar-status-' + (event.status || 'upcoming')">
+          <template x-for="(calEvt, idx) in sidebarCalendarEvents()" :key="idx">
+            <div class="calendar-entry" :class="'calendar-status-' + (calEvt.status || 'upcoming')">
               <div class="calendar-entry-top">
-                <span class="calendar-title" x-text="event.title || event.name || event.event_key || 'Untitled event'"></span>
-                <small class="calendar-time" x-text="calendarSidebarTimeLabel(event)"></small>
+                <span class="calendar-title" x-text="calEvt.title || calEvt.name || calEvt.event_key || 'Untitled event'"></span>
+                <small class="calendar-time" x-text="calendarSidebarTimeLabel(calEvt)"></small>
               </div>
               <div class="calendar-actions">
                 <button
                   type="button"
                   class="calendar-visibility-button"
-                  :class="{ active: (event.scope || '') === 'global' }"
-                  @click="setCalendarEventVisibility(event, 'public')"
-                  :disabled="calendarVisibilityUpdating[event.event_key || '']"
+                  :class="{ active: (calEvt.scope || '') === 'global' }"
+                  @click="setCalendarEventVisibility(calEvt, 'public')"
+                  :disabled="calendarVisibilityUpdating[calEvt.event_key || '']"
                 >Public</button>
                 <button
                   type="button"
                   class="calendar-visibility-button"
-                  :class="{ active: (event.scope || '') === 'targeted' }"
-                  @click="setCalendarEventVisibility(event, 'private')"
-                  :disabled="calendarVisibilityUpdating[event.event_key || '']"
+                  :class="{ active: (calEvt.scope || '') === 'targeted' }"
+                  @click="setCalendarEventVisibility(calEvt, 'private')"
+                  :disabled="calendarVisibilityUpdating[calEvt.event_key || '']"
                 >Private</button>
               </div>
-              <template x-if="event.location">
-                <p class="calendar-location" x-text="event.location"></p>
+              <template x-if="calEvt.location">
+                <p class="calendar-location" x-text="calEvt.location"></p>
               </template>
-              <template x-if="event.description && !event.location">
-                <p class="calendar-location" x-text="event.description"></p>
+              <template x-if="calEvt.description && !calEvt.location">
+                <p class="calendar-location" x-text="calEvt.description"></p>
               </template>
             </div>
           </template>
@@ -387,11 +387,14 @@
             </div>
           </template>
           <template x-if="entry.type === 'player'">
-            <div class="turn-player">
+            <div class="turn-player" :class="{ 'turn-player-queued': turnIsQueued(entry), 'turn-player-other': turnIsOtherPlayer(entry) }">
               <template x-if="!turnIsCollapsed(entry)">
                 <div class="turn-player-shell">
                   <div class="turn-player-body">
                     <span class="turn-player-actor" x-text="turnEntryActorLabel(entry)"></span>
+                    <template x-if="turnIsQueued(entry)">
+                      <span class="turn-player-queue-badge">Queued</span>
+                    </template>
                     <template x-if="!turnIsEditing(entry)">
                       <div class="player-action-text" x-html="renderSimpleMarkdown(entry.text)"></div>
                     </template>
@@ -399,8 +402,8 @@
                       <div class="turn-editor">
                         <textarea class="turn-editor-input" x-model="editingTurnDraft" rows="4"></textarea>
                         <div class="turn-editor-actions">
-                          <button type="button" @click="saveTurnEdit(entry)" :disabled="submitting || turnMutationBusy">Save</button>
-                          <button type="button" @click="cancelTurnEdit()" :disabled="turnMutationBusy">Cancel</button>
+                          <button type="button" @click="saveTurnEdit(entry)" :disabled="turnIsQueued(entry) ? false : (submitting || turnMutationBusy)">Save</button>
+                          <button type="button" @click="cancelTurnEdit()" :disabled="turnIsQueued(entry) ? false : turnMutationBusy">Cancel</button>
                         </div>
                       </div>
                     </template>
@@ -410,7 +413,7 @@
                       <small class="turn-player-footnote" x-text="entry.meta.pending_mention_note"></small>
                     </template>
                     <small class="turn-time" x-text="entry.at"></small>
-                    <template x-if="entry._backendTurnId > 0">
+                    <template x-if="entry._backendTurnId > 0 || turnIsQueued(entry)">
                       <span class="turn-actions">
                         <button type="button" class="turn-action-btn" title="Edit this turn" aria-label="Edit this turn"
                           @click="startTurnEdit(entry)" :disabled="turnMutationBusy">&#x270E;</button>
@@ -418,7 +421,7 @@
                           @click="toggleTurnCollapsed(entry)">&#x1F648;</button>
                         <button type="button" class="turn-action-btn" title="Copy turn text" aria-label="Copy turn text"
                           @click="copyTurnText(entry)">&#x1F4CB;</button>
-                        <button type="button" class="turn-action-btn turn-delete-btn" title="Delete this turn" aria-label="Delete this turn"
+                        <button type="button" class="turn-action-btn turn-delete-btn" :title="turnIsQueued(entry) ? 'Remove queued action' : 'Delete this turn'" :aria-label="turnIsQueued(entry) ? 'Remove queued action' : 'Delete this turn'"
                           @click="deleteTurnEntry(entry)" :disabled="turnMutationBusy">&#x1F5D1;</button>
                       </span>
                     </template>

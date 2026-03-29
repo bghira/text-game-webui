@@ -273,6 +273,7 @@
       statusMessage: "Ready.",
       errorMessage: "",
       turnCounter: 0,
+      _queuedTurnSerial: 0,
       socket: null,
       socketReconnectTimer: null,
       turnStream: [],
@@ -809,7 +810,12 @@
       },
 
       populateTurnStreamFromHistory(scrollToBottom) {
-        if (!this.recentTurns || this.recentTurns.length === 0) return;
+        if (!this.recentTurns || this.recentTurns.length === 0) {
+          this.turnStream = [];
+          this._rebuildQueuedTurnStreamEntries();
+          if (scrollToBottom !== false) this._scrollStream();
+          return;
+        }
         const sessionId = this.selectedSessionId;
         const result = this._buildTurnEntries(this.recentTurns, sessionId);
         this.turnCounter = result.counter;
@@ -821,6 +827,7 @@
             this.gameTime = result.lastGameTime;
           }
         }
+        this._rebuildQueuedTurnStreamEntries();
         if (scrollToBottom !== false) this._scrollStream();
       },
 
@@ -858,10 +865,30 @@
         );
       },
 
+      turnIsQueued(entry) {
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        return meta.queued_local === true;
+      },
+
+      turnIsOtherPlayer(entry) {
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        const actorId = String(meta.actor_id || "").trim();
+        const currentActorId = String(this.turnForm.actor_id || "").trim();
+        return !!(actorId && currentActorId && actorId !== currentActorId);
+      },
+
+      _nextQueuedTurnId() {
+        this._queuedTurnSerial += 1;
+        return `queued:${Date.now()}:${this._queuedTurnSerial}`;
+      },
+
       entryTurnKey(entry) {
         if (!entry || typeof entry !== "object") return "";
         const backend = Number(entry._backendTurnId) || 0;
         if (backend > 0) return `turn:${backend}`;
+        const meta = entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        const queuedId = String(meta.queue_entry_id || "").trim();
+        if (queuedId) return queuedId;
         return `entry:${entry.id || ""}`;
       },
 
@@ -884,7 +911,7 @@
       },
 
       startTurnEdit(entry) {
-        if (!entry || !entry._backendTurnId) return;
+        if (!entry || (!entry._backendTurnId && !this.turnIsQueued(entry))) return;
         this.editingTurnKey = this.entryTurnKey(entry);
         this.editingTurnDraft = String(entry.text || "");
       },
@@ -1664,6 +1691,92 @@
         return Array.isArray(this._turnQueues[key]) ? this._turnQueues[key].length : 0;
       },
 
+      _queuedTurnStreamEntry(queueItem) {
+        if (!queueItem || typeof queueItem !== "object") return null;
+        const actorId = String(queueItem.actor_id || "").trim();
+        const queueEntryId = String(queueItem.queue_entry_id || "").trim();
+        if (!actorId || !queueEntryId) return null;
+        return {
+          id: queueEntryId,
+          type: "player",
+          at: nowLabel(),
+          text: String(queueItem.action || "").trim(),
+          meta: {
+            actor_id: actorId,
+            actor_name: this.resolveActorDisplayName(actorId, "", actorId),
+            queued_local: true,
+            queue_entry_id: queueEntryId,
+            pending_mention_note: "Queued locally. Edit or remove it before it submits.",
+          },
+        };
+      },
+
+      _appendQueuedTurnStreamEntry(queueItem) {
+        const entry = this._queuedTurnStreamEntry(queueItem);
+        if (!entry) return;
+        const existing = this.turnStream.find((row) => this.entryTurnKey(row) === entry.meta.queue_entry_id);
+        if (existing) {
+          existing.text = entry.text;
+          existing.at = entry.at;
+          existing.meta = { ...(existing.meta || {}), ...(entry.meta || {}) };
+          return;
+        }
+        this.turnStream.push(entry);
+        this.$nextTick(() => {
+          const stream = document.getElementById("turn-stream");
+          if (stream) stream.scrollTop = stream.scrollHeight;
+        });
+      },
+
+      _syncQueuedTurnStreamEntry(queueItem, extraMeta) {
+        const queueEntryId = String(queueItem && queueItem.queue_entry_id || "").trim();
+        if (!queueEntryId) return null;
+        const entry = this.turnStream.find((row) => this.entryTurnKey(row) === queueEntryId);
+        if (!entry) return null;
+        entry.text = String(queueItem.action || entry.text || "").trim();
+        entry.at = nowLabel();
+        entry.meta = {
+          ...(entry.meta || {}),
+          ...(extraMeta && typeof extraMeta === "object" ? extraMeta : {}),
+          queue_entry_id: queueEntryId,
+          actor_id: String(queueItem.actor_id || entry.meta?.actor_id || "").trim(),
+          actor_name: this.resolveActorDisplayName(
+            String(queueItem.actor_id || entry.meta?.actor_id || "").trim(),
+            String(entry.meta?.actor_name || "").trim(),
+            String(queueItem.actor_id || "").trim(),
+          ),
+        };
+        return entry;
+      },
+
+      _removeQueuedTurnStreamEntry(queueEntryId) {
+        const wanted = String(queueEntryId || "").trim();
+        if (!wanted) return;
+        this.turnStream = this.turnStream.filter((entry) => this.entryTurnKey(entry) !== wanted);
+      },
+
+      _queuedTurnItemById(queueEntryId) {
+        const wanted = String(queueEntryId || "").trim();
+        if (!wanted) return null;
+        for (const [key, rows] of Object.entries(this._turnQueues || {})) {
+          if (!Array.isArray(rows)) continue;
+          const index = rows.findIndex((row) => String(row && row.queue_entry_id || "").trim() === wanted);
+          if (index >= 0) {
+            return { key, rows, index, item: rows[index] };
+          }
+        }
+        return null;
+      },
+
+      _rebuildQueuedTurnStreamEntries() {
+        const key = this.currentTurnQueueKey();
+        if (!key) return;
+        const rows = Array.isArray(this._turnQueues[key]) ? this._turnQueues[key] : [];
+        for (const row of rows) {
+          this._appendQueuedTurnStreamEntry(row);
+        }
+      },
+
       submitButtonLabel() {
         if (this.imageGenerating > 0) return "Generating...";
         if (this.submitting) {
@@ -1679,12 +1792,15 @@
         if (!Array.isArray(this._turnQueues[key])) {
           this._turnQueues[key] = [];
         }
-        this._turnQueues[key].push({
+        const queueItem = {
           actor_id: String(payload.actor_id || "").trim(),
           action: String(payload.action || "").trim(),
           session_id: payload.session_id || null,
           mentioned_actor_ids: Array.isArray(payload.mentioned_actor_ids) ? payload.mentioned_actor_ids.slice() : [],
-        });
+          queue_entry_id: this._nextQueuedTurnId(),
+        };
+        this._turnQueues[key].push(queueItem);
+        this._appendQueuedTurnStreamEntry(queueItem);
         this.turnForm.action = "";
         this.closeMentionAutocomplete();
         const count = this._turnQueues[key].length;
@@ -1734,17 +1850,31 @@
             if (!next || !String(next.action || "").trim()) {
               continue;
             }
-            const result = await this._submitTurnPayload(this.selectedCampaignId, next, { queued: true });
+            this._syncQueuedTurnStreamEntry(next, {
+              queued_local: false,
+              pending_submit: true,
+              pending_mention_note: "Submitting queued action...",
+            });
+            const result = await this._submitTurnPayload(this.selectedCampaignId, next, {
+              queued: true,
+              existingQueueEntryId: next.queue_entry_id,
+            });
             if (!result.ok) {
               if (this._isQueueRetryableTurnError(result.error)) {
                 if (!Array.isArray(this._turnQueues[key])) {
                   this._turnQueues[key] = [];
                 }
                 this._turnQueues[key].unshift(next);
+                this._syncQueuedTurnStreamEntry(next, {
+                  queued_local: true,
+                  pending_submit: false,
+                  pending_mention_note: "Queued locally. Edit or remove it before it submits.",
+                });
                 this.statusMessage = "Queued action is waiting for the current turn to clear.";
                 await new Promise((resolve) => setTimeout(resolve, 500));
                 continue;
               }
+              this._removeQueuedTurnStreamEntry(next.queue_entry_id);
               this._surfaceTurnSubmitError(result.error, { queued: true });
             }
           }
@@ -2723,6 +2853,25 @@
       },
 
       async saveTurnEdit(entry) {
+        if (this.turnIsQueued(entry)) {
+          const queueEntryId = entry && entry.meta && entry.meta.queue_entry_id;
+          const queued = this._queuedTurnItemById(queueEntryId);
+          const text = String(this.editingTurnDraft || "").trim();
+          if (!queued || !text) {
+            this.errorMessage = "Queued turn text cannot be empty.";
+            return;
+          }
+          queued.item.action = text;
+          queued.item.mentioned_actor_ids = this.mentionedActorIdsFromAction(text);
+          this._syncQueuedTurnStreamEntry(queued.item, {
+            queued_local: true,
+            pending_submit: false,
+            pending_mention_note: "Queued locally. Edit or remove it before it submits.",
+          });
+          this.cancelTurnEdit();
+          this.statusMessage = "Queued action updated.";
+          return;
+        }
         this.resetError();
         const turnId = Number(entry && entry._backendTurnId) || 0;
         const text = String(this.editingTurnDraft || "").trim();
@@ -2750,6 +2899,20 @@
       },
 
       async deleteTurnEntry(entry) {
+        if (this.turnIsQueued(entry)) {
+          const queueEntryId = entry && entry.meta && entry.meta.queue_entry_id;
+          const queued = this._queuedTurnItemById(queueEntryId);
+          if (!queued) return;
+          queued.rows.splice(queued.index, 1);
+          if (!queued.rows.length) {
+            delete this._turnQueues[queued.key];
+          }
+          this.cancelTurnEdit();
+          this._removeQueuedTurnStreamEntry(queueEntryId);
+          const count = this.currentQueuedTurnCount();
+          this.statusMessage = count > 0 ? `Queued ${count} actions.` : "Queued action removed.";
+          return;
+        }
         this.resetError();
         const turnId = Number(entry && entry._backendTurnId) || 0;
         if (!this.selectedCampaignId || turnId <= 0) return;
@@ -3429,6 +3592,14 @@
         if (!payload.action) return;
         if (this.submitting) {
           this._enqueueTurnPayload(this.selectedCampaignId, payload);
+          this.turnForm.action = "";
+          this.closeMentionAutocomplete();
+          this.$nextTick(() => {
+            const input = document.getElementById("action-input");
+            if (!input) return;
+            input.style.height = "auto";
+            input.style.height = `${input.scrollHeight}px`;
+          });
           return;
         }
         const result = await this._submitTurnPayload(this.selectedCampaignId, payload, { queued: false });
@@ -3438,20 +3609,38 @@
         await this._drainQueuedTurns();
       },
 
-      async _submitTurnPayload(campaignId, payload, { queued = false } = {}) {
+      async _submitTurnPayload(campaignId, payload, { queued = false, existingQueueEntryId = null } = {}) {
         this.submitting = true;
         this._submittingTurn = true;
         this.statusMessage = queued ? "Processing queued action..." : "Submitting turn...";
+        const shouldClearComposerOnResolve = !queued && !String(existingQueueEntryId || "").trim();
         let backendTurnId = 0;
         let optimisticPlayerEntryId = 0;
         try {
           if (payload.action) {
-            this.pushStream("player", payload.action, {
-              actor_id: payload.actor_id,
-              actor_name: this.resolveActorDisplayName(payload.actor_id, "", payload.actor_id),
-              pending_submit: true,
-            });
-            optimisticPlayerEntryId = this.turnCounter;
+            const existingQueueId = String(existingQueueEntryId || "").trim();
+            if (existingQueueId) {
+              const existing = this.turnStream.find((entry) => this.entryTurnKey(entry) === existingQueueId);
+              if (existing) {
+                existing.text = payload.action;
+                existing.at = nowLabel();
+                existing.meta = {
+                  ...(existing.meta || {}),
+                  actor_id: payload.actor_id,
+                  actor_name: this.resolveActorDisplayName(payload.actor_id, "", payload.actor_id),
+                  pending_submit: true,
+                  queued_local: false,
+                  queue_entry_id: existingQueueId,
+                };
+              }
+            } else {
+              this.pushStream("player", payload.action, {
+                actor_id: payload.actor_id,
+                actor_name: this.resolveActorDisplayName(payload.actor_id, "", payload.actor_id),
+                pending_submit: true,
+              });
+              optimisticPlayerEntryId = this.turnCounter;
+            }
           }
 
           if (!this.runtimeInfo.streaming_supported) {
@@ -3498,8 +3687,10 @@
                 this.campaignSummary = body.summary_update;
               }
             }
-            this.turnForm.action = "";
-            this.closeMentionAutocomplete();
+            if (shouldClearComposerOnResolve) {
+              this.turnForm.action = "";
+              this.closeMentionAutocomplete();
+            }
             if (body.state_update && body.state_update.game_time) {
               this.gameTime = body.state_update.game_time;
             }
@@ -3571,8 +3762,10 @@
               }
             }
 
-            this.turnForm.action = "";
-            this.closeMentionAutocomplete();
+            if (shouldClearComposerOnResolve) {
+              this.turnForm.action = "";
+              this.closeMentionAutocomplete();
+            }
           }
 
           await Promise.all([
