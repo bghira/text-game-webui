@@ -3418,13 +3418,3 @@ details summary {
     padding-bottom: 56.25%;
   }
 }
-
-@media (hover: none) and (pointer: coarse) {
-  .action-bar-column {
-    gap: 0;
-  }
-
-  .char-hud {
-    display: none !important;
-  }
-}

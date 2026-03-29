@@ -5062,10 +5062,10 @@
 
       showComposerHud() {
         try {
-          if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+          if (typeof window === "undefined") {
             return true;
           }
-          return !window.matchMedia("(max-width: 768px), (hover: none) and (pointer: coarse)").matches;
+          return Number(window.innerWidth || 0) > 768;
         } catch (_err) {
           return true;
         }
