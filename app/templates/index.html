@@ -527,28 +527,30 @@
         <img :src="playerData?.state?.avatar_url" :alt="resolveCharacterName('') + ' avatar'" class="action-bar-avatar" />
       </template>
       <div class="action-bar-column">
-        <div class="char-hud">
-          <div class="char-hud-top">
-            <strong class="char-hud-name" x-text="resolveCharacterName()"></strong>
-            <select x-show="uniqueActors().length > 1" x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
-              <template x-for="actor in uniqueActors()" :key="actor">
-                <option :value="actor" x-text="actor"></option>
-              </template>
-            </select>
-          </div>
-          <template x-if="playerData">
-            <div class="char-hud-stats">
-              <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
-              <div class="xp-bar-track char-hud-xp">
-                <div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div>
-              </div>
-              <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+        <template x-if="showComposerHud()">
+          <div class="char-hud">
+            <div class="char-hud-top">
+              <strong class="char-hud-name" x-text="resolveCharacterName()"></strong>
+              <select x-show="uniqueActors().length > 1" x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
+                <template x-for="actor in uniqueActors()" :key="actor">
+                  <option :value="actor" x-text="actor"></option>
+                </template>
+              </select>
             </div>
-          </template>
-          <template x-if="playerData?.state?.room_title">
-            <span class="char-hud-location" x-text="playerData?.state?.room_title"></span>
-          </template>
-        </div>
+            <template x-if="playerData">
+              <div class="char-hud-stats">
+                <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
+                <div class="xp-bar-track char-hud-xp">
+                  <div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div>
+                </div>
+                <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+              </div>
+            </template>
+            <template x-if="playerData?.state?.room_title">
+              <span class="char-hud-location" x-text="playerData?.state?.room_title"></span>
+            </template>
+          </div>
+        </template>
         <form class="action-bar" @submit.prevent="submitTurn()">
           <span class="action-prompt">&gt;</span>
           <div class="action-input-shell">

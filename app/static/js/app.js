@@ -5060,6 +5060,17 @@
         });
       },
 
+      showComposerHud() {
+        try {
+          if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+            return true;
+          }
+          return !window.matchMedia("(max-width: 768px), (hover: none) and (pointer: coarse)").matches;
+        } catch (_err) {
+          return true;
+        }
+      },
+
       resolveCharacterName(fallback) {
         const cn = this.playerData?.state?.character_name;
         if (!cn) return fallback || this.turnForm.actor_id || "Unknown";
