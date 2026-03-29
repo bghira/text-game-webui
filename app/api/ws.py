@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.services.dtm_link_auth import dtm_link_enabled, get_linked_actor_from_websocket
 
@@ -39,6 +41,15 @@ async def campaign_socket(campaign_id: str, ws: WebSocket) -> None:
     try:
         while True:
             data = await ws.receive_text()
+            try:
+                payload = json.loads(data)
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                msg_type = str(payload.get("type") or "").strip().lower()
+                if msg_type == "browser_llm_result" and hasattr(gateway, "handle_browser_llm_result"):
+                    await gateway.handle_browser_llm_result(payload)
+                    continue
             await ws.send_json({"type": "ack", "campaign_id": campaign_id, "data": data})
     except WebSocketDisconnect:
         hub.disconnect(campaign_id, ws)

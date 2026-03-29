@@ -2196,6 +2196,52 @@
         </template>
 
         <div class="settings-group">
+          <p class="settings-group-title">Browser-Local Ollama</p>
+          <p class="settings-note" style="margin-top:0">
+            Uses this browser tab to call your own local Ollama for your turns only. This does not change the campaign backend for other players.
+          </p>
+          <div class="stack compact">
+            <label class="checkbox-inline">
+              <input type="checkbox" x-model="browserLocalOllama.enabled" />
+              <span>Use my local Ollama for my turns</span>
+            </label>
+
+            <label>
+              Local Base URL
+              <input x-model="browserLocalOllama.base_url" placeholder="http://127.0.0.1:11434" />
+            </label>
+
+            <label>
+              Local Model
+              <input x-model="browserLocalOllama.model" placeholder="llama3.1:8b" />
+            </label>
+
+            <label>
+              Keep-Alive
+              <input x-model="browserLocalOllama.keep_alive" placeholder="30m" />
+            </label>
+
+            <label>
+              Timeout (seconds)
+              <input type="number" x-model.number="browserLocalOllama.timeout_seconds" min="1" max="600" />
+            </label>
+
+            <details>
+              <summary>Advanced Options</summary>
+              <label>
+                Options JSON
+                <textarea x-model="browserLocalOllama.ollama_options_json" rows="3" placeholder="{}"></textarea>
+              </label>
+            </details>
+          </div>
+          <div class="drawer-actions">
+            <button type="button" @click="testBrowserLocalOllama()">Test Local Ollama</button>
+            <button type="button" @click="saveBrowserLocalOllamaSettings()" class="btn-primary">Save Browser Settings</button>
+          </div>
+          <p class="settings-status" :class="browserLocalOllamaStatus.ok === false ? 'error' : 'status'" x-show="browserLocalOllamaStatus.message" x-text="browserLocalOllamaStatus.message"></p>
+        </div>
+
+        <div class="settings-group">
           <p class="settings-group-title">Connection</p>
           <div class="stack compact">
             <label>

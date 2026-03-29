@@ -305,6 +305,15 @@
       settingsLockMessage: "",
       settingsSaving: false,
       settingsStatus: { ok: null, message: "" },
+      browserLocalOllama: {
+        enabled: false,
+        base_url: "http://127.0.0.1:11434",
+        model: "",
+        keep_alive: "30m",
+        timeout_seconds: 90,
+        ollama_options_json: "{}",
+      },
+      browserLocalOllamaStatus: { ok: null, message: "" },
 
       /* Image settings panel state */
       imageSettingsForm: {
@@ -601,6 +610,7 @@
         await this.loadRuntime();
         await this.refreshCampaigns();
         await this.loadSettingsForm();
+        this.loadBrowserLocalOllamaSettings();
         await this.loadImageSettingsForm();
         await this.loadOllamaModels();
         /* watch debug toggle to guard inspector tab */
@@ -948,6 +958,81 @@
         }
       },
 
+      async handleBrowserLlmRequest(payload) {
+        const data = payload && typeof payload === "object" ? payload : {};
+        const requestId = String(data.request_id || "").trim();
+        if (!requestId || !this.socket) return;
+        const reply = {
+          type: "browser_llm_result",
+          payload: {
+            request_id: requestId,
+            ok: false,
+            text: "",
+            detail: "",
+          },
+        };
+        try {
+          if (this.browserLocalOllama.enabled !== true) {
+            throw new Error("Browser-local Ollama is not enabled in this browser.");
+          }
+          const baseUrl = String(data.base_url || this.browserLocalOllama.base_url || "").trim().replace(/\/$/, "");
+          const model = String(data.model || this.browserLocalOllama.model || "").trim();
+          if (!baseUrl || !model) {
+            throw new Error("Browser-local Ollama request is missing base URL or model.");
+          }
+          const options = data.ollama_options && typeof data.ollama_options === "object"
+            ? { ...data.ollama_options }
+            : {};
+          if (options.temperature == null && typeof data.temperature === "number") {
+            options.temperature = data.temperature;
+          }
+          if (options.num_predict == null && typeof data.max_tokens === "number") {
+            options.num_predict = data.max_tokens;
+          }
+          const body = {
+            model,
+            stream: false,
+            keep_alive: String(data.keep_alive || this.browserLocalOllama.keep_alive || "30m"),
+            messages: [
+              { role: "system", content: String(data.system_prompt || "") },
+              { role: "user", content: String(data.prompt || "") },
+            ],
+            options,
+          };
+          const response = await fetch(`${baseUrl}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const raw = await response.text();
+          let parsed = {};
+          if (raw) {
+            try {
+              parsed = JSON.parse(raw);
+            } catch (_err) {
+              parsed = { detail: raw };
+            }
+          }
+          if (!response.ok) {
+            throw new Error(parsed.error || parsed.detail || `HTTP ${response.status}`);
+          }
+          const text = String(parsed?.message?.content || parsed?.response || "").trim();
+          if (!text) {
+            throw new Error("Local Ollama returned empty content.");
+          }
+          reply.payload.ok = true;
+          reply.payload.text = text;
+          reply.payload.detail = "";
+        } catch (error) {
+          reply.payload.ok = false;
+          reply.payload.detail = String(error);
+        }
+        try {
+          this.socket.send(JSON.stringify(reply));
+        } catch (_err) {
+        }
+      },
+
       handleTurnStreamClick(event) {
         const button = event && event.target && typeof event.target.closest === "function"
           ? event.target.closest(".code-copy-btn")
@@ -1004,6 +1089,84 @@
           this.settingsForm.ollama_options_json = JSON.stringify(data.ollama_options || {}, null, 2);
         } catch (_err) {
           /* settings endpoint may not exist for inmemory backend */
+        }
+      },
+
+      loadBrowserLocalOllamaSettings() {
+        try {
+          const raw = localStorage.getItem("browserLocalOllamaSettings");
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object") return;
+          this.browserLocalOllama.enabled = parsed.enabled === true;
+          this.browserLocalOllama.base_url = String(parsed.base_url || "").trim() || "http://127.0.0.1:11434";
+          this.browserLocalOllama.model = String(parsed.model || "").trim();
+          this.browserLocalOllama.keep_alive = String(parsed.keep_alive || "").trim() || "30m";
+          this.browserLocalOllama.timeout_seconds = Number(parsed.timeout_seconds) > 0 ? Number(parsed.timeout_seconds) : 90;
+          this.browserLocalOllama.ollama_options_json = typeof parsed.ollama_options_json === "string"
+            ? parsed.ollama_options_json
+            : "{}";
+        } catch (_err) {
+        }
+      },
+
+      saveBrowserLocalOllamaSettings() {
+        const payload = {
+          enabled: this.browserLocalOllama.enabled === true,
+          base_url: String(this.browserLocalOllama.base_url || "").trim() || "http://127.0.0.1:11434",
+          model: String(this.browserLocalOllama.model || "").trim(),
+          keep_alive: String(this.browserLocalOllama.keep_alive || "").trim() || "30m",
+          timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 90,
+          ollama_options_json: String(this.browserLocalOllama.ollama_options_json || "{}"),
+        };
+        localStorage.setItem("browserLocalOllamaSettings", JSON.stringify(payload));
+        this.browserLocalOllamaStatus = { ok: true, message: "Saved browser-local Ollama settings." };
+      },
+
+      browserLocalOllamaPayload() {
+        if (this.browserLocalOllama.enabled !== true) return null;
+        let ollamaOptions = {};
+        const optionsRaw = String(this.browserLocalOllama.ollama_options_json || "").trim();
+        if (optionsRaw && optionsRaw !== "{}") {
+          try {
+            ollamaOptions = JSON.parse(optionsRaw);
+          } catch (_err) {
+            throw new Error("Invalid browser-local Ollama options JSON.");
+          }
+        }
+        const model = String(this.browserLocalOllama.model || "").trim();
+        if (!model) {
+          throw new Error("Browser-local Ollama requires a model name.");
+        }
+        return {
+          enabled: true,
+          base_url: String(this.browserLocalOllama.base_url || "").trim() || "http://127.0.0.1:11434",
+          model,
+          keep_alive: String(this.browserLocalOllama.keep_alive || "").trim() || "30m",
+          timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 90,
+          ollama_options: ollamaOptions && typeof ollamaOptions === "object" ? ollamaOptions : {},
+        };
+      },
+
+      async testBrowserLocalOllama() {
+        this.browserLocalOllamaStatus = { ok: null, message: "Testing browser-local Ollama..." };
+        try {
+          const cfg = this.browserLocalOllamaPayload();
+          const response = await fetch(`${String(cfg.base_url || "").replace(/\/$/, "")}/api/tags`);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const data = await response.json();
+          const models = Array.isArray(data.models) ? data.models : [];
+          const matched = models.some((row) => String(row && row.name || "").trim() === cfg.model);
+          this.browserLocalOllamaStatus = {
+            ok: matched,
+            message: matched
+              ? "Browser-local Ollama is reachable and the model is available."
+              : "Browser-local Ollama is reachable, but that model was not found in /api/tags.",
+          };
+        } catch (err) {
+          this.browserLocalOllamaStatus = { ok: false, message: "Browser-local Ollama test failed: " + String(err) };
         }
       },
 
@@ -1797,6 +1960,9 @@
           action: String(payload.action || "").trim(),
           session_id: payload.session_id || null,
           mentioned_actor_ids: Array.isArray(payload.mentioned_actor_ids) ? payload.mentioned_actor_ids.slice() : [],
+          browser_local_ollama: payload.browser_local_ollama && typeof payload.browser_local_ollama === "object"
+            ? { ...payload.browser_local_ollama }
+            : null,
           queue_entry_id: this._nextQueuedTurnId(),
         };
         this._turnQueues[key].push(queueItem);
@@ -3285,6 +3451,9 @@
             this.loadStoryState();
             this.loadChapterList();
           }
+          if (payload.type === "browser_llm_request" && payload.payload) {
+            this.handleBrowserLlmRequest(payload.payload);
+          }
           if (payload.type === "sms" && payload.payload) {
             this.pushStream("sms", formatJson(payload.payload));
           }
@@ -3589,6 +3758,18 @@
           session_id: this.selectedSessionId || null,
           mentioned_actor_ids: this.mentionedActorIdsFromAction(this.turnForm.action),
         };
+        if (this.browserLocalOllama.enabled === true) {
+          if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            this.errorMessage = "Browser-local Ollama requires an active realtime connection.";
+            return;
+          }
+          try {
+            payload.browser_local_ollama = this.browserLocalOllamaPayload();
+          } catch (error) {
+            this.errorMessage = String(error);
+            return;
+          }
+        }
         if (!payload.action) return;
         if (this.submitting) {
           this._enqueueTurnPayload(this.selectedCampaignId, payload);

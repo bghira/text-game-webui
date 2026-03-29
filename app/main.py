@@ -256,6 +256,8 @@ def create_app() -> FastAPI:
     app.state.gateway = gateway
     app.state.gateway_backend = backend
     app.state.realtime = RealtimeHub()
+    if hasattr(gateway, "set_realtime_hub"):
+        gateway.set_realtime_hub(app.state.realtime)
     app.state.templates = Jinja2Templates(directory=str(app_dir / "templates"))
     app.state.theme_service = ThemeService()
     app.state.dtm_pending_links = {}

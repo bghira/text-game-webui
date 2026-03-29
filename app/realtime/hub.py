@@ -139,6 +139,13 @@ class RealtimeHub:
             if any(sub.actor_id == actor_id for sub in subs)
         ]
 
+    def has_actor_subscription(self, campaign_id: str, actor_id: str) -> bool:
+        wanted_campaign = str(campaign_id or "").strip()
+        wanted_actor = str(actor_id or "").strip()
+        if not wanted_campaign or not wanted_actor:
+            return False
+        return any(sub.actor_id == wanted_actor for sub in list(self._subs[wanted_campaign]))
+
     async def publish_to_actor(self, campaign_id: str, actor_id: str, payload: dict) -> None:
         """Send a message only to subscriptions matching a specific actor_id."""
         for sub in list(self._subs[campaign_id]):

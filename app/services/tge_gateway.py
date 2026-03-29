@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+from uuid import uuid4
 
 from app.settings import Settings
 from app.services.schemas import CampaignSummary, MemoryStoreRequest, TurnRequest, TurnResult
@@ -70,6 +71,10 @@ _ZORK_LOG_RETENTION = 100
 _DEFAULT_PROVIDER_MODELS = {
     "zai": "glm-5.1",
 }
+_TURN_COMPLETION_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "text_game_webui_turn_completion_override",
+    default=None,
+)
 
 
 @dataclass
@@ -234,6 +239,180 @@ class ProviderCompletionPort:
         if not response or not response.strip():
             return False, "No completion content returned."
         return True, f"{self._provider} backend responded."
+
+
+class RoutedCompletionPort:
+    def __init__(self, default_port: CompletionPortProtocol | None) -> None:
+        self._default_port = default_port
+
+    def _current_port(self) -> CompletionPortProtocol | None:
+        override = _TURN_COMPLETION_OVERRIDE.get()
+        return override if override is not None else self._default_port
+
+    async def complete(
+        self,
+        system_prompt: str,
+        prompt: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str | None:
+        port = self._current_port()
+        if port is None:
+            return None
+        return await port.complete(
+            system_prompt,
+            prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
+        port = self._current_port()
+        if port is None:
+            return False, "No completion backend configured."
+        return await port.probe(timeout_seconds=timeout_seconds)
+
+
+class BrowserLLMRelayBroker:
+    def __init__(self) -> None:
+        self._hub = None
+        self._pending: dict[str, asyncio.Future] = {}
+        self._lock = threading.Lock()
+
+    def set_hub(self, hub: Any) -> None:
+        self._hub = hub
+
+    async def request_completion(
+        self,
+        *,
+        campaign_id: str,
+        actor_id: str,
+        base_url: str,
+        model: str,
+        system_prompt: str,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        timeout_seconds: int,
+        keep_alive: str,
+        ollama_options: dict[str, Any] | None = None,
+    ) -> str:
+        hub = self._hub
+        if hub is None:
+            raise RuntimeError("Browser-local Ollama bridge is unavailable.")
+        actor_text = str(actor_id or "").strip()
+        if not actor_text:
+            raise RuntimeError("Browser-local Ollama requires an actor.")
+        if hasattr(hub, "has_actor_subscription") and not hub.has_actor_subscription(
+            campaign_id,
+            actor_text,
+        ):
+            raise RuntimeError("Browser-local Ollama requires this browser tab to be connected.")
+        request_id = uuid4().hex
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        with self._lock:
+            self._pending[request_id] = fut
+        try:
+            await hub.publish_to_actor(
+                campaign_id,
+                actor_text,
+                {
+                    "type": "browser_llm_request",
+                    "actor_id": actor_text,
+                    "payload": {
+                        "request_id": request_id,
+                        "provider": "ollama",
+                        "base_url": base_url,
+                        "model": model,
+                        "system_prompt": system_prompt,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "timeout_seconds": timeout_seconds,
+                        "keep_alive": keep_alive,
+                        "ollama_options": ollama_options if isinstance(ollama_options, dict) else {},
+                    },
+                },
+            )
+            result = await asyncio.wait_for(
+                fut,
+                timeout=max(int(timeout_seconds or 0), 1) + 5,
+            )
+        finally:
+            with self._lock:
+                self._pending.pop(request_id, None)
+        if not isinstance(result, dict):
+            raise RuntimeError("Browser-local Ollama returned no result.")
+        if result.get("ok") is True:
+            return str(result.get("text") or "")
+        raise RuntimeError(str(result.get("detail") or "Browser-local Ollama request failed."))
+
+    async def deliver_result(self, payload: dict[str, Any]) -> bool:
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id:
+            return False
+        with self._lock:
+            fut = self._pending.pop(request_id, None)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(
+            {
+                "ok": payload.get("ok") is True,
+                "text": str(payload.get("text") or ""),
+                "detail": str(payload.get("detail") or ""),
+            }
+        )
+        return True
+
+
+class BrowserOllamaCompletionPort:
+    def __init__(
+        self,
+        *,
+        broker: BrowserLLMRelayBroker,
+        campaign_id: str,
+        actor_id: str,
+        base_url: str,
+        model: str,
+        timeout_seconds: int,
+        keep_alive: str,
+        ollama_options: dict[str, Any] | None = None,
+    ) -> None:
+        self._broker = broker
+        self._campaign_id = str(campaign_id or "").strip()
+        self._actor_id = str(actor_id or "").strip()
+        self._base_url = str(base_url or "").strip()
+        self._model = str(model or "").strip()
+        self._timeout_seconds = max(int(timeout_seconds or 90), 1)
+        self._keep_alive = str(keep_alive or "").strip()
+        self._ollama_options = ollama_options if isinstance(ollama_options, dict) else {}
+
+    async def complete(
+        self,
+        system_prompt: str,
+        prompt: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str | None:
+        return await self._broker.request_completion(
+            campaign_id=self._campaign_id,
+            actor_id=self._actor_id,
+            base_url=self._base_url,
+            model=self._model,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=self._timeout_seconds,
+            keep_alive=self._keep_alive,
+            ollama_options=self._ollama_options,
+        )
+
+    async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
+        return True, "Browser-local Ollama will be used for this actor's turns."
 
 
 class OpenAICompatibleCompletionPort:
@@ -2411,6 +2590,16 @@ class TextGameEngineGateway(EngineGateway):
         self._campaign_runtimes: dict[str, _CampaignRuntime] = {}
         self._actor_turn_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._probe_timeout_seconds = max(int(settings.tge_runtime_probe_timeout_seconds or 8), 1)
+        self._browser_llm_broker = BrowserLLMRelayBroker()
+
+    def set_realtime_hub(self, hub: Any) -> None:
+        self._browser_llm_broker.set_hub(hub)
+
+    async def handle_browser_llm_result(self, payload: dict[str, Any]) -> bool:
+        body = payload.get("payload")
+        if not isinstance(body, dict):
+            body = payload
+        return await self._browser_llm_broker.deliver_result(body)
 
     @property
     def completion_mode(self) -> str:
@@ -2497,7 +2686,7 @@ class TextGameEngineGateway(EngineGateway):
             ollama_options_json,
             "TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON",
         )
-        completion_port = self._build_completion_port(
+        base_completion_port = self._build_completion_port(
             mode=mode,
             base_url=base_url,
             api_key=api_key,
@@ -2506,6 +2695,7 @@ class TextGameEngineGateway(EngineGateway):
             keep_alive=keep_alive,
             ollama_options=ollama_options,
         )
+        completion_port = RoutedCompletionPort(base_completion_port)
         if mode == "deterministic":
             llm = EngineDeterministicLLM()
         else:
@@ -2551,6 +2741,48 @@ class TextGameEngineGateway(EngineGateway):
     def _invalidate_campaign_runtime(self, campaign_id: str) -> None:
         with self._campaign_runtime_lock:
             self._campaign_runtimes.pop(campaign_id, None)
+
+    def _browser_local_ollama_override(self, request: TurnRequest) -> dict[str, Any] | None:
+        raw = request.browser_local_ollama
+        if not isinstance(raw, dict):
+            return None
+        if raw.get("enabled") is not True:
+            return None
+        base_url = str(raw.get("base_url") or "").strip() or "http://127.0.0.1:11434"
+        model = str(raw.get("model") or "").strip()
+        if not model:
+            raise ValueError("Browser-local Ollama requires a model name.")
+        keep_alive = str(raw.get("keep_alive") or "").strip() or "30m"
+        timeout_seconds = int(raw.get("timeout_seconds") or 90)
+        ollama_options = raw.get("ollama_options")
+        if not isinstance(ollama_options, dict):
+            ollama_options = {}
+        return {
+            "base_url": base_url,
+            "model": model,
+            "keep_alive": keep_alive,
+            "timeout_seconds": max(timeout_seconds, 1),
+            "ollama_options": ollama_options,
+        }
+
+    def _browser_local_completion_port(
+        self,
+        campaign_id: str,
+        request: TurnRequest,
+    ) -> BrowserOllamaCompletionPort | None:
+        override = self._browser_local_ollama_override(request)
+        if override is None:
+            return None
+        return BrowserOllamaCompletionPort(
+            broker=self._browser_llm_broker,
+            campaign_id=campaign_id,
+            actor_id=request.actor_id,
+            base_url=str(override.get("base_url") or ""),
+            model=str(override.get("model") or ""),
+            timeout_seconds=int(override.get("timeout_seconds") or 90),
+            keep_alive=str(override.get("keep_alive") or ""),
+            ollama_options=override.get("ollama_options"),
+        )
 
     def _resolve_rewind_target_turn_id(self, campaign_id: str, target_turn_id: int) -> int | None:
         wanted_turn_id = int(target_turn_id or 0)
@@ -3399,6 +3631,7 @@ class TextGameEngineGateway(EngineGateway):
             request,
             emulator=runtime.emulator,
         )
+        completion_override = self._browser_local_completion_port(campaign_id, request)
         log_token = self._begin_turn_log_scope(
             campaign_id,
             actor_id=request.actor_id,
@@ -3406,14 +3639,18 @@ class TextGameEngineGateway(EngineGateway):
             body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
         )
         try:
-            async with self._turn_lock_for(campaign_id, request.actor_id):
-                narration = await runtime.emulator.play_action(
-                    campaign_id=campaign_id,
-                    actor_id=request.actor_id,
-                    action=request.action,
-                    session_id=session_id,
-                    manage_claim=True,
-                )
+            token = _TURN_COMPLETION_OVERRIDE.set(completion_override)
+            try:
+                async with self._turn_lock_for(campaign_id, request.actor_id):
+                    narration = await runtime.emulator.play_action(
+                        campaign_id=campaign_id,
+                        actor_id=request.actor_id,
+                        action=request.action,
+                        session_id=session_id,
+                        manage_claim=True,
+                    )
+            finally:
+                _TURN_COMPLETION_OVERRIDE.reset(token)
             notices = runtime.emulator.pop_turn_ephemeral_notices(
                 campaign_id,
                 request.actor_id,
@@ -3441,6 +3678,7 @@ class TextGameEngineGateway(EngineGateway):
             request,
             emulator=runtime.emulator,
         )
+        completion_override = self._browser_local_completion_port(campaign_id, request)
 
         yield {"event": "phase", "data": {"phase": "generating"}}
 
@@ -3460,19 +3698,23 @@ class TextGameEngineGateway(EngineGateway):
                 body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
             )
             try:
-                async with self._turn_lock_for(campaign_id, request.actor_id):
-                    result_box["narration"] = await runtime.emulator.play_action(
-                        campaign_id=campaign_id,
-                        actor_id=request.actor_id,
-                        action=request.action,
-                        session_id=session_id,
-                        manage_claim=True,
-                        progress=on_progress,
-                    )
-                    _zork_log(
-                        f"WEBUI STREAM TURN RESULT campaign={campaign_id}",
-                        str(result_box["narration"] or "(empty)"),
-                    )
+                token = _TURN_COMPLETION_OVERRIDE.set(completion_override)
+                try:
+                    async with self._turn_lock_for(campaign_id, request.actor_id):
+                        result_box["narration"] = await runtime.emulator.play_action(
+                            campaign_id=campaign_id,
+                            actor_id=request.actor_id,
+                            action=request.action,
+                            session_id=session_id,
+                            manage_claim=True,
+                            progress=on_progress,
+                        )
+                        _zork_log(
+                            f"WEBUI STREAM TURN RESULT campaign={campaign_id}",
+                            str(result_box["narration"] or "(empty)"),
+                        )
+                finally:
+                    _TURN_COMPLETION_OVERRIDE.reset(token)
             except Exception as exc:
                 result_box["error"] = exc
             finally:

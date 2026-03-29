@@ -19,6 +19,7 @@ class TurnRequest(BaseModel):
     action: str
     session_id: str | None = None
     mentioned_actor_ids: list[str] = Field(default_factory=list)
+    browser_local_ollama: dict[str, Any] | None = None
 
 
 class TurnEditRequest(BaseModel):
