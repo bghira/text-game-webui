@@ -138,6 +138,7 @@ class EngineGateway(Protocol):
     ) -> dict: ...
     async def remove_roster_character(self, campaign_id: str, slug: str, *, player: bool = False) -> dict: ...
     async def get_player_state(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def shared_pending_target_actor_ids(self, campaign_id: str, actor_id: str) -> list[str]: ...
     async def get_media(self, campaign_id: str, actor_id: str | None = None) -> dict: ...
     async def record_pending_avatar(self, campaign_id: str, actor_id: str, image_url: str, prompt: str | None = None) -> dict: ...
     async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict: ...
@@ -886,6 +887,27 @@ Legend: @ current player
             "state": state,
             "inventory": inventory,
         }
+
+    async def shared_pending_target_actor_ids(self, campaign_id: str, actor_id: str) -> list[str]:
+        self._require_campaign(campaign_id)
+        source = await self.get_player_state(campaign_id, actor_id)
+        source_state = source.get("state", {}) if isinstance(source, dict) else {}
+        source_location = str(
+            source_state.get("location") or source_state.get("room_title") or ""
+        ).strip()
+        if not source_location:
+            return []
+        out: list[str] = []
+        for other_actor_id, other_player in self._players[campaign_id].items():
+            if str(other_actor_id or "").strip() == str(actor_id or "").strip():
+                continue
+            other_state = other_player.get("state", {}) if isinstance(other_player, dict) else {}
+            other_location = str(
+                other_state.get("location") or other_state.get("room_title") or ""
+            ).strip()
+            if other_location and other_location == source_location:
+                out.append(str(other_actor_id))
+        return out
 
     async def get_media(self, campaign_id: str, actor_id: str | None = None) -> dict:
         self._require_campaign(campaign_id)

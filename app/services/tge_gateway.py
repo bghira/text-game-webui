@@ -4334,6 +4334,57 @@ class TextGameEngineGateway(EngineGateway):
             "inventory": inventory,
         }
 
+    async def shared_pending_target_actor_ids(self, campaign_id: str, actor_id: str) -> list[str]:
+        actor_id_text = str(actor_id or "").strip()
+        if not actor_id_text or self._emulator is None:
+            return []
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            players = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .order_by(Player.actor_id.asc())
+                .all()
+            )
+        source_player = next(
+            (row for row in players if str(row.actor_id or "").strip() == actor_id_text),
+            None,
+        )
+        if source_player is None:
+            raise KeyError(f"Unknown player in campaign: {actor_id_text}")
+        source_state = self._parse_json(source_player.state_json, {})
+        if not isinstance(source_state, dict):
+            source_state = {}
+        source_location_key = self._emulator._room_key_from_player_state(source_state)  # noqa: SLF001
+        source_location_norm = self._emulator._normalize_location_key(source_location_key)  # noqa: SLF001
+        if not source_location_key and not source_location_norm:
+            return []
+        out: list[str] = []
+        for player in players:
+            other_actor_id = str(player.actor_id or "").strip()
+            if not other_actor_id or other_actor_id == actor_id_text:
+                continue
+            other_state = self._parse_json(player.state_json, {})
+            if not isinstance(other_state, dict):
+                other_state = {}
+            other_location_key = self._emulator._room_key_from_player_state(other_state)  # noqa: SLF001
+            other_location_norm = self._emulator._normalize_location_key(other_location_key)  # noqa: SLF001
+            same_zone = bool(
+                source_location_norm
+                and other_location_norm
+                and source_location_norm == other_location_norm
+            )
+            if not same_zone and source_location_key and other_location_key:
+                same_zone = bool(
+                    self._emulator._state_container_matches_location(source_location_key, other_location_key)  # noqa: SLF001
+                    or self._emulator._state_container_matches_location(other_location_key, source_location_key)  # noqa: SLF001
+                )
+            if same_zone:
+                out.append(other_actor_id)
+        return out
+
     async def get_media(self, campaign_id: str, actor_id: str | None = None) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
