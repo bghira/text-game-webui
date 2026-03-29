@@ -1412,6 +1412,23 @@ async def update_calendar_event_visibility(
         _bad_request(err)
 
 
+@router.delete("/campaigns/{campaign_id}/calendar/{event_key}")
+async def delete_calendar_event(
+    campaign_id: str,
+    event_key: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.delete_calendar_event(
+            campaign_id,
+            event_key,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+
+
 @router.get("/campaigns/{campaign_id}/roster")
 async def get_roster(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:

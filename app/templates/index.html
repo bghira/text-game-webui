@@ -138,6 +138,12 @@
                   @click="setCalendarEventVisibility(calEvt, 'private')"
                   :disabled="calendarVisibilityUpdating[calEvt.event_key || '']"
                 >Private</button>
+                <button
+                  type="button"
+                  class="calendar-delete-button"
+                  title="Delete event"
+                  @click="deleteCalendarEvent(calEvt)"
+                >&#x1F5D1;</button>
               </div>
               <template x-if="calEvt.location">
                 <p class="calendar-location" x-text="calEvt.location"></p>

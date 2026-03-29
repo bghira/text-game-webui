@@ -708,6 +708,31 @@ button:disabled {
   cursor: default;
 }
 
+.calendar-delete-button {
+  appearance: none;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--ink-secondary);
+  border-radius: 999px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.65rem;
+  line-height: 1;
+  cursor: pointer;
+  margin-left: auto;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+.calendar-entry:hover .calendar-delete-button {
+  opacity: 1;
+}
+
+.calendar-delete-button:hover {
+  color: var(--error);
+  border-color: var(--error);
+  opacity: 1;
+}
+
 .calendar-empty {
   margin: 0.3rem 0 0.5rem;
   font-size: 0.75rem;
@@ -3294,12 +3319,12 @@ details summary {
   /* Sidebar becomes a fixed overlay drawer */
   .sidebar {
     position: fixed;
-    top: 0;
+    top: 58px;
     left: 0;
     bottom: 0;
     width: 300px;
     max-width: 85vw;
-    max-height: none;
+    max-height: calc(100dvh - 58px);
     z-index: 1000;
     transform: translateX(-100%);
     transition: transform 0.25s ease;
@@ -3318,7 +3343,10 @@ details summary {
   .sidebar-backdrop {
     display: block;
     position: fixed;
-    inset: 0;
+    top: 58px;
+    right: 0;
+    bottom: 0;
+    left: 0;
     z-index: 999;
     background: rgba(0, 0, 0, 0.4);
   }

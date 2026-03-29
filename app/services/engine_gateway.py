@@ -124,6 +124,13 @@ class EngineGateway(Protocol):
         visibility: str,
         actor_id: str | None = None,
     ) -> dict: ...
+    async def delete_calendar_event(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        actor_id: str | None = None,
+    ) -> dict: ...
     async def get_roster(self, campaign_id: str) -> dict: ...
     async def upsert_roster_character(
         self,
@@ -240,6 +247,17 @@ class InMemoryEngineGateway:
         self._roster_npcs: dict[str, dict[str, dict]] = defaultdict(dict)
         self._media: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
         self._campaign_rules: dict[str, dict[str, str]] = defaultdict(dict)
+        self._calendar: dict[str, list[dict]] = defaultdict(lambda: [
+            {
+                "event_key": "concierge-callback:1:11",
+                "name": "Concierge callback",
+                "fire_day": 1,
+                "fire_hour": 11,
+                "description": "The concierge promised to call back before lunch.",
+                "scope": "targeted",
+                "target_players": ["rigby"],
+            }
+        ])
 
     def _require_campaign(self, campaign_id: str) -> CampaignSummary:
         if campaign_id not in self._campaigns:
@@ -715,17 +733,7 @@ Legend: @ current player
         self._require_campaign(campaign_id)
         return {
             "game_time": {"day": 1, "hour": 9, "minute": 0},
-            "events": [
-                {
-                    "event_key": "concierge-callback:1:11",
-                    "name": "Concierge callback",
-                    "fire_day": 1,
-                    "fire_hour": 11,
-                    "description": "The concierge promised to call back before lunch.",
-                    "scope": "targeted",
-                    "target_players": ["rigby"],
-                }
-            ],
+            "events": [dict(e) for e in self._calendar[campaign_id]],
         }
 
     async def update_calendar_event_visibility(
@@ -736,7 +744,36 @@ Legend: @ current player
         visibility: str,
         actor_id: str | None = None,
     ) -> dict:
-        _ = event_key, visibility, actor_id
+        self._require_campaign(campaign_id)
+        key = str(event_key or "").strip()
+        for event in self._calendar[campaign_id]:
+            if event.get("event_key") == key:
+                if visibility == "public":
+                    event.pop("target_players", None)
+                    event["scope"] = "global"
+                else:
+                    event["target_players"] = [actor_id] if actor_id else []
+                    event["scope"] = "targeted"
+                break
+        else:
+            raise KeyError(f"Unknown calendar event: {key}")
+        return await self.get_calendar(campaign_id, actor_id=actor_id)
+
+    async def delete_calendar_event(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        key = str(event_key or "").strip()
+        before = len(self._calendar[campaign_id])
+        self._calendar[campaign_id] = [
+            e for e in self._calendar[campaign_id] if e.get("event_key") != key
+        ]
+        if len(self._calendar[campaign_id]) == before:
+            raise KeyError(f"Unknown calendar event: {key}")
         return await self.get_calendar(campaign_id, actor_id=actor_id)
 
     async def get_roster(self, campaign_id: str) -> dict:

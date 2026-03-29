@@ -1391,3 +1391,59 @@ export async function recordPortraitFlow(
   });
   return { calls, result };
 }
+
+/* ---- Calendar helpers ---- */
+
+export type CalendarEvent = {
+  event_key: string;
+  name?: string;
+  fire_day?: number;
+  fire_hour?: number;
+  description?: string;
+  scope?: string;
+  target_players?: string[];
+};
+
+export type CalendarState = {
+  game_time: { day: number; hour: number; minute: number };
+  events: CalendarEvent[];
+};
+
+export async function loadCalendarFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+): Promise<{ calls: string[]; result: CalendarState }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/calendar`;
+  calls.push(url);
+  const result = (await fetcher(url)) as CalendarState;
+  return { calls, result };
+}
+
+export async function setCalendarVisibilityFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  eventKey: string,
+  visibility: "public" | "private",
+): Promise<{ calls: string[]; result: CalendarState }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/calendar/${encodeURIComponent(eventKey)}/visibility`;
+  calls.push(url);
+  const result = (await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify({ visibility }),
+  })) as CalendarState;
+  return { calls, result };
+}
+
+export async function deleteCalendarEventFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  eventKey: string,
+): Promise<{ calls: string[]; result: CalendarState }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/calendar/${encodeURIComponent(eventKey)}`;
+  calls.push(url);
+  const result = (await fetcher(url, { method: "DELETE" })) as CalendarState;
+  return { calls, result };
+}

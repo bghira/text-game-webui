@@ -2298,6 +2298,33 @@
         }
       },
 
+      async deleteCalendarEvent(event) {
+        this.resetError();
+        if (!this.selectedCampaignId || !event || typeof event !== "object") {
+          return;
+        }
+        const eventKey = String(event.event_key || "").trim();
+        if (!eventKey) {
+          this.errorMessage = "Calendar event key missing.";
+          return;
+        }
+        const title = event.title || event.name || event.event_key || "this event";
+        if (!confirm(`Delete calendar event "${title}"?`)) {
+          return;
+        }
+        try {
+          const body = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/calendar/${encodeURIComponent(eventKey)}`,
+            { method: "DELETE" },
+          );
+          this.calendarText = formatJson(body);
+          this.calendarEvents = Array.isArray(body.events) ? body.events : [];
+          this.statusMessage = "Calendar event deleted.";
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
       syncTurnSessionSelection() {
         this.turnForm.session_id = this.selectedSessionId || "";
       },
