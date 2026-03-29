@@ -738,6 +738,15 @@ async def submit_turn_stream(
         payload,
         gateway,
     )
+    progress_visible_actor_ids: list[str] = []
+    for raw_actor_id in [
+        str(payload.actor_id or "").strip(),
+        *list(pending_targets or []),
+        *list(shared_pending_targets or []),
+    ]:
+        actor_id_text = str(raw_actor_id or "").strip()
+        if actor_id_text and actor_id_text not in progress_visible_actor_ids:
+            progress_visible_actor_ids.append(actor_id_text)
 
     # Collect all events *before* streaming so turn execution and realtime
     # publishing are not cancelled if the client disconnects mid-stream.
@@ -758,6 +767,7 @@ async def submit_turn_stream(
                             "type": "turn_progress",
                             "session_id": payload.session_id,
                             "actor_id": payload.actor_id,
+                            "visible_actor_ids": progress_visible_actor_ids,
                             "payload": event_data,
                         },
                     )

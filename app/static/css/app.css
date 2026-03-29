@@ -2035,7 +2035,10 @@ pre {
 
 .settings-overlay {
   position: fixed;
-  inset: 0;
+  top: 58px;
+  right: 0;
+  bottom: 0;
+  left: 0;
   background: var(--overlay-light);
   z-index: 100;
   display: flex;
@@ -2049,7 +2052,7 @@ pre {
   border-left: 1px solid var(--line);
   padding: 1.5rem 1.75rem;
   overflow-y: auto;
-  height: 100%;
+  height: calc(100vh - 58px);
   box-shadow: var(--shadow-drawer);
   animation: drawerSlideIn 200ms ease;
 }
@@ -3661,8 +3664,13 @@ details summary {
   }
 
   /* Settings drawer full width */
+  .settings-overlay {
+    top: 48px;
+  }
+
   .settings-drawer {
     width: 100vw;
+    height: calc(100vh - 48px);
   }
 
   /* Modals */

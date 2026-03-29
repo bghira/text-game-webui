@@ -71,6 +71,27 @@ class RealtimeHub:
         return None
 
     @staticmethod
+    def _audience_actor_ids_for_event(payload: dict) -> set[str]:
+        out: set[str] = set()
+        raw_top_level = payload.get("visible_actor_ids")
+        if isinstance(raw_top_level, list):
+            out.update(
+                str(item or "").strip()
+                for item in raw_top_level
+                if str(item or "").strip()
+            )
+        body = payload.get("payload")
+        if isinstance(body, dict):
+            raw_body = body.get("visible_actor_ids")
+            if isinstance(raw_body, list):
+                out.update(
+                    str(item or "").strip()
+                    for item in raw_body
+                    if str(item or "").strip()
+                )
+        return out
+
+    @staticmethod
     def _turn_visibility_for_event(payload: dict) -> dict | None:
         body = payload.get("payload")
         if not isinstance(body, dict):
@@ -93,12 +114,12 @@ class RealtimeHub:
             return True
 
         if payload_type == "turn_progress":
-            if session_mismatch:
-                return False
-            event_actor_id = cls._actor_id_for_event(payload)
             if not event_actor_id or not sub.actor_id:
                 return False
-            return sub.actor_id == event_actor_id
+            audience = cls._audience_actor_ids_for_event(payload)
+            if sub.actor_id == event_actor_id:
+                return True
+            return sub.actor_id in audience
 
         visibility = cls._turn_visibility_for_event(payload)
         if not isinstance(visibility, dict):

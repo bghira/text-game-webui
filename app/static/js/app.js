@@ -5153,8 +5153,13 @@
         if (!this.selectedCampaignId) return;
         try {
           const lim = limit || 30;
+          const params = new URLSearchParams();
+          params.set("limit", String(lim));
+          if (this.selectedSessionId) {
+            params.set("session_id", this.selectedSessionId);
+          }
           const data = await this.api(
-            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=${lim}`,
+            `/api/campaigns/${this.selectedCampaignId}/recent-turns?${params.toString()}`,
           );
           this.recentTurns = Array.isArray(data.turns) ? data.turns : [];
           // Offset represents the number of newest turns already loaded
@@ -5167,8 +5172,14 @@
         if (this._turnStreamLoadingOlder || !this._turnStreamHasMore || !this.selectedCampaignId) return;
         this._turnStreamLoadingOlder = true;
         try {
+          const params = new URLSearchParams();
+          params.set("limit", "30");
+          params.set("offset", String(this._turnStreamOffset));
+          if (this.selectedSessionId) {
+            params.set("session_id", this.selectedSessionId);
+          }
           const data = await this.api(
-            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=30&offset=${this._turnStreamOffset}`,
+            `/api/campaigns/${this.selectedCampaignId}/recent-turns?${params.toString()}`,
           );
           const older = Array.isArray(data.turns) ? data.turns : [];
           if (older.length === 0) {
@@ -5177,7 +5188,19 @@
           }
           const stream = document.getElementById("turn-stream");
           const prevHeight = stream ? stream.scrollHeight : 0;
-          this.recentTurns = [...older, ...this.recentTurns];
+          const seenTurnIds = new Set(
+            (Array.isArray(this.recentTurns) ? this.recentTurns : [])
+              .map((row) => Number(row && row.id) || 0)
+              .filter((value) => value > 0),
+          );
+          const dedupedOlder = older.filter((row) => {
+            const turnId = Number(row && row.id) || 0;
+            if (turnId <= 0) return true;
+            if (seenTurnIds.has(turnId)) return false;
+            seenTurnIds.add(turnId);
+            return true;
+          });
+          this.recentTurns = [...dedupedOlder, ...this.recentTurns];
           this._turnStreamOffset += older.length;
           this._turnStreamHasMore = !!data.has_more;
           this.populateTurnStreamFromHistory(false);
