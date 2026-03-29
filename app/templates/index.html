@@ -341,7 +341,7 @@
         <small>Loading older turns...</small>
       </div>
       <template x-for="entry in visibleTurnStream()" :key="entry.id">
-        <article class="turn-entry" :class="'turn-type-' + entry.type">
+        <article class="turn-entry" :id="'turn-entry-' + entry.id" :class="'turn-type-' + entry.type">
           <template x-if="entry.type === 'narrator'">
             <div class="turn-narrator">
               <template x-if="!turnIsCollapsed(entry)">

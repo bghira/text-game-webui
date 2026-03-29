@@ -594,6 +594,7 @@
       _turnStreamOffset: 0,
       _turnStreamHasMore: false,
       _turnStreamLoadingOlder: false,
+      _scrollAnchorEntryId: 0,
 
       /* Campaign persona */
       campaignPersona: "",
@@ -1608,12 +1609,7 @@
           text,
           meta: meta && typeof meta === "object" ? meta : {},
         });
-        this.$nextTick(() => {
-          const stream = document.getElementById("turn-stream");
-          if (stream) {
-            stream.scrollTop = stream.scrollHeight;
-          }
-        });
+        this._scrollStream();
       },
 
       _cloneStateValue(value) {
@@ -3772,14 +3768,20 @@
 
       _scrollStream() {
         this.$nextTick(() => {
-          const scrollToBottom = () => {
-            const stream = document.getElementById("turn-stream");
-            if (stream) stream.scrollTop = stream.scrollHeight;
-          };
-          requestAnimationFrame(() => {
-            scrollToBottom();
-            requestAnimationFrame(scrollToBottom);
-          });
+          const stream = document.getElementById("turn-stream");
+          if (!stream) return;
+          if (this._scrollAnchorEntryId > 0) {
+            const anchorEl = document.getElementById("turn-entry-" + this._scrollAnchorEntryId);
+            if (anchorEl) {
+              const scrollTo = () => {
+                stream.scrollTop = anchorEl.offsetTop - stream.offsetTop;
+              };
+              requestAnimationFrame(() => { scrollTo(); requestAnimationFrame(scrollTo); });
+              return;
+            }
+          }
+          const scrollToBottom = () => { stream.scrollTop = stream.scrollHeight; };
+          requestAnimationFrame(() => { scrollToBottom(); requestAnimationFrame(scrollToBottom); });
         });
       },
 
@@ -4043,6 +4045,7 @@
                   queued_local: false,
                   queue_entry_id: existingQueueId,
                 };
+                this._scrollAnchorEntryId = existing.id;
               }
             } else {
               this.pushStream("player", payload.action, {
@@ -4051,6 +4054,7 @@
                 pending_submit: true,
               });
               optimisticPlayerEntryId = this.turnCounter;
+              this._scrollAnchorEntryId = this.turnCounter;
             }
           }
 
@@ -4209,11 +4213,13 @@
               this._activeProgressLabel = "";
               return { ok: true };
             }
+            this._scrollAnchorEntryId = 0;
             this.populateTurnStreamFromHistory();
             this.statusMessage = queued ? "Queued action submitted." : "Turn submitted.";
           } else {
             await this._refreshBackgroundCampaignView(campaignId, payload.session_id || "");
           }
+          this._scrollAnchorEntryId = 0;
           this._activeProgressCampaignId = "";
           this._activeProgressSessionId = "";
           this._activeProgressLabel = "";
@@ -4222,6 +4228,7 @@
           if (optimisticPlayerEntryId > 0) {
             this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
           }
+          this._scrollAnchorEntryId = 0;
           this._activeProgressCampaignId = "";
           this._activeProgressSessionId = "";
           this._activeProgressLabel = "";
