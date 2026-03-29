@@ -555,9 +555,10 @@
               id="action-input"
               rows="1"
               @keydown="handleComposerKeydown($event)"
-              @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; updateMentionAutocomplete($event)"
+              @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'; updateMentionAutocomplete($event); ensureComposerVisible()"
               @click="updateMentionAutocomplete($event)"
               @keyup="updateMentionAutocomplete($event)"
+              @focus="ensureComposerVisible()"
               @blur="setTimeout(() => closeMentionAutocomplete(), 120)"
             ></textarea>
             <template x-if="composerMentionActive()">

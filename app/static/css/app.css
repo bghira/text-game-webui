@@ -940,7 +940,8 @@ button:disabled {
 .main-column {
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .section-head {
@@ -994,7 +995,10 @@ button:disabled {
   padding: 0.75rem;
   flex: 1;
   min-height: 200px;
-  overflow: auto;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   background: var(--surface-warm);
   margin-bottom: 0.75rem;
   box-shadow: var(--shadow-inset);
@@ -3278,10 +3282,11 @@ details summary {
 
   .layout {
     grid-template-columns: 1fr;
-    height: auto;
-    min-height: calc(100vh - 58px);
+    height: calc(100dvh - 58px);
+    min-height: calc(100dvh - 58px);
     padding: 0.6rem;
     gap: 0.6rem;
+    overflow: hidden;
   }
 
   /* Sidebar becomes a fixed overlay drawer */
@@ -3318,12 +3323,39 @@ details summary {
 
   /* Main column takes full viewport height */
   .main-column {
-    min-height: calc(100vh - 80px);
+    min-height: 0;
+    height: calc(100dvh - 80px);
+    max-height: calc(100dvh - 80px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   .turn-stream {
-    height: calc(100vh - 300px);
-    min-height: 200px;
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    margin-bottom: 0.6rem;
+    padding-bottom: 1.25rem;
+  }
+
+  .section-head,
+  .campaign-summary-bar,
+  .action-bar-wrapper,
+  .status,
+  .error {
+    flex-shrink: 0;
+  }
+
+  .action-bar-wrapper {
+    position: sticky;
+    bottom: var(--visual-viewport-bottom-gap, 0px);
+    z-index: 6;
+    margin-top: auto;
+    margin-bottom: 0;
+    padding-top: 0.35rem;
+    padding-bottom: calc(0.35rem + env(safe-area-inset-bottom));
+    background: var(--panel);
   }
 
   /* Compact topbar */

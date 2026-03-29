@@ -627,6 +627,8 @@
       calendarVisibilityUpdating: {},
       campaignSummary: "",
 
+      _mobileViewportBound: false,
+
       async init() {
         const ready = await this.refreshDtmLinkStatus();
         if (!ready) return;
@@ -690,6 +692,44 @@
         if (!this.statusMessage.startsWith("Runtime backend:")) {
           this.statusMessage = "Initialized.";
         }
+        this._bindMobileViewportTracking();
+      },
+
+      _updateMobileViewportInset() {
+        const root = document.documentElement;
+        if (!root) return;
+        const vv = window.visualViewport;
+        if (!vv) {
+          root.style.setProperty("--visual-viewport-bottom-gap", "0px");
+          return;
+        }
+        const gap = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)));
+        root.style.setProperty("--visual-viewport-bottom-gap", `${gap}px`);
+      },
+
+      _bindMobileViewportTracking() {
+        if (this._mobileViewportBound) return;
+        this._mobileViewportBound = true;
+        this._updateMobileViewportInset();
+        const handler = () => this._updateMobileViewportInset();
+        window.addEventListener("resize", handler, { passive: true });
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", handler, { passive: true });
+          window.visualViewport.addEventListener("scroll", handler, { passive: true });
+        }
+      },
+
+      ensureComposerVisible() {
+        this.$nextTick(() => {
+          requestAnimationFrame(() => {
+            const wrapper = document.querySelector(".action-bar-wrapper");
+            if (wrapper && typeof wrapper.scrollIntoView === "function") {
+              wrapper.scrollIntoView({ block: "end", inline: "nearest" });
+            }
+            const stream = document.getElementById("turn-stream");
+            if (stream) stream.scrollTop = stream.scrollHeight;
+          });
+        });
       },
 
       async refreshDtmLinkStatus() {
@@ -3732,8 +3772,14 @@
 
       _scrollStream() {
         this.$nextTick(() => {
-          const stream = document.getElementById("turn-stream");
-          if (stream) stream.scrollTop = stream.scrollHeight;
+          const scrollToBottom = () => {
+            const stream = document.getElementById("turn-stream");
+            if (stream) stream.scrollTop = stream.scrollHeight;
+          };
+          requestAnimationFrame(() => {
+            scrollToBottom();
+            requestAnimationFrame(scrollToBottom);
+          });
         });
       },
 
