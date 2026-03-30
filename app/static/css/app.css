@@ -512,6 +512,38 @@ button:disabled {
   opacity: 0.6;
 }
 
+/* ---- Active Timer Indicator (sidebar) ---- */
+
+.timer-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  margin-top: 0.25rem;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 0.8rem;
+  animation: timer-pulse 2s ease-in-out infinite;
+}
+
+.timer-indicator-icon {
+  font-size: 0.9rem;
+}
+
+.timer-indicator-label {
+  color: var(--ink);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes timer-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* ---- Chapters Panel (sidebar) ---- */
 
 .chapters-panel {
@@ -1259,6 +1291,20 @@ button:disabled {
   margin-bottom: 0.25rem;
 }
 
+.turn-narrator.turn-timed-event {
+  border-left: 3px solid var(--accent);
+  padding-left: 0.6rem;
+}
+
+.timed-event-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.03em;
+  margin-bottom: 0.2rem;
+}
+
 .narrator-text {
   margin: 0;
   font-family: var(--sans);
@@ -1940,6 +1986,11 @@ pre {
 @keyframes pulse-thinking {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 0.8; }
+}
+
+.action-submit.action-queuing {
+  background: var(--ink-muted);
+  border-color: var(--line);
 }
 
 .status,
@@ -3688,4 +3739,111 @@ details summary {
   .song-embed-wrap {
     padding-bottom: 56.25%;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* SMS Inbox modal                                                     */
+/* ------------------------------------------------------------------ */
+
+.sms-inbox-layout {
+  display: flex;
+  gap: 0.75rem;
+  min-height: 300px;
+  max-height: 60vh;
+}
+
+.sms-inbox-threads {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 110px;
+  max-width: 150px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding-right: 0.5rem;
+}
+
+.sms-thread-btn {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sms-thread-btn:hover { background: var(--surface-muted); }
+.sms-thread-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  font-weight: 600;
+}
+
+.sms-inbox-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.sms-message-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-bottom: 0.5rem;
+}
+
+.sms-bubble {
+  max-width: 80%;
+  padding: 0.35rem 0.55rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+.sms-bubble--self {
+  align-self: flex-end;
+  background: var(--accent-soft);
+}
+.sms-bubble-sender {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--ink-secondary);
+  margin-bottom: 0.1rem;
+}
+.sms-bubble-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sms-compose {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+.sms-compose input {
+  flex: 1;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+}
+.sms-compose button {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
 }

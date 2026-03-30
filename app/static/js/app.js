@@ -485,6 +485,9 @@
 
       mapText: "",
       timersText: "",
+      _activeTimerCount: 0,
+      _activeTimerLabel: "",
+      _timedEventInProgress: false,
       calendarText: "",
       rosterText: "",
       playerStateText: "",
@@ -494,6 +497,11 @@
       sessionsText: "",
       memoryText: "",
       smsText: "",
+      smsInboxThreads: [],
+      smsInboxThread: "",
+      smsInboxMessages: [],
+      smsInboxLoading: false,
+      smsInboxCompose: "",
       debugText: "",
       diagnosticsBundleStatus: "",
       campaignExportStatus: "",
@@ -2439,7 +2447,7 @@
 
       submitButtonLabel() {
         if (this.imageGenerating > 0) return "Generating...";
-        if (this.submitting) {
+        if (this.submitting || this._timedEventInProgress) {
           const queued = this.currentQueuedTurnCount();
           return queued > 0 ? `Queue (${queued})` : "Queue";
         }
@@ -2482,9 +2490,10 @@
       _surfaceTurnSubmitError(error, { queued = false } = {}) {
         const text = String(error || "").trim() || "Turn submission failed.";
         if (this._isQueueRetryableTurnError(text)) {
+          this._timedEventInProgress = true;
           this.statusMessage = queued
             ? "Queued action is waiting for the current turn to clear."
-            : text;
+            : "Timed event in progress — actions will queue.";
           this.pushStream("notice", text, {
             turn_submit_error: true,
             retryable: true,
@@ -3910,6 +3919,10 @@
         this.sessionsText = "";
         this.memoryText = "";
         this.smsText = "";
+        this.smsInboxThreads = [];
+        this.smsInboxThread = "";
+        this.smsInboxMessages = [];
+        this.smsInboxCompose = "";
         this.debugText = "";
         this.sourceMaterials = [];
         this.campaignRules = [];
@@ -4120,6 +4133,10 @@
           }
           if (payload.type === "turn_refresh") {
             this.clearRemoteProgress();
+            if (this._timedEventInProgress) {
+              this._timedEventInProgress = false;
+              this._drainQueuedTurns();
+            }
             this._scheduleRealtimeTurnRefresh();
           }
           if (payload.type === "roster" && payload.payload) {
@@ -4127,12 +4144,15 @@
             this.rosterText = formatJson(payload.payload);
           }
           if (payload.type === "timed_event" && payload.payload) {
+            this._timedEventInProgress = false;
+            this.clearRemoteProgress();
             const narration = payload.payload.narration || "";
             if (narration) {
               this.pushStream("narrator", renderDiscordTimestamps(stripTrailingInventory(narration)), { timed_event: true });
             }
             this.loadTimers();
             this.loadRecentTurns();
+            this._drainQueuedTurns();
           }
           if (payload.type === "dm_notification" && payload.payload) {
             const msg = payload.payload.message || "";
@@ -4168,6 +4188,7 @@
             this._activeProgressSessionId = String(payload.session_id || this.selectedSessionId || "").trim();
             this._activeProgressLabel = label;
             this.statusMessage = label;
+            this._timedEventInProgress = true;
             this.upsertRemoteProgress(label, {
               phase: payload.payload.phase || "",
               actor_id: payload.actor_id || "",
@@ -4458,7 +4479,7 @@
           }
         }
         if (!payload.action) return;
-        if (this.submitting) {
+        if (this.submitting || this._timedEventInProgress) {
           this._enqueueTurnPayload(this.selectedCampaignId, payload);
           this.turnForm.action = "";
           this.resetComposerHistoryNavigation();
@@ -4741,6 +4762,17 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/timers`);
           this.timersText = formatJson(body);
+          const timers = Array.isArray(body.timers) ? body.timers : [];
+          const active = timers.filter((t) => t.status === "scheduled_unbound" || t.status === "scheduled_bound");
+          this._activeTimerCount = active.length;
+          if (active.length > 0) {
+            const next = active[0];
+            const due = next.due_at ? new Date(next.due_at) : null;
+            const label = due ? `Timer: ${next.event_text || "event"} (${due.toLocaleTimeString()})` : `Timer: ${next.event_text || "pending"}`;
+            this._activeTimerLabel = label;
+          } else {
+            this._activeTimerLabel = "";
+          }
         } catch (_err) {
           /* background refresh */
         }
@@ -5245,6 +5277,9 @@
         this._turnStreamOffset = 0;
         this._turnStreamHasMore = false;
         this._turnStreamLoadingOlder = false;
+        this._timedEventInProgress = false;
+        this._activeTimerCount = 0;
+        this._activeTimerLabel = "";
       },
 
       toggleTurnSearch() {
@@ -5906,6 +5941,62 @@
           });
           this.smsText = formatJson(body);
           this.sms.message = "";
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async loadSmsInbox() {
+        if (!this.selectedCampaignId) return;
+        this.smsInboxLoading = true;
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/list`, {
+            method: "POST",
+            body: JSON.stringify({ wildcard: "*" }),
+          });
+          this.smsInboxThreads = Array.isArray(body.threads) ? body.threads : [];
+          if (this.smsInboxThreads.length && !this.smsInboxThread) {
+            this.smsInboxThread = this.smsInboxThreads[0];
+            await this.loadSmsInboxThread();
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+        this.smsInboxLoading = false;
+      },
+
+      async loadSmsInboxThread() {
+        if (!this.selectedCampaignId || !this.smsInboxThread) return;
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/read`, {
+            method: "POST",
+            body: JSON.stringify({
+              thread: this.smsInboxThread,
+              limit: 50,
+              viewer_actor_id: (this.turnForm.actor_id || "").trim() || null,
+            }),
+          });
+          this.smsInboxMessages = Array.isArray(body.messages) ? body.messages : [];
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async sendSmsInboxMessage() {
+        if (!this.selectedCampaignId || !this.smsInboxThread || !this.smsInboxCompose.trim()) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/write`, {
+            method: "POST",
+            body: JSON.stringify({
+              thread: this.smsInboxThread,
+              sender: actor || "player",
+              recipient: this.smsInboxThread,
+              message: this.smsInboxCompose.trim(),
+            }),
+          });
+          this.smsInboxCompose = "";
+          await this.loadSmsInboxThread();
         } catch (error) {
           this.errorMessage = String(error);
         }
