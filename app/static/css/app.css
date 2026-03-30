@@ -3756,8 +3756,8 @@ details summary {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  min-width: 110px;
-  max-width: 150px;
+  min-width: 120px;
+  max-width: 180px;
   overflow-y: auto;
   border-right: 1px solid var(--border);
   padding-right: 0.5rem;
@@ -3768,7 +3768,11 @@ details summary {
   background: none;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  padding: 0.3rem 0.5rem;
+  padding: 0.35rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
   text-align: left;
   font: inherit;
   font-size: 0.82rem;
@@ -3777,6 +3781,17 @@ details summary {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.sms-thread-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.sms-thread-meta {
+  font-size: 0.68rem;
+  color: var(--ink-muted);
+  font-weight: 400;
 }
 .sms-thread-btn:hover { background: var(--surface-muted); }
 .sms-thread-btn.active {

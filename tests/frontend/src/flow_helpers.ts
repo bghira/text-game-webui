@@ -1487,6 +1487,114 @@ export type DtmMediaDeliverResult = {
 };
 
 /** Simulate submitting an image generation via the DTM backend. */
+/* ------------------------------------------------------------------ */
+/*  Timed event types & helpers                                       */
+/* ------------------------------------------------------------------ */
+
+export type TimerEntry = {
+  id: string;
+  status: string;
+  event_text: string;
+  interruptible: boolean;
+  interrupt_action?: string | null;
+  due_at: string | null;
+  fired_at: string | null;
+  cancelled_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  meta: Record<string, unknown>;
+};
+
+export type TimersResult = {
+  active_count: number;
+  timers: TimerEntry[];
+};
+
+export type TimedEventWsPayload = {
+  type: "timed_event";
+  actor_id: string | null;
+  payload: {
+    narration: string;
+    actor_id: string | null;
+  };
+};
+
+export type TurnProgressWsPayload = {
+  type: "turn_progress";
+  actor_id?: string;
+  session_id?: string;
+  payload: {
+    phase: string;
+    tool?: string;
+  };
+};
+
+/** Fetch timers and compute active timer state. */
+export async function loadTimersFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+): Promise<{ calls: string[]; result: TimersResult; activeCount: number; activeLabel: string }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/timers`;
+  calls.push(url);
+  const result = (await fetcher(url)) as TimersResult;
+  const timers = Array.isArray(result.timers) ? result.timers : [];
+  const active = timers.filter(
+    (t) => t.status === "scheduled_unbound" || t.status === "scheduled_bound",
+  );
+  const activeCount = active.length;
+  let activeLabel = "";
+  if (active.length > 0) {
+    const next = active[0];
+    activeLabel = next.due_at
+      ? `Timer: ${next.event_text || "event"} (${new Date(next.due_at).toLocaleTimeString()})`
+      : `Timer: ${next.event_text || "pending"}`;
+  }
+  return { calls, result, activeCount, activeLabel };
+}
+
+/** Build a simulated timed_event WebSocket message. */
+export function buildTimedEventWsPayload(
+  narration: string,
+  actorId: string | null = null,
+): TimedEventWsPayload {
+  return {
+    type: "timed_event",
+    actor_id: actorId,
+    payload: { narration, actor_id: actorId },
+  };
+}
+
+/** Build a simulated turn_progress WebSocket message. */
+export function buildTurnProgressWsPayload(
+  phase: string,
+  extra?: { tool?: string; actor_id?: string; session_id?: string },
+): TurnProgressWsPayload {
+  return {
+    type: "turn_progress",
+    actor_id: extra?.actor_id,
+    session_id: extra?.session_id,
+    payload: { phase, tool: extra?.tool },
+  };
+}
+
+/**
+ * Simulate the submit-button label logic as implemented in the frontend.
+ * Mirrors `submitButtonLabel()` in app.js.
+ */
+export function submitButtonLabel(state: {
+  imageGenerating: number;
+  submitting: boolean;
+  timedEventInProgress: boolean;
+  queuedCount: number;
+}): string {
+  if (state.imageGenerating > 0) return "Generating...";
+  if (state.submitting || state.timedEventInProgress) {
+    return state.queuedCount > 0 ? `Queue (${state.queuedCount})` : "Queue";
+  }
+  return "Submit";
+}
+
 export async function dtmImageGenerateFlow(
   fetcher: FetchLike,
   prompt: string,

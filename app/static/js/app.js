@@ -5956,7 +5956,8 @@
           });
           this.smsInboxThreads = Array.isArray(body.threads) ? body.threads : [];
           if (this.smsInboxThreads.length && !this.smsInboxThread) {
-            this.smsInboxThread = this.smsInboxThreads[0];
+            const first = this.smsInboxThreads[0];
+            this.smsInboxThread = (first && typeof first === "object") ? (first.thread || "") : String(first || "");
             await this.loadSmsInboxThread();
           }
         } catch (error) {
