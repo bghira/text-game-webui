@@ -5707,6 +5707,7 @@ class TextGameEngineGateway(EngineGateway):
                         actor_id_text,
                         viewer_slug,
                         viewer_location_key,
+                        for_display=True,
                     ):
                         continue
                     if query_text and query_text not in str(turn.content or "").lower():
@@ -5765,6 +5766,7 @@ class TextGameEngineGateway(EngineGateway):
                 actor_id_text,
                 viewer_slug,
                 viewer_location_key,
+                for_display=True,
             )
         )
 
@@ -5794,6 +5796,7 @@ class TextGameEngineGateway(EngineGateway):
                 actor_id_text,
                 viewer_slug,
                 viewer_location_key,
+                for_display=True,
             ):
                 visible_actor_ids.append(actor_id_text)
         return visible_actor_ids
