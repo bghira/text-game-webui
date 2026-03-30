@@ -1447,3 +1447,84 @@ export async function deleteCalendarEventFlow(
   const result = (await fetcher(url, { method: "DELETE" })) as CalendarState;
   return { calls, result };
 }
+
+// ---------------------------------------------------------------------------
+// DTM image generation flow helpers
+// ---------------------------------------------------------------------------
+
+export type DtmImageGenerateRequest = {
+  prompt: string;
+  campaign_id?: string;
+};
+
+export type DtmImageGenerateResult = {
+  job_id: string;
+  status: string;
+  backend: string;
+};
+
+export type DtmImageStatusResult = {
+  status: string;
+  image_url?: string;
+  image_id?: string;
+  error?: string;
+};
+
+export type DtmMediaDeliverRequest = {
+  image_url?: string;
+  image_base64?: string;
+  prompt: string;
+  ref_type: string;
+  actor_id?: string;
+  room_key?: string;
+  job_id?: string;
+};
+
+export type DtmMediaDeliverResult = {
+  ok: boolean;
+  image_url: string;
+  image_id: string;
+};
+
+/** Simulate submitting an image generation via the DTM backend. */
+export async function dtmImageGenerateFlow(
+  fetcher: FetchLike,
+  prompt: string,
+): Promise<{ calls: string[]; result: DtmImageGenerateResult }> {
+  const calls: string[] = [];
+  const url = "/api/image/generate";
+  calls.push(url);
+  const result = (await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  })) as DtmImageGenerateResult;
+  return { calls, result };
+}
+
+/** Poll for DTM image generation status. */
+export async function dtmImageStatusFlow(
+  fetcher: FetchLike,
+  jobId: string,
+): Promise<{ calls: string[]; result: DtmImageStatusResult }> {
+  const calls: string[] = [];
+  const url = `/api/image/status/${encodeURIComponent(jobId)}`;
+  calls.push(url);
+  const result = (await fetcher(url)) as DtmImageStatusResult;
+  return { calls, result };
+}
+
+/** Simulate DTM delivering a generated image back to the webui. */
+export async function dtmMediaDeliverFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  payload: DtmMediaDeliverRequest,
+): Promise<{ calls: string[]; result: DtmMediaDeliverResult }> {
+  const calls: string[] = [];
+  const url = `/api/internal/campaigns/${campaignId}/media/deliver`;
+  calls.push(url);
+  const result = (await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })) as DtmMediaDeliverResult;
+  return { calls, result };
+}

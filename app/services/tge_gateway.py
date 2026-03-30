@@ -2808,10 +2808,17 @@ class TextGameEngineGateway(EngineGateway):
             ollama_options=override.get("ollama_options"),
         )
 
-    def _resolve_rewind_target_turn_id(self, campaign_id: str, target_turn_id: int) -> int | None:
+    def _resolve_rewind_target_turn_id(
+        self,
+        campaign_id: str,
+        target_turn_id: int,
+        *,
+        session_id: str | None = None,
+    ) -> int | None:
         wanted_turn_id = int(target_turn_id or 0)
         if wanted_turn_id <= 0:
             return None
+        session_id_text = str(session_id or "").strip() or None
         with self._session_factory() as session:
             target_turn = (
                 session.query(Turn)
@@ -2821,24 +2828,34 @@ class TextGameEngineGateway(EngineGateway):
             )
             if target_turn is None:
                 return None
+            if (
+                session_id_text
+                and str(target_turn.session_id or "").strip()
+                and str(target_turn.session_id or "").strip() != session_id_text
+            ):
+                return None
             snapshot = (
                 session.query(Snapshot)
                 .filter(Snapshot.campaign_id == campaign_id)
                 .filter(Snapshot.turn_id == wanted_turn_id)
                 .first()
             )
-            if snapshot is not None:
+            if snapshot is not None and (
+                not session_id_text
+                or str(target_turn.session_id or "").strip() == session_id_text
+            ):
                 return wanted_turn_id
-            narrator_turn = (
+            narrator_query = (
                 session.query(Turn)
                 .join(Snapshot, Snapshot.turn_id == Turn.id)
                 .filter(Turn.campaign_id == campaign_id)
                 .filter(Snapshot.campaign_id == campaign_id)
                 .filter(Turn.kind == "narrator")
                 .filter(Turn.id >= wanted_turn_id)
-                .order_by(Turn.id.asc())
-                .first()
             )
+            if session_id_text:
+                narrator_query = narrator_query.filter(Turn.session_id == session_id_text)
+            narrator_turn = narrator_query.order_by(Turn.id.asc()).first()
             if narrator_turn is not None:
                 return int(narrator_turn.id)
             return None
@@ -5237,7 +5254,11 @@ class TextGameEngineGateway(EngineGateway):
         actor_id_text = str(actor_id or "").strip() or None
         if session_id_text:
             self._enforce_session_access(campaign_id, actor_id_text or "", session_id_text)
-        resolved_turn_id = self._resolve_rewind_target_turn_id(campaign_id, target_turn_id)
+        resolved_turn_id = self._resolve_rewind_target_turn_id(
+            campaign_id,
+            target_turn_id,
+            session_id=session_id_text,
+        )
         if resolved_turn_id is None:
             return {
                 "ok": False,

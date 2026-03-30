@@ -98,7 +98,7 @@ def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
     app.state.gpu_orchestrator = gpu_orchestrator
     app.state.gpu_orchestrated_jobs: set = set()
 
-    # Create and inject LocalMediaPort if a backend is configured
+    # Create and inject media port based on backend
     if backend in ("diffusers", "comfyui"):
         from app.media.media_port import LocalMediaPort
 
@@ -118,6 +118,27 @@ def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
         if hasattr(gateway, "set_media_port"):
             gateway.set_media_port(media_port)
             log.info("Media port injected into gateway (backend=%s)", backend)
+    elif backend == "dtm":
+        from app.media.dtm_media_port import DtmMediaPort
+
+        # Build the callback base URL from this webui's own host/port.
+        host = settings.host
+        if host in ("0.0.0.0", "::"):
+            host = "127.0.0.1"
+        callback_base = f"http://{host}:{settings.port}"
+
+        media_port = DtmMediaPort(
+            dtm_api_url=settings.dtm_image_api_url,
+            dtm_secret=settings.dtm_link_secret,
+            webui_callback_base=callback_base,
+        )
+        app.state.media_port = media_port
+        app.state.dtm_pending_jobs = {}
+
+        gateway = app.state.gateway
+        if hasattr(gateway, "set_media_port"):
+            gateway.set_media_port(media_port)
+            log.info("DTM media port injected into gateway")
     else:
         app.state.media_port = None
 

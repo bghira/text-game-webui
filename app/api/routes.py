@@ -93,6 +93,16 @@ class InternalTurnRefreshRequest(BaseModel):
     session_id: str | None = None
 
 
+class InternalMediaDeliverRequest(BaseModel):
+    image_url: str | None = None
+    image_base64: str | None = None
+    prompt: str = ""
+    ref_type: str = "scene"  # scene | avatar
+    actor_id: str | None = None
+    room_key: str | None = None
+    job_id: str | None = None
+
+
 def get_gateway(request: Request) -> EngineGateway:
     return request.app.state.gateway
 
@@ -486,6 +496,93 @@ async def internal_turn_refresh(
         },
     )
     return {"ok": True}
+
+
+@router.post("/internal/campaigns/{campaign_id}/media/deliver")
+async def internal_media_deliver(
+    campaign_id: str,
+    payload: InternalMediaDeliverRequest,
+    request: Request,
+) -> dict:
+    """Receive a generated image from DTM and publish it to WebSocket subscribers."""
+    import logging as _log
+
+    settings = request.app.state.settings
+    provided_secret = str(request.headers.get(LINK_CONFIRM_HEADER) or "").strip()
+    expected_secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
+    if not provided_secret or provided_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Invalid link secret.")
+
+    # Resolve image bytes — prefer base64, fall back to downloading the URL.
+    png_bytes: bytes | None = None
+    if payload.image_base64:
+        import base64
+
+        try:
+            png_bytes = base64.b64decode(payload.image_base64)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid base64 image data.")
+    elif payload.image_url:
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=30, verify=False) as client:
+                resp = await client.get(payload.image_url)
+                resp.raise_for_status()
+                png_bytes = resp.content
+        except Exception as exc:
+            _log.getLogger(__name__).warning(
+                "Failed to download DTM image %s: %s", payload.image_url, exc,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not download image from DTM: {exc}",
+            )
+    else:
+        raise HTTPException(status_code=400, detail="Either image_url or image_base64 is required.")
+
+    # Store in local cache
+    image_cache = getattr(request.app.state, "image_cache", None)
+    if image_cache is None:
+        raise HTTPException(status_code=500, detail="Image cache not initialized.")
+
+    entry = image_cache.store(
+        png_bytes=png_bytes,
+        prompt=payload.prompt,
+        campaign_id=campaign_id,
+        room_key=payload.room_key,
+        ref_type=payload.ref_type,
+    )
+    local_url = image_cache.url_for(entry)
+
+    # Track DTM job completion (for "Generate" button polling)
+    dtm_pending = getattr(request.app.state, "dtm_pending_jobs", None)
+    if dtm_pending is not None and payload.job_id:
+        dtm_pending[payload.job_id] = {
+            "status": "completed",
+            "image_url": local_url,
+            "image_id": entry.image_id,
+        }
+
+    # Publish to WebSocket subscribers
+    hub = request.app.state.realtime
+    await hub.publish(
+        campaign_id,
+        {
+            "type": "media",
+            "campaign_id": campaign_id,
+            "payload": {
+                "action": f"{payload.ref_type}_generated",
+                "actor_id": payload.actor_id,
+                "image_url": local_url,
+                "image_id": entry.image_id,
+                "prompt": payload.prompt,
+                "source": "dtm",
+            },
+        },
+    )
+
+    return {"ok": True, "image_url": local_url, "image_id": entry.image_id}
 
 
 @router.get("/campaigns")
@@ -2497,6 +2594,32 @@ async def generate_image(
                 _gpu_orchestrated_jobs.add(prompt_id)
         return {"job_id": prompt_id, "status": "pending", "backend": "comfyui"}
 
+    elif backend == "dtm":
+        dtm_port = getattr(request.app.state, "media_port", None)
+        if dtm_port is None:
+            raise HTTPException(status_code=400, detail="DTM media port not initialized.")
+        job_id = str(uuid4())
+        # Track this job so the callback can mark it complete
+        dtm_pending = getattr(request.app.state, "dtm_pending_jobs", None)
+        if dtm_pending is None:
+            request.app.state.dtm_pending_jobs = {}
+            dtm_pending = request.app.state.dtm_pending_jobs
+        dtm_pending[job_id] = {"status": "pending"}
+        campaign_id = payload.campaign_id if hasattr(payload, "campaign_id") else None
+        ok = await dtm_port.enqueue_scene_generation(
+            actor_id="webui",
+            prompt=payload.prompt,
+            model="flux",
+            metadata={
+                "campaign_id": campaign_id,
+                "webui_job_id": job_id,
+            },
+        )
+        if not ok:
+            dtm_pending.pop(job_id, None)
+            raise HTTPException(status_code=502, detail="Failed to enqueue job on DTM.")
+        return {"job_id": job_id, "status": "pending", "backend": "dtm"}
+
     else:
         raise HTTPException(
             status_code=400,
@@ -2574,6 +2697,18 @@ async def image_job_status(job_id: str, request: Request) -> dict:
                 return {"status": "completed", "images": []}
             return {"status": "processing"}
         return {"status": "pending"}
+
+    elif backend == "dtm":
+        dtm_pending = getattr(request.app.state, "dtm_pending_jobs", None)
+        if dtm_pending is None:
+            return {"status": "failed", "error": "DTM job tracking not initialized."}
+        job = dtm_pending.get(job_id)
+        if job is None:
+            return {"status": "failed", "error": "Unknown DTM job."}
+        if job["status"] == "completed":
+            # Clean up after returning
+            dtm_pending.pop(job_id, None)
+        return job
 
     raise HTTPException(status_code=400, detail="No image backend configured.")
 

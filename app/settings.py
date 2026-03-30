@@ -197,7 +197,10 @@ class Settings(BaseModel):
     # -- Image generation settings ------------------------------------------
     image_backend: str = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_IMAGE_BACKEND", "none")
-    )  # none | diffusers | comfyui
+    )  # none | diffusers | comfyui | dtm
+    dtm_image_api_url: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_IMAGE_API_URL", "https://127.0.0.1:5000")
+    )
     diffusers_host: str = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_HOST", "127.0.0.1")
     )
