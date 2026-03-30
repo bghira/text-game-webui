@@ -4989,8 +4989,13 @@ class TextGameEngineGateway(EngineGateway):
         self._persist_fallback_memory_state(campaign_id, entries)
         return {"stored": True, "provider": "webui_fallback", "entry": entry}
 
-    async def sms_list(self, campaign_id: str, wildcard: str) -> dict:
-        rows = self._emulator.list_sms_threads(campaign_id, wildcard=wildcard or "*", limit=200)
+    async def sms_list(self, campaign_id: str, wildcard: str, viewer_actor_id: str | None = None) -> dict:
+        rows = self._emulator.list_sms_threads(
+            campaign_id,
+            wildcard=wildcard or "*",
+            limit=200,
+            viewer_actor_id=viewer_actor_id,
+        )
         return {"threads": rows}
 
     async def sms_read(self, campaign_id: str, thread: str, limit: int, viewer_actor_id: str | None = None) -> dict:
@@ -5035,12 +5040,12 @@ class TextGameEngineGateway(EngineGateway):
         ok, reason = self._emulator.delete_sms_thread(campaign_id, thread)
         return {"ok": ok, "reason": reason}
 
-    async def sms_delete_message(self, campaign_id: str, thread: str, message_index: int) -> dict:
-        ok, reason = self._emulator.delete_sms_message(campaign_id, thread, message_index)
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_seq: int) -> dict:
+        ok, reason = self._emulator.delete_sms_message(campaign_id, thread, message_seq)
         return {"ok": ok, "reason": reason}
 
-    async def sms_edit_message(self, campaign_id: str, thread: str, message_index: int, new_text: str) -> dict:
-        ok, reason = self._emulator.edit_sms_message(campaign_id, thread, message_index, new_text)
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_seq: int, new_text: str) -> dict:
+        ok, reason = self._emulator.edit_sms_message(campaign_id, thread, message_seq, new_text)
         return {"ok": ok, "reason": reason}
 
     async def debug_snapshot(self, campaign_id: str) -> dict:

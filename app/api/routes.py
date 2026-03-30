@@ -1829,9 +1829,10 @@ async def memory_store(campaign_id: str, payload: MemoryStoreRequest, gateway: E
 
 
 @router.post("/campaigns/{campaign_id}/sms/list")
-async def sms_list(campaign_id: str, payload: SmsListRequest, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def sms_list(campaign_id: str, payload: SmsListRequest, request: Request, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    payload.viewer_actor_id = _coerced_actor_id(request, payload.viewer_actor_id)
     try:
-        return await gateway.sms_list(campaign_id, payload.wildcard)
+        return await gateway.sms_list(campaign_id, payload.wildcard, viewer_actor_id=payload.viewer_actor_id)
     except KeyError as err:
         _not_found(err)
 
@@ -1888,7 +1889,7 @@ async def sms_delete_message(
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
     try:
-        data = await gateway.sms_delete_message(campaign_id, payload.thread, payload.message_index)
+        data = await gateway.sms_delete_message(campaign_id, payload.thread, payload.message_seq)
     except KeyError as err:
         _not_found(err)
     await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": {"action": "message_deleted", "thread": payload.thread}})
@@ -1903,7 +1904,7 @@ async def sms_edit_message(
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
     try:
-        data = await gateway.sms_edit_message(campaign_id, payload.thread, payload.message_index, payload.new_text)
+        data = await gateway.sms_edit_message(campaign_id, payload.thread, payload.message_seq, payload.new_text)
     except KeyError as err:
         _not_found(err)
     await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": {"action": "message_edited", "thread": payload.thread}})

@@ -43,14 +43,14 @@ describe("SMS edit and delete flows", () => {
     expect(result.reason).toBe("thread_not_found");
   });
 
-  test("delete a single message by index", async () => {
+  test("delete a single message by seq", async () => {
     const response: SmsDeleteMessageResult = { ok: true, reason: "deleted" };
     const fetcher = jest.fn().mockResolvedValue(response);
     const { calls, result } = await smsDeleteMessageFlow(
       fetcher,
       CAMPAIGN,
       "tavern-keeper",
-      2,
+      42,
     );
     expect(calls).toEqual([
       `/api/campaigns/${CAMPAIGN}/sms/delete-message`,
@@ -59,7 +59,7 @@ describe("SMS edit and delete flows", () => {
       (fetcher.mock.calls[0] as unknown as [string, { body: string }])[1].body,
     );
     expect(body.thread).toBe("tavern-keeper");
-    expect(body.message_index).toBe(2);
+    expect(body.message_seq).toBe(42);
     expect(result.ok).toBe(true);
   });
 
@@ -79,14 +79,14 @@ describe("SMS edit and delete flows", () => {
     expect(result.reason).toBe("message_not_found");
   });
 
-  test("edit a message", async () => {
+  test("edit a message by seq", async () => {
     const response: SmsEditMessageResult = { ok: true, reason: "updated" };
     const fetcher = jest.fn().mockResolvedValue(response);
     const { calls, result } = await smsEditMessageFlow(
       fetcher,
       CAMPAIGN,
       "blacksmith",
-      1,
+      17,
       "The sword is ready for pickup tomorrow.",
     );
     expect(calls).toEqual([
@@ -96,7 +96,7 @@ describe("SMS edit and delete flows", () => {
       (fetcher.mock.calls[0] as unknown as [string, { body: string }])[1].body,
     );
     expect(body.thread).toBe("blacksmith");
-    expect(body.message_index).toBe(1);
+    expect(body.message_seq).toBe(17);
     expect(body.new_text).toBe("The sword is ready for pickup tomorrow.");
     expect(result.ok).toBe(true);
   });
@@ -117,8 +117,8 @@ describe("SMS edit and delete flows", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("full lifecycle: write → edit → delete message → delete thread", async () => {
-    // Step 1: Delete a specific message (index 0)
+  test("full lifecycle: delete message → edit message → delete thread", async () => {
+    // Step 1: Delete a specific message (seq 5)
     const deleteMsgResponse: SmsDeleteMessageResult = {
       ok: true,
       reason: "deleted",
@@ -128,11 +128,11 @@ describe("SMS edit and delete flows", () => {
       deleteMsgFetcher,
       CAMPAIGN,
       "guard-captain",
-      0,
+      5,
     );
     expect(step1.result.ok).toBe(true);
 
-    // Step 2: Edit message at new index 0
+    // Step 2: Edit message (seq 6)
     const editResponse: SmsEditMessageResult = {
       ok: true,
       reason: "updated",
@@ -142,7 +142,7 @@ describe("SMS edit and delete flows", () => {
       editFetcher,
       CAMPAIGN,
       "guard-captain",
-      0,
+      6,
       "Revised patrol orders.",
     );
     expect(step2.result.ok).toBe(true);

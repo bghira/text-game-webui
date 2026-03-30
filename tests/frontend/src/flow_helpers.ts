@@ -1675,29 +1675,29 @@ export async function smsDeleteThreadFlow(
   return { calls, result };
 }
 
-/** Delete a single message from an SMS thread. */
+/** Delete a single message from an SMS thread by seq number. */
 export async function smsDeleteMessageFlow(
   fetcher: FetchLike,
   campaignId: string,
   thread: string,
-  messageIndex: number,
+  messageSeq: number,
 ): Promise<{ calls: string[]; result: SmsDeleteMessageResult }> {
   const calls: string[] = [];
   const url = `/api/campaigns/${campaignId}/sms/delete-message`;
   calls.push(url);
   const result = (await fetcher(url, {
     method: "POST",
-    body: JSON.stringify({ thread, message_index: messageIndex }),
+    body: JSON.stringify({ thread, message_seq: messageSeq }),
   })) as SmsDeleteMessageResult;
   return { calls, result };
 }
 
-/** Edit a single message in an SMS thread. */
+/** Edit a single message in an SMS thread by seq number. */
 export async function smsEditMessageFlow(
   fetcher: FetchLike,
   campaignId: string,
   thread: string,
-  messageIndex: number,
+  messageSeq: number,
   newText: string,
 ): Promise<{ calls: string[]; result: SmsEditMessageResult }> {
   const calls: string[] = [];
@@ -1705,7 +1705,7 @@ export async function smsEditMessageFlow(
   calls.push(url);
   const result = (await fetcher(url, {
     method: "POST",
-    body: JSON.stringify({ thread, message_index: messageIndex, new_text: newText }),
+    body: JSON.stringify({ thread, message_seq: messageSeq, new_text: newText }),
   })) as SmsEditMessageResult;
   return { calls, result };
 }

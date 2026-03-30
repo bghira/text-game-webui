@@ -159,12 +159,12 @@ class EngineGateway(Protocol):
     async def memory_terms(self, campaign_id: str, wildcard: str) -> dict: ...
     async def memory_turn(self, campaign_id: str, turn_id: int) -> dict: ...
     async def memory_store(self, campaign_id: str, payload: MemoryStoreRequest) -> dict: ...
-    async def sms_list(self, campaign_id: str, wildcard: str) -> dict: ...
+    async def sms_list(self, campaign_id: str, wildcard: str, viewer_actor_id: str | None = None) -> dict: ...
     async def sms_read(self, campaign_id: str, thread: str, limit: int, viewer_actor_id: str | None = None) -> dict: ...
     async def sms_write(self, campaign_id: str, thread: str, sender: str, recipient: str, message: str) -> dict: ...
     async def sms_delete_thread(self, campaign_id: str, thread: str) -> dict: ...
-    async def sms_delete_message(self, campaign_id: str, thread: str, message_index: int) -> dict: ...
-    async def sms_edit_message(self, campaign_id: str, thread: str, message_index: int, new_text: str) -> dict: ...
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_seq: int) -> dict: ...
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_seq: int, new_text: str) -> dict: ...
     async def debug_snapshot(self, campaign_id: str) -> dict: ...
     async def get_campaign_flags(self, campaign_id: str) -> dict: ...
     async def update_campaign_flags(
@@ -1107,7 +1107,8 @@ Legend: @ current player
         self._memory[campaign_id].append(row)
         return {"stored": True, "entry": row}
 
-    async def sms_list(self, campaign_id: str, wildcard: str) -> dict:
+    async def sms_list(self, campaign_id: str, wildcard: str, viewer_actor_id: str | None = None) -> dict:
+        _ = viewer_actor_id  # InMemory doesn't resolve contacts
         self._require_campaign(campaign_id)
         threads = sorted(self._sms[campaign_id].keys())
         if wildcard and wildcard != "*":
@@ -1132,23 +1133,25 @@ Legend: @ current player
             return {"ok": True, "deleted": "thread"}
         return {"ok": False, "error": "thread_not_found"}
 
-    async def sms_delete_message(self, campaign_id: str, thread: str, message_index: int) -> dict:
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_seq: int) -> dict:
         self._require_campaign(campaign_id)
         msgs = self._sms[campaign_id].get(thread, [])
-        if message_index < 0 or message_index >= len(msgs):
-            return {"ok": False, "error": "message_not_found"}
-        msgs.pop(message_index)
-        if not msgs:
-            del self._sms[campaign_id][thread]
-        return {"ok": True, "deleted": "message"}
+        for i, msg in enumerate(msgs):
+            if getattr(msg, "seq", None) == message_seq or i == message_seq:
+                msgs.pop(i)
+                if not msgs:
+                    del self._sms[campaign_id][thread]
+                return {"ok": True, "deleted": "message"}
+        return {"ok": False, "error": "message_not_found"}
 
-    async def sms_edit_message(self, campaign_id: str, thread: str, message_index: int, new_text: str) -> dict:
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_seq: int, new_text: str) -> dict:
         self._require_campaign(campaign_id)
         msgs = self._sms[campaign_id].get(thread, [])
-        if message_index < 0 or message_index >= len(msgs):
-            return {"ok": False, "error": "message_not_found"}
-        msgs[message_index].message = new_text
-        return {"ok": True, "updated": "message"}
+        for i, msg in enumerate(msgs):
+            if getattr(msg, "seq", None) == message_seq or i == message_seq:
+                msgs[i].message = new_text
+                return {"ok": True, "updated": "message"}
+        return {"ok": False, "error": "message_not_found"}
 
     async def debug_snapshot(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)

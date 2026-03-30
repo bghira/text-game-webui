@@ -121,6 +121,7 @@ class MemoryStoreRequest(BaseModel):
 
 class SmsListRequest(BaseModel):
     wildcard: str = "*"
+    viewer_actor_id: str | None = None
 
 
 class SmsReadRequest(BaseModel):
@@ -142,12 +143,12 @@ class SmsDeleteThreadRequest(BaseModel):
 
 class SmsDeleteMessageRequest(BaseModel):
     thread: str
-    message_index: int
+    message_seq: int
 
 
 class SmsEditMessageRequest(BaseModel):
     thread: str
-    message_index: int
+    message_seq: int
     new_text: str
 
 

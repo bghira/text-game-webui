@@ -5952,7 +5952,10 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/list`, {
             method: "POST",
-            body: JSON.stringify({ wildcard: "*" }),
+            body: JSON.stringify({
+              wildcard: "*",
+              viewer_actor_id: (this.turnForm.actor_id || "").trim() || null,
+            }),
           });
           this.smsInboxThreads = Array.isArray(body.threads) ? body.threads : [];
           if (this.smsInboxThreads.length && !this.smsInboxThread) {
@@ -6031,11 +6034,18 @@
 
       async deleteSmsMessage(index) {
         if (!this.selectedCampaignId || !this.smsInboxThread) return;
+        const msg = this.smsInboxMessages[index];
+        if (!msg) return;
+        const seq = Number(msg.seq || 0);
+        if (!seq) {
+          this.errorMessage = "Cannot delete: message has no seq identifier.";
+          return;
+        }
         if (!confirm("Delete this message?")) return;
         try {
           await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/delete-message`, {
             method: "POST",
-            body: JSON.stringify({ thread: this.smsInboxThread, message_index: index }),
+            body: JSON.stringify({ thread: this.smsInboxThread, message_seq: seq }),
           });
           await this.loadSmsInboxThread();
           if (this.smsInboxMessages.length === 0) {
@@ -6047,22 +6057,25 @@
       },
 
       _smsEditingIndex: -1,
+      _smsEditingSeq: 0,
       _smsEditingText: "",
 
       startSmsEdit(index) {
         const msg = this.smsInboxMessages[index];
         if (!msg) return;
         this._smsEditingIndex = index;
+        this._smsEditingSeq = Number(msg.seq || 0);
         this._smsEditingText = msg.message || msg.body || "";
       },
 
       cancelSmsEdit() {
         this._smsEditingIndex = -1;
+        this._smsEditingSeq = 0;
         this._smsEditingText = "";
       },
 
       async saveSmsEdit() {
-        if (!this.selectedCampaignId || !this.smsInboxThread || this._smsEditingIndex < 0) return;
+        if (!this.selectedCampaignId || !this.smsInboxThread || !this._smsEditingSeq) return;
         const newText = this._smsEditingText.trim();
         if (!newText) return;
         try {
@@ -6070,11 +6083,12 @@
             method: "POST",
             body: JSON.stringify({
               thread: this.smsInboxThread,
-              message_index: this._smsEditingIndex,
+              message_seq: this._smsEditingSeq,
               new_text: newText,
             }),
           });
           this._smsEditingIndex = -1;
+          this._smsEditingSeq = 0;
           this._smsEditingText = "";
           await this.loadSmsInboxThread();
         } catch (error) {
