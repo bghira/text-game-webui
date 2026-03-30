@@ -410,7 +410,7 @@
                         <button type="button" class="turn-action-btn turn-pin-btn" :class="{ pinned: turnIsPinned(entry) }" :title="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'" :aria-label="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'"
                           @click="toggleTurnPinned(entry)">&#x1F4CC;</button>
                         <button type="button" class="turn-action-btn rewind-btn" title="Rewind to this turn" aria-label="Rewind to this turn"
-                          @click="rewindToTurnId(entry._backendTurnId)" :disabled="submitting">&#x23EA;</button>
+                          @click="rewindEntry(entry)" :disabled="submitting">&#x23EA;</button>
                         <button type="button" class="turn-action-btn" title="Edit this turn" aria-label="Edit this turn"
                           @click="startTurnEdit(entry)" :disabled="turnMutationBusy">&#x270E;</button>
                         <button type="button" class="turn-action-btn" :title="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'" :aria-label="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'"
@@ -642,6 +642,7 @@
               placeholder="What do you do?"
               class="action-input"
               required
+              autocomplete="off"
               id="action-input"
               rows="1"
               @keydown="handleComposerKeydown($event)"

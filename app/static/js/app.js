@@ -3546,7 +3546,17 @@
       },
 
       /* ---- Rewind ---- */
-      async rewindToTurnId(turnId) {
+      async rewindEntry(entry) {
+        const backendTurnId = Number(entry && entry._backendTurnId) || 0;
+        if (backendTurnId <= 0) return;
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        const entrySessionId = String(entry && entry._sessionId || meta.session_id || "").trim();
+        await this.rewindToTurnId(backendTurnId, {
+          sessionId: entrySessionId || this.selectedSessionId || "",
+        });
+      },
+
+      async rewindToTurnId(turnId, options) {
         this.resetError();
         this.rewindStatus = "";
         if (!this.selectedCampaignId) {
@@ -3561,8 +3571,13 @@
         try {
           const params = new URLSearchParams();
           params.set("target_turn_id", String(turnId));
-          if (this.selectedSessionId) {
-            params.set("session_id", this.selectedSessionId);
+          const rewindSessionId = String(
+            options && typeof options === "object" && options.sessionId
+              ? options.sessionId
+              : (this.selectedSessionId || ""),
+          ).trim();
+          if (rewindSessionId) {
+            params.set("session_id", rewindSessionId);
           }
           const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/rewind?${params.toString()}`, {
             method: "POST",
@@ -3571,7 +3586,10 @@
             this.rewindStatus = result.note || "Rewind not supported.";
             return;
           }
-          this.rewindStatus = `Rewound to turn ${turnId} at ${nowLabel()}.`;
+          const deletedTurns = Number(result.deleted_turns);
+          this.rewindStatus = Number.isFinite(deletedTurns) && deletedTurns >= 0
+            ? `Rewound to turn ${turnId} at ${nowLabel()} (${deletedTurns} turn${deletedTurns === 1 ? "" : "s"} removed).`
+            : `Rewound to turn ${turnId} at ${nowLabel()}.`;
           this.rewindTargetTurn = "";
           this._resetPagination();
           /* Reload all state after rewind */

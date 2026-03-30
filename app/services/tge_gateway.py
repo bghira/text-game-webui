@@ -5339,6 +5339,7 @@ class TextGameEngineGateway(EngineGateway):
             ok = True
             result_note = f"RewindResult(status='ok', target_turn_id={resolved_turn_id}, deleted_turns={int(deleted_count)})"
             detail = "session_scoped_rewind"
+            deleted_turns = int(deleted_count)
         else:
             runtime.emulator._cleanup_embeddings_after_rewind(campaign_id, after_turn_id=resolved_turn_id)  # noqa: SLF001
             result = runtime.game_engine.rewind_to_turn(campaign_id, resolved_turn_id)
@@ -5350,6 +5351,7 @@ class TextGameEngineGateway(EngineGateway):
             ok = result.status == "ok" if hasattr(result, "status") else True
             result_note = str(result)
             detail = str(result)
+            deleted_turns = None
         self._invalidate_campaign_runtime(campaign_id)
         return {
             "ok": ok,
@@ -5358,6 +5360,7 @@ class TextGameEngineGateway(EngineGateway):
             "session_id": session_id_text,
             "note": result_note,
             "detail": detail,
+            "deleted_turns": deleted_turns,
         }
 
     async def cancel_pending_timer(self, campaign_id: str) -> dict:
