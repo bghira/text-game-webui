@@ -6045,7 +6045,7 @@
         try {
           await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/delete-message`, {
             method: "POST",
-            body: JSON.stringify({ thread: this.smsInboxThread, message_seq: seq }),
+            body: JSON.stringify({ thread: msg.thread || this.smsInboxThread, message_seq: seq }),
           });
           await this.loadSmsInboxThread();
           if (this.smsInboxMessages.length === 0) {
@@ -6058,6 +6058,7 @@
 
       _smsEditingIndex: -1,
       _smsEditingSeq: 0,
+      _smsEditingThread: "",
       _smsEditingText: "",
 
       startSmsEdit(index) {
@@ -6065,31 +6066,33 @@
         if (!msg) return;
         this._smsEditingIndex = index;
         this._smsEditingSeq = Number(msg.seq || 0);
+        this._smsEditingThread = msg.thread || this.smsInboxThread;
         this._smsEditingText = msg.message || msg.body || "";
       },
 
       cancelSmsEdit() {
         this._smsEditingIndex = -1;
         this._smsEditingSeq = 0;
+        this._smsEditingThread = "";
         this._smsEditingText = "";
       },
 
       async saveSmsEdit() {
-        if (!this.selectedCampaignId || !this.smsInboxThread || !this._smsEditingSeq) return;
+        if (!this.selectedCampaignId || !this._smsEditingSeq) return;
         const newText = this._smsEditingText.trim();
         if (!newText) return;
         try {
           await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/edit-message`, {
             method: "POST",
             body: JSON.stringify({
-              thread: this.smsInboxThread,
+              thread: this._smsEditingThread || this.smsInboxThread,
               message_seq: this._smsEditingSeq,
               new_text: newText,
             }),
           });
           this._smsEditingIndex = -1;
           this._smsEditingSeq = 0;
-          this._smsEditingText = "";
+          this._smsEditingThread = "";
           await this.loadSmsInboxThread();
         } catch (error) {
           this.errorMessage = String(error);
