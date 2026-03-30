@@ -6003,6 +6003,85 @@
         }
       },
 
+      async deleteSmsThread(threadKey) {
+        if (!this.selectedCampaignId || !threadKey) return;
+        if (!confirm(`Delete entire thread "${threadKey}"?`)) return;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/delete-thread`, {
+            method: "POST",
+            body: JSON.stringify({ thread: threadKey }),
+          });
+          this.smsInboxThreads = this.smsInboxThreads.filter(
+            (t) => (t && typeof t === "object" ? t.thread : t) !== threadKey,
+          );
+          if (this.smsInboxThread === threadKey) {
+            const first = this.smsInboxThreads[0];
+            this.smsInboxThread = first
+              ? (typeof first === "object" ? first.thread || "" : String(first || ""))
+              : "";
+            this.smsInboxMessages = [];
+            if (this.smsInboxThread) {
+              await this.loadSmsInboxThread();
+            }
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async deleteSmsMessage(index) {
+        if (!this.selectedCampaignId || !this.smsInboxThread) return;
+        if (!confirm("Delete this message?")) return;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/delete-message`, {
+            method: "POST",
+            body: JSON.stringify({ thread: this.smsInboxThread, message_index: index }),
+          });
+          await this.loadSmsInboxThread();
+          if (this.smsInboxMessages.length === 0) {
+            await this.loadSmsInbox();
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      _smsEditingIndex: -1,
+      _smsEditingText: "",
+
+      startSmsEdit(index) {
+        const msg = this.smsInboxMessages[index];
+        if (!msg) return;
+        this._smsEditingIndex = index;
+        this._smsEditingText = msg.message || msg.body || "";
+      },
+
+      cancelSmsEdit() {
+        this._smsEditingIndex = -1;
+        this._smsEditingText = "";
+      },
+
+      async saveSmsEdit() {
+        if (!this.selectedCampaignId || !this.smsInboxThread || this._smsEditingIndex < 0) return;
+        const newText = this._smsEditingText.trim();
+        if (!newText) return;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/edit-message`, {
+            method: "POST",
+            body: JSON.stringify({
+              thread: this.smsInboxThread,
+              message_index: this._smsEditingIndex,
+              new_text: newText,
+            }),
+          });
+          this._smsEditingIndex = -1;
+          this._smsEditingText = "";
+          await this.loadSmsInboxThread();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
       async loadDebugSnapshot() {
         if (!this.selectedCampaignId) {
           return;

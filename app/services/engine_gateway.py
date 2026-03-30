@@ -162,6 +162,9 @@ class EngineGateway(Protocol):
     async def sms_list(self, campaign_id: str, wildcard: str) -> dict: ...
     async def sms_read(self, campaign_id: str, thread: str, limit: int, viewer_actor_id: str | None = None) -> dict: ...
     async def sms_write(self, campaign_id: str, thread: str, sender: str, recipient: str, message: str) -> dict: ...
+    async def sms_delete_thread(self, campaign_id: str, thread: str) -> dict: ...
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_index: int) -> dict: ...
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_index: int, new_text: str) -> dict: ...
     async def debug_snapshot(self, campaign_id: str) -> dict: ...
     async def get_campaign_flags(self, campaign_id: str) -> dict: ...
     async def update_campaign_flags(
@@ -1121,6 +1124,31 @@ Legend: @ current player
         msg = SmsMessage(sender=sender, recipient=recipient, message=message, created_at=datetime.now(UTC))
         self._sms[campaign_id][thread].append(msg)
         return {"stored": True, "thread": thread, "message": msg.model_dump()}
+
+    async def sms_delete_thread(self, campaign_id: str, thread: str) -> dict:
+        self._require_campaign(campaign_id)
+        if thread in self._sms[campaign_id]:
+            del self._sms[campaign_id][thread]
+            return {"ok": True, "deleted": "thread"}
+        return {"ok": False, "error": "thread_not_found"}
+
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_index: int) -> dict:
+        self._require_campaign(campaign_id)
+        msgs = self._sms[campaign_id].get(thread, [])
+        if message_index < 0 or message_index >= len(msgs):
+            return {"ok": False, "error": "message_not_found"}
+        msgs.pop(message_index)
+        if not msgs:
+            del self._sms[campaign_id][thread]
+        return {"ok": True, "deleted": "message"}
+
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_index: int, new_text: str) -> dict:
+        self._require_campaign(campaign_id)
+        msgs = self._sms[campaign_id].get(thread, [])
+        if message_index < 0 or message_index >= len(msgs):
+            return {"ok": False, "error": "message_not_found"}
+        msgs[message_index].message = new_text
+        return {"ok": True, "updated": "message"}
 
     async def debug_snapshot(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)

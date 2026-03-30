@@ -1636,3 +1636,76 @@ export async function dtmMediaDeliverFlow(
   })) as DtmMediaDeliverResult;
   return { calls, result };
 }
+
+/* ------------------------------------------------------------------ */
+/*  SMS delete / edit helpers                                          */
+/* ------------------------------------------------------------------ */
+
+export type SmsDeleteThreadResult = {
+  ok: boolean;
+  reason?: string;
+  error?: string;
+};
+
+export type SmsDeleteMessageResult = {
+  ok: boolean;
+  reason?: string;
+  error?: string;
+};
+
+export type SmsEditMessageResult = {
+  ok: boolean;
+  reason?: string;
+  error?: string;
+};
+
+/** Delete an entire SMS thread. */
+export async function smsDeleteThreadFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  thread: string,
+): Promise<{ calls: string[]; result: SmsDeleteThreadResult }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/sms/delete-thread`;
+  calls.push(url);
+  const result = (await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify({ thread }),
+  })) as SmsDeleteThreadResult;
+  return { calls, result };
+}
+
+/** Delete a single message from an SMS thread. */
+export async function smsDeleteMessageFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  thread: string,
+  messageIndex: number,
+): Promise<{ calls: string[]; result: SmsDeleteMessageResult }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/sms/delete-message`;
+  calls.push(url);
+  const result = (await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify({ thread, message_index: messageIndex }),
+  })) as SmsDeleteMessageResult;
+  return { calls, result };
+}
+
+/** Edit a single message in an SMS thread. */
+export async function smsEditMessageFlow(
+  fetcher: FetchLike,
+  campaignId: string,
+  thread: string,
+  messageIndex: number,
+  newText: string,
+): Promise<{ calls: string[]; result: SmsEditMessageResult }> {
+  const calls: string[] = [];
+  const url = `/api/campaigns/${campaignId}/sms/edit-message`;
+  calls.push(url);
+  const result = (await fetcher(url, {
+    method: "POST",
+    body: JSON.stringify({ thread, message_index: messageIndex, new_text: newText }),
+  })) as SmsEditMessageResult;
+  return { calls, result };
+}

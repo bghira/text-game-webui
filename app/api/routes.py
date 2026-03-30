@@ -57,6 +57,9 @@ from app.services.schemas import (
     RosterUpsertRequest,
     SessionCreateRequest,
     SessionUpdateRequest,
+    SmsDeleteMessageRequest,
+    SmsDeleteThreadRequest,
+    SmsEditMessageRequest,
     SmsListRequest,
     SmsReadRequest,
     SmsWriteRequest,
@@ -1859,6 +1862,51 @@ async def sms_write(
     except KeyError as err:
         _not_found(err)
     await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": data})
+    return data
+
+
+@router.post("/campaigns/{campaign_id}/sms/delete-thread")
+async def sms_delete_thread(
+    campaign_id: str,
+    payload: SmsDeleteThreadRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.sms_delete_thread(campaign_id, payload.thread)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": {"action": "thread_deleted", "thread": payload.thread}})
+    return data
+
+
+@router.post("/campaigns/{campaign_id}/sms/delete-message")
+async def sms_delete_message(
+    campaign_id: str,
+    payload: SmsDeleteMessageRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.sms_delete_message(campaign_id, payload.thread, payload.message_index)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": {"action": "message_deleted", "thread": payload.thread}})
+    return data
+
+
+@router.post("/campaigns/{campaign_id}/sms/edit-message")
+async def sms_edit_message(
+    campaign_id: str,
+    payload: SmsEditMessageRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.sms_edit_message(campaign_id, payload.thread, payload.message_index, payload.new_text)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": {"action": "message_edited", "thread": payload.thread}})
     return data
 
 

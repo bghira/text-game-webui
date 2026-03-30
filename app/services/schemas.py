@@ -136,6 +136,21 @@ class SmsWriteRequest(BaseModel):
     message: str
 
 
+class SmsDeleteThreadRequest(BaseModel):
+    thread: str
+
+
+class SmsDeleteMessageRequest(BaseModel):
+    thread: str
+    message_index: int
+
+
+class SmsEditMessageRequest(BaseModel):
+    thread: str
+    message_index: int
+    new_text: str
+
+
 class SmsMessage(BaseModel):
     sender: str
     recipient: str

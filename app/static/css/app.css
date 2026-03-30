@@ -3793,6 +3793,29 @@ details summary {
   color: var(--ink-muted);
   font-weight: 400;
 }
+.sms-thread-row {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+.sms-thread-row .sms-thread-btn {
+  flex: 1;
+  min-width: 0;
+}
+.sms-thread-delete {
+  appearance: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.72rem;
+  padding: 0.15rem;
+  opacity: 0;
+  transition: opacity 0.15s;
+  color: var(--ink-muted);
+  flex-shrink: 0;
+}
+.sms-thread-row:hover .sms-thread-delete { opacity: 0.7; }
+.sms-thread-delete:hover { opacity: 1 !important; color: var(--danger, #c0392b); }
 .sms-thread-btn:hover { background: var(--surface-muted); }
 .sms-thread-btn.active {
   background: var(--accent-soft);
@@ -3837,6 +3860,54 @@ details summary {
 .sms-bubble-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.sms-bubble-actions {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 0.15rem;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.sms-bubble:hover .sms-bubble-actions { opacity: 1; }
+.sms-msg-action {
+  appearance: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.68rem;
+  padding: 0.1rem 0.2rem;
+  color: var(--ink-muted);
+  border-radius: 2px;
+}
+.sms-msg-action:hover { background: var(--surface-muted); color: var(--ink); }
+.sms-msg-delete:hover { color: var(--danger, #c0392b); }
+
+.sms-edit-inline {
+  margin-top: 0.2rem;
+}
+.sms-edit-input {
+  width: 100%;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  resize: vertical;
+}
+.sms-edit-actions {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.2rem;
+}
+.sms-edit-actions button {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
 }
 
 .sms-compose {

@@ -5031,6 +5031,18 @@ class TextGameEngineGateway(EngineGateway):
             },
         }
 
+    async def sms_delete_thread(self, campaign_id: str, thread: str) -> dict:
+        ok, reason = self._emulator.delete_sms_thread(campaign_id, thread)
+        return {"ok": ok, "reason": reason}
+
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_index: int) -> dict:
+        ok, reason = self._emulator.delete_sms_message(campaign_id, thread, message_index)
+        return {"ok": ok, "reason": reason}
+
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_index: int, new_text: str) -> dict:
+        ok, reason = self._emulator.edit_sms_message(campaign_id, thread, message_index, new_text)
+        return {"ok": ok, "reason": reason}
+
     async def debug_snapshot(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)

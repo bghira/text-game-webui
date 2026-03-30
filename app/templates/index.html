@@ -1839,12 +1839,16 @@
               <div class="sms-inbox-layout">
                 <div class="sms-inbox-threads">
                   <template x-for="t in smsInboxThreads" :key="t.thread || t">
-                    <button type="button" class="sms-thread-btn"
-                      :class="{ active: smsInboxThread === (t.thread || t) }"
-                      @click="smsInboxThread = t.thread || t; loadSmsInboxThread();">
-                      <span class="sms-thread-name" x-text="t.label || t.thread || t"></span>
-                      <span class="sms-thread-meta" x-show="t.count" x-text="t.count + ' msg' + (t.count === 1 ? '' : 's')"></span>
-                    </button>
+                    <div class="sms-thread-row" :class="{ active: smsInboxThread === (t.thread || t) }">
+                      <button type="button" class="sms-thread-btn"
+                        :class="{ active: smsInboxThread === (t.thread || t) }"
+                        @click="smsInboxThread = t.thread || t; cancelSmsEdit(); loadSmsInboxThread();">
+                        <span class="sms-thread-name" x-text="t.label || t.thread || t"></span>
+                        <span class="sms-thread-meta" x-show="t.count" x-text="t.count + ' msg' + (t.count === 1 ? '' : 's')"></span>
+                      </button>
+                      <button type="button" class="sms-thread-delete" title="Delete thread"
+                        @click.stop="deleteSmsThread(t.thread || t)">&#x1F5D1;</button>
+                    </div>
                   </template>
                 </div>
                 <div class="sms-inbox-messages">
@@ -1852,7 +1856,22 @@
                     <template x-for="(msg, i) in smsInboxMessages" :key="i">
                       <div class="sms-bubble" :class="{ 'sms-bubble--self': (msg.from || msg.sender || '') === (turnForm.actor_id || '').trim() }">
                         <div class="sms-bubble-sender" x-text="msg.from || msg.sender || ''"></div>
-                        <div class="sms-bubble-text" x-text="msg.message || msg.body || ''"></div>
+                        <template x-if="_smsEditingIndex !== i">
+                          <div class="sms-bubble-text" x-text="msg.message || msg.body || ''"></div>
+                        </template>
+                        <template x-if="_smsEditingIndex === i">
+                          <div class="sms-edit-inline">
+                            <textarea class="sms-edit-input" x-model="_smsEditingText" rows="2"></textarea>
+                            <div class="sms-edit-actions">
+                              <button type="button" @click="saveSmsEdit()">Save</button>
+                              <button type="button" @click="cancelSmsEdit()">Cancel</button>
+                            </div>
+                          </div>
+                        </template>
+                        <div class="sms-bubble-actions" x-show="_smsEditingIndex !== i">
+                          <button type="button" class="sms-msg-action" title="Edit" @click="startSmsEdit(i)">&#x270E;</button>
+                          <button type="button" class="sms-msg-action sms-msg-delete" title="Delete" @click="deleteSmsMessage(i)">&#x1F5D1;</button>
+                        </div>
                       </div>
                     </template>
                     <p x-show="smsInboxMessages.length === 0" class="muted">No messages in this thread.</p>
