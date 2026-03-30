@@ -4071,46 +4071,9 @@ class TextGameEngineGateway(EngineGateway):
                 raise KeyError(f"Unknown campaign: {campaign_id}")
 
         generated = await self._emulator.generate_map(campaign_id, actor_id=actor_id)
-        if generated and generated not in {"Map unavailable.", "Map is foggy. Try again."}:
+        if generated and generated not in {"Map unavailable."}:
             return generated
-
-        with self._session_factory() as session:
-            player = (
-                session.query(Player)
-                .filter(Player.campaign_id == campaign_id)
-                .filter(Player.actor_id == actor_id)
-                .first()
-            )
-            if player is None:
-                return "Map unavailable."
-            pstate = self._parse_json(player.state_json, {})
-            title = str(pstate.get("room_title") or pstate.get("location") or "Unknown Room")
-
-            others = (
-                session.query(Player)
-                .filter(Player.campaign_id == campaign_id)
-                .filter(Player.actor_id != actor_id)
-                .order_by(Player.actor_id.asc())
-                .all()
-            )
-
-        lines = [
-            "+-----------------------------+",
-            f"| {title[:27]:<27} |",
-            "|              @              |",
-            "+-----------------------------+",
-            "",
-            "Legend:",
-            f"  @ {actor_id}",
-        ]
-        marker_ord = ord("A")
-        for other in others[:8]:
-            marker = chr(marker_ord)
-            marker_ord += 1
-            ostate = self._parse_json(other.state_json, {})
-            oloc = str(ostate.get("room_title") or ostate.get("location") or "unknown")
-            lines.append(f"  {marker} {other.actor_id} - {oloc}")
-        return "\n".join(lines)
+        return "Map unavailable."
 
     async def get_timers(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
