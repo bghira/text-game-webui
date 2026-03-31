@@ -484,6 +484,8 @@
       },
 
       mapText: "",
+      mapGraphJson: "",
+      mapGraphVisible: false,
       timersText: "",
       _activeTimerCount: 0,
       _activeTimerLabel: "",
@@ -4752,6 +4754,17 @@
           this.mapText = body.map || "";
         } catch (_err) {
           /* background refresh — don't surface */
+        }
+      },
+
+      async loadMapGraph() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/map-graph`);
+          this.mapGraphJson = JSON.stringify(body, null, 2);
+          this.mapGraphVisible = true;
+        } catch (_err) {
+          this.mapGraphJson = "Error loading map graph";
         }
       },
 

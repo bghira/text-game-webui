@@ -738,8 +738,17 @@
       </div>
 
       <div x-show="inspectorTab === 'map'" class="stack">
-        <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
+          <button type="button" @click="loadMapGraph()" :disabled="!selectedCampaignId">Graph JSON</button>
+        </div>
         <pre x-text="mapText"></pre>
+        <template x-if="mapGraphVisible">
+          <details open style="margin-top:0.5rem;">
+            <summary style="cursor:pointer;font-weight:bold;font-size:0.85rem;">Room Map Graph</summary>
+            <pre x-text="mapGraphJson" style="font-size:0.75rem;max-height:25rem;overflow:auto;background:var(--bg-secondary,#1a1a1a);padding:0.5rem;border-radius:4px;"></pre>
+          </details>
+        </template>
       </div>
 
       <div x-show="inspectorTab === 'player'" class="stack">
@@ -1815,8 +1824,17 @@
             <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
           </div>
           <div class="modal-body">
-            <button type="button" @click="loadMap()" :disabled="!selectedCampaignId" style="margin-bottom:0.5rem;">Refresh Map</button>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.5rem;">
+              <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
+              <button type="button" @click="loadMapGraph()" :disabled="!selectedCampaignId">Graph JSON</button>
+            </div>
             <pre x-text="mapText"></pre>
+            <template x-if="mapGraphVisible">
+              <details open style="margin-top:0.5rem;">
+                <summary style="cursor:pointer;font-weight:bold;font-size:0.85rem;">Room Map Graph</summary>
+                <pre x-text="mapGraphJson" style="font-size:0.75rem;max-height:25rem;overflow:auto;background:var(--bg-secondary,#1a1a1a);padding:0.5rem;border-radius:4px;"></pre>
+              </details>
+            </template>
           </div>
         </div>
       </template>

@@ -119,6 +119,7 @@ class EngineGateway(Protocol):
         raw_format: str = "jsonl",
     ) -> dict: ...
     async def get_map(self, campaign_id: str, actor_id: str) -> str: ...
+    def get_map_graph(self, campaign_id: str) -> dict: ...
     async def get_timers(self, campaign_id: str) -> dict: ...
     async def get_calendar(self, campaign_id: str, actor_id: str | None = None) -> dict: ...
     async def update_calendar_event_visibility(
@@ -753,6 +754,10 @@ class InMemoryEngineGateway:
 +-----------------------+
 Legend: @ current player
 """
+
+    def get_map_graph(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {}
 
     async def get_timers(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)

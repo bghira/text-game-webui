@@ -4075,6 +4075,14 @@ class TextGameEngineGateway(EngineGateway):
             return generated
         return "Map unavailable."
 
+    def get_map_graph(self, campaign_id: str) -> dict:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            return state.get("_room_map_graph") or {}
+
     async def get_timers(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)

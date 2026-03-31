@@ -1536,6 +1536,18 @@ async def get_map(
     return {"map": data}
 
 
+@router.get("/campaigns/{campaign_id}/map-graph")
+async def get_map_graph(
+    campaign_id: str,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = gateway.get_map_graph(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+    return data
+
+
 @router.get("/campaigns/{campaign_id}/timers")
 async def get_timers(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:
