@@ -606,6 +606,7 @@
 
       /* Turn history */
       recentTurns: [],
+      _submittedPlayerTurnTimes: {},
       _turnStreamOffset: 0,
       _turnStreamHasMore: false,
       _turnStreamLoadingOlder: false,
@@ -833,10 +834,13 @@
           if (turn.kind === "narrator" || turn.kind === "player") {
             counter++;
             const meta = turn.meta || {};
+            const rememberedSubmitAt = turn.kind === "player"
+              ? this._submittedPlayerTurnTimes[String(turn.id || "").trim()] || ""
+              : "";
             const entry = {
               id: counter,
               type: turn.kind === "player" ? "player" : "narrator",
-              at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
+              at: rememberedSubmitAt || (turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : ""),
               text: renderDiscordTimestamps(stripTrailingInventory(turn.content || "[No content]")),
               meta: {
                 actor_id: turn.actor_id || "",
@@ -966,6 +970,16 @@
           return false;
         }
         return this.recentTurns.some((turn) => Number(turn && turn.id) === wanted);
+      },
+
+      _rememberSubmittedPlayerTurnTime(turnId, atLabel) {
+        const wanted = Number(turnId) || 0;
+        const label = String(atLabel || "").trim();
+        if (wanted <= 0 || !label) return;
+        this._submittedPlayerTurnTimes = {
+          ...(this._submittedPlayerTurnTimes || {}),
+          [String(wanted)]: label,
+        };
       },
 
       _scheduleRecentTurnRecovery(turnId) {
@@ -4527,6 +4541,7 @@
         this._activeTurnAbortController = abortController;
         let backendTurnId = 0;
         let optimisticPlayerEntryId = 0;
+        let optimisticPlayerSubmittedAt = "";
         try {
           if (payload.action) {
             const existingQueueId = String(existingQueueEntryId || "").trim();
@@ -4535,6 +4550,7 @@
               if (existing) {
                 existing.text = payload.action;
                 existing.at = nowLabel();
+                optimisticPlayerSubmittedAt = existing.at;
                 existing.meta = {
                   ...(existing.meta || {}),
                   actor_id: payload.actor_id,
@@ -4552,6 +4568,9 @@
                 pending_submit: true,
               });
               optimisticPlayerEntryId = this.turnCounter;
+              optimisticPlayerSubmittedAt = String(
+                (this.turnStream.find((entry) => entry.id === optimisticPlayerEntryId) || {}).at || "",
+              ).trim();
               this._scrollAnchorEntryId = this.turnCounter;
             }
           }
@@ -4673,6 +4692,15 @@
               }
             }
 
+          }
+
+          if (backendTurnId > 0 && optimisticPlayerEntryId > 0) {
+            const optimisticEntry = this.turnStream.find((entry) => entry.id === optimisticPlayerEntryId);
+            if (optimisticEntry && optimisticEntry.type === "player") {
+              this._rememberSubmittedPlayerTurnTime(backendTurnId, optimisticEntry.at);
+            }
+          } else if (backendTurnId > 0 && optimisticPlayerSubmittedAt) {
+            this._rememberSubmittedPlayerTurnTime(backendTurnId, optimisticPlayerSubmittedAt);
           }
 
           if (String(this.selectedCampaignId || "").trim() === String(campaignId || "").trim()) {
