@@ -376,7 +376,7 @@
     /* Build chunks with dialogue/narration voice splitting */
     const beats = [{ text: text, speaker: speaker || "" }];
     const chunks = _ttsBuildChunks(beats);
-    console.log("[TTS] speaking:", chunks.length, "chunk(s),", chunks.map(c => c.voice + ": " + c.text.substring(0, 30)));
+    console.log("[TTS] speaking:", chunks.length, "chunk(s),", chunks.map(c => c.silence ? "silence:" + c.silence + "ms" : c.voice + ": " + c.text.substring(0, 30)));
 
     window._ttsCancelled = false;
     window._ttsChunks = chunks;
@@ -1935,7 +1935,7 @@
             return;
           }
           console.log("[TTS] auto-speak:", chunks.length, "chunk(s) across", beats.length, "beats",
-            chunks.map(c => c.voice + ": " + c.text.substring(0, 30)));
+            chunks.map(c => c.silence ? "silence:" + c.silence + "ms" : c.voice + ": " + c.text.substring(0, 30)));
           _ttsPumpGenerator();
         }
       },
