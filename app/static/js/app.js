@@ -121,45 +121,87 @@
   }
 
   /**
+   * Split text into sentences. Each sentence keeps its trailing punctuation.
+   * Returns array of trimmed sentence strings.
+   */
+  function _ttsSplitSentences(text) {
+    /* Split on sentence-ending punctuation followed by space or end.
+       Handles ". ", "! ", "? ", ".\u201d ", etc. */
+    const raw = text.replace(/\n+/g, " ").match(/[^.!?]*[.!?]+[\s]*/g);
+    if (!raw) return [text.trim()].filter(Boolean);
+    return raw.map(s => s.trim()).filter(Boolean);
+  }
+
+  /* Pause durations (ms) inserted after punctuation boundaries */
+  const _TTS_PAUSE_SENTENCE = 350;  /* after . ! ? */
+  const _TTS_PAUSE_VOICE_SWITCH = 450; /* between narrator ↔ actor */
+  const _TTS_PAUSE_BEAT = 500;      /* between beats */
+
+  /**
    * Build the full chunk queue for a turn's beats.
    * - Narrator beats: everything in narrator voice.
    * - Actor beats: split on quotes — dialogue in actor voice, narration in narrator voice.
-   * Each segment gets further split if it exceeds the word limit.
+   * - Within each segment, split on sentence boundaries and insert silence pauses.
+   * - Long sentence groups still get chunked at the word limit.
+   * Queue items are either {text, voice} or {silence: ms}.
    */
   function _ttsBuildChunks(beats) {
     const narratorVoice = window._ttsDefaultVoice;
-    const chunks = [];
-    for (const b of beats) {
+    const items = [];
+
+    for (let bi = 0; bi < beats.length; bi++) {
+      const b = beats[bi];
       const actorVoice = _ttsVoiceForSpeaker(b.speaker);
       const isNarrator = !b.speaker || b.speaker === "narrator";
 
+      /* Beat separator */
+      if (bi > 0) items.push({ silence: _TTS_PAUSE_BEAT });
+
       if (isNarrator) {
-        /* Narrator beat: all text in narrator voice */
-        for (const c of _ttsChunkLongText(b.text)) {
-          chunks.push({ text: c, voice: narratorVoice });
-        }
+        _ttsAddSentenceChunks(items, b.text, narratorVoice);
       } else {
-        /* Actor beat: split dialogue vs narration */
         const segments = _ttsSplitDialogue(b.text);
+        let lastVoice = null;
         for (const seg of segments) {
           const voice = seg.isDialogue ? actorVoice : narratorVoice;
-          for (const c of _ttsChunkLongText(seg.text)) {
-            chunks.push({ text: c, voice: voice });
+          /* Pause on voice switch within a beat */
+          if (lastVoice && lastVoice !== voice) {
+            items.push({ silence: _TTS_PAUSE_VOICE_SWITCH });
           }
+          _ttsAddSentenceChunks(items, seg.text, voice);
+          lastVoice = voice;
         }
       }
     }
-    /* Merge consecutive chunks with the same voice to reduce generation calls */
-    const merged = [];
-    for (const c of chunks) {
-      const prev = merged.length ? merged[merged.length - 1] : null;
-      if (prev && prev.voice === c.voice && (prev.text + " " + c.text).split(/\s+/).length <= _TTS_CHUNK_WORD_LIMIT) {
-        prev.text += " " + c.text;
+    return items;
+  }
+
+  /**
+   * Split text into sentences, group into word-limited chunks,
+   * and push {text, voice} items with sentence pauses between groups.
+   */
+  function _ttsAddSentenceChunks(items, text, voice) {
+    const sentences = _ttsSplitSentences(text);
+    let buf = "";
+    let count = 0;
+    for (const s of sentences) {
+      if (buf && (buf + " " + s).split(/\s+/).length > _TTS_CHUNK_WORD_LIMIT) {
+        items.push({ text: buf, voice: voice });
+        items.push({ silence: _TTS_PAUSE_SENTENCE });
+        buf = s;
+        count++;
       } else {
-        merged.push({ text: c.text, voice: c.voice });
+        buf += (buf ? " " : "") + s;
       }
     }
-    return merged;
+    if (buf) {
+      items.push({ text: buf, voice: voice });
+      count++;
+    }
+    /* Add sentence pause after last chunk if there were multiple sentences */
+    if (sentences.length > 1 && count > 0) {
+      items.push({ silence: _TTS_PAUSE_SENTENCE });
+    }
   }
 
   /* Playback state for the chunk pipeline */
@@ -198,11 +240,10 @@
 
   function _ttsOnChunkGenerated(blobUrl) {
     if (!blobUrl || window._ttsCancelled) { _ttsFinishAll(); return; }
-    /* Buffer the generated audio */
-    window._ttsAudioQueue.push(blobUrl);
+    window._ttsAudioQueue.push({ audio: blobUrl });
     window._ttsGenerating = false;
-    /* Kick off next generation (pre-buffer while playing) */
-    _ttsGenerateNextChunk();
+    /* Pre-generate next chunk while this one plays */
+    _ttsPumpGenerator();
     /* If nothing is currently playing, start playback */
     if (!window._ttsCurrentAudio) {
       _ttsPlayNext();
@@ -211,23 +252,40 @@
 
   function _ttsPlayNext() {
     if (window._ttsCancelled) { _ttsFinishAll(); return; }
-    const blobUrl = window._ttsAudioQueue.shift();
-    if (!blobUrl) {
-      /* Nothing buffered — if still generating, wait; otherwise done */
+
+    /* Drain silence items and generated-audio items from the queue.
+       Also check if the next chunk-to-generate is a silence (no worker needed). */
+    _ttsDrainSilenceToQueue();
+
+    const item = window._ttsAudioQueue.shift();
+    if (!item) {
+      /* Nothing ready — if still generating, wait (worker callback will resume); otherwise done */
       if (!window._ttsGenerating && !window._ttsChunks.length) {
         _ttsFinishAll();
       }
       return;
     }
-    const audio = new Audio(blobUrl);
+
+    if (item.silence) {
+      /* Play silence via setTimeout */
+      window._ttsCurrentAudio = "silence";
+      setTimeout(function () {
+        if (window._ttsCancelled) { _ttsFinishAll(); return; }
+        window._ttsCurrentAudio = null;
+        _ttsPlayNext();
+      }, item.silence);
+      return;
+    }
+
+    const audio = new Audio(item.audio);
     window._ttsCurrentAudio = audio;
     audio.onended = function () {
-      URL.revokeObjectURL(blobUrl);
+      URL.revokeObjectURL(item.audio);
       window._ttsCurrentAudio = null;
       _ttsPlayNext();
     };
     audio.onerror = function () {
-      URL.revokeObjectURL(blobUrl);
+      URL.revokeObjectURL(item.audio);
       window._ttsCurrentAudio = null;
       _ttsFinishAll();
     };
@@ -238,8 +296,27 @@
     });
   }
 
-  function _ttsGenerateNextChunk() {
+  /**
+   * Move silence items from _ttsChunks to _ttsAudioQueue
+   * (they don't need the worker) and kick off the next text chunk.
+   */
+  function _ttsDrainSilenceToQueue() {
+    while (window._ttsChunks.length && window._ttsChunks[0].silence) {
+      window._ttsAudioQueue.push(window._ttsChunks.shift());
+    }
+    _ttsPumpGenerator();
+  }
+
+  /**
+   * If the worker is idle and the next chunk is a text item, send it.
+   * Silences get drained directly to the audio queue.
+   */
+  function _ttsPumpGenerator() {
     if (window._ttsCancelled || window._ttsGenerating) return;
+    /* Drain any leading silences first */
+    while (window._ttsChunks.length && window._ttsChunks[0].silence) {
+      window._ttsAudioQueue.push(window._ttsChunks.shift());
+    }
     const next = window._ttsChunks.shift();
     if (!next) return;
     window._ttsGenerating = true;
@@ -253,7 +330,7 @@
   function _ttsFinishAll() {
     _ttsHideLoading();
     window._ttsChunks = [];
-    window._ttsAudioQueue.forEach(u => URL.revokeObjectURL(u));
+    window._ttsAudioQueue.forEach(function (i) { if (i.audio) URL.revokeObjectURL(i.audio); });
     window._ttsAudioQueue = [];
     window._ttsGenerating = false;
     window._ttsCancelled = false;
@@ -311,7 +388,7 @@
     }
 
     /* Kick off the first chunk */
-    _ttsGenerateNextChunk();
+    _ttsPumpGenerator();
   }
 
   function _ttsStopNow() {
@@ -1859,7 +1936,7 @@
           }
           console.log("[TTS] auto-speak:", chunks.length, "chunk(s) across", beats.length, "beats",
             chunks.map(c => c.voice + ": " + c.text.substring(0, 30)));
-          _ttsGenerateNextChunk();
+          _ttsPumpGenerator();
         }
       },
 
