@@ -229,6 +229,20 @@
     return raw || "Unknown browser-local Ollama error.";
   }
 
+  function isFetchTransportError(error) {
+    const raw = String(error || "").trim();
+    const lower = raw.toLowerCase();
+    if (!raw) return false;
+    return (
+      raw === "TypeError: Failed to fetch"
+      || lower.includes("failed to fetch")
+      || lower.includes("networkerror")
+      || lower.includes("network error")
+      || lower.includes("load failed")
+      || lower.includes("network request failed")
+    );
+  }
+
   /* ---- Alpine Global Store ---- */
   document.addEventListener("alpine:init", () => {
     Alpine.store("app", {
@@ -970,6 +984,89 @@
           return false;
         }
         return this.recentTurns.some((turn) => Number(turn && turn.id) === wanted);
+      },
+
+      _latestRecentTurnId() {
+        if (!Array.isArray(this.recentTurns) || this.recentTurns.length === 0) {
+          return 0;
+        }
+        return this.recentTurns.reduce((maxId, turn) => {
+          const turnId = Number(turn && turn.id) || 0;
+          return turnId > maxId ? turnId : maxId;
+        }, 0);
+      },
+
+      _matchingRecentPlayerTurnId(payload, baselineTurnId) {
+        const baseline = Number(baselineTurnId) || 0;
+        const actorId = String(payload && payload.actor_id || "").trim();
+        const action = String(payload && payload.action || "").trim();
+        const sessionId = String(payload && payload.session_id || "").trim();
+        if (!Array.isArray(this.recentTurns) || !actorId || !action) {
+          return 0;
+        }
+        for (const turn of this.recentTurns) {
+          const turnId = Number(turn && turn.id) || 0;
+          if (turnId <= baseline) continue;
+          if (String(turn && turn.kind || "").trim() !== "player") continue;
+          if (String(turn && turn.actor_id || "").trim() !== actorId) continue;
+          if (sessionId && String(turn && turn.session_id || "").trim() !== sessionId) continue;
+          if (String(turn && turn.content || "").trim() !== action) continue;
+          return turnId;
+        }
+        return 0;
+      },
+
+      _matchingRecentNarratorTurnId(payload, afterTurnId) {
+        const afterId = Number(afterTurnId) || 0;
+        const actorId = String(payload && payload.actor_id || "").trim();
+        const sessionId = String(payload && payload.session_id || "").trim();
+        if (!Array.isArray(this.recentTurns)) {
+          return 0;
+        }
+        for (const turn of this.recentTurns) {
+          const turnId = Number(turn && turn.id) || 0;
+          if (turnId <= afterId) continue;
+          if (String(turn && turn.kind || "").trim() !== "narrator") continue;
+          if (actorId && String(turn && turn.actor_id || "").trim() !== actorId) continue;
+          if (sessionId && String(turn && turn.session_id || "").trim() !== sessionId) continue;
+          return turnId;
+        }
+        return 0;
+      },
+
+      async _recoverTurnAfterTransportFailure(campaignId, payload, baselineTurnId) {
+        const targetCampaignId = String(campaignId || "").trim();
+        const targetSessionId = String(payload && payload.session_id || "").trim();
+        const attemptDelaysMs = [800, 1400, 2200, 3200, 4500];
+        for (const delayMs of attemptDelaysMs) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          try {
+            if (String(this.selectedCampaignId || "").trim() === targetCampaignId) {
+              await this.loadRecentTurns(30, { force: true });
+              const playerTurnId = this._matchingRecentPlayerTurnId(payload, baselineTurnId);
+              const narratorTurnId = playerTurnId
+                ? this._matchingRecentNarratorTurnId(payload, playerTurnId)
+                : 0;
+              if (playerTurnId > 0 && narratorTurnId > 0) {
+                await Promise.all([
+                  this.loadSessions({ skipConnect: false }),
+                  this.loadTimers(),
+                  this.loadCalendar(),
+                  this.loadStoryState(),
+                  this.loadChapterList(),
+                ]);
+                this.populateTurnStreamFromHistory();
+                this.statusMessage = "Recovered turn after connection issue.";
+                this.errorMessage = "";
+                return true;
+              }
+            } else {
+              await this._refreshBackgroundCampaignView(targetCampaignId, targetSessionId);
+            }
+          } catch (_error) {
+          }
+        }
+        return false;
       },
 
       _rememberSubmittedPlayerTurnTime(turnId, atLabel) {
@@ -4528,6 +4625,7 @@
         this.submitting = true;
         this._submittingTurn = true;
         this._cancelTurnRequested = false;
+        const baselineRecentTurnId = this._latestRecentTurnId();
         this._activeProgressCampaignId = String(campaignId || "").trim();
         this._activeProgressSessionId = String(payload && payload.session_id || this.selectedSessionId || "").trim();
         this._activeProgressLabel = queued ? "Processing queued action..." : "Submitting turn...";
@@ -4746,15 +4844,30 @@
           return { ok: true };
         } catch (error) {
           const isAbort = !!(error && (error.name === "AbortError" || String(error).includes("AbortError")));
-          if (optimisticPlayerEntryId > 0) {
-            this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
-          }
           this._scrollAnchorEntryId = 0;
           this._activeProgressCampaignId = "";
           this._activeProgressSessionId = "";
           this._activeProgressLabel = "";
           if (isAbort && this._cancelTurnRequested) {
+            if (optimisticPlayerEntryId > 0) {
+              this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
+            }
             return { ok: false, cancelled: true, error: "Turn cancelled." };
+          }
+          if (isFetchTransportError(error)) {
+            this.statusMessage = "Connection hiccup. Checking whether the turn completed...";
+            this.errorMessage = "";
+            const recovered = await this._recoverTurnAfterTransportFailure(
+              campaignId,
+              payload,
+              baselineRecentTurnId,
+            );
+            if (recovered) {
+              return { ok: true, recovered: true };
+            }
+          }
+          if (optimisticPlayerEntryId > 0) {
+            this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
           }
           return { ok: false, error };
         } finally {
