@@ -15,16 +15,26 @@
     return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
   }
 
-  /* Global TTS helper for inline beat buttons */
+  /* Global TTS helpers */
   window._ttsBeats = [];
+  /* Prime voice list early — Firefox populates it lazily */
+  if (typeof speechSynthesis !== "undefined") {
+    speechSynthesis.getVoices();
+    speechSynthesis.addEventListener("voiceschanged", () => speechSynthesis.getVoices(), { once: true });
+  }
+  function _ttsPickVoice() {
+    if (typeof speechSynthesis === "undefined") return null;
+    const voices = speechSynthesis.getVoices();
+    if (!voices.length) return null;
+    const en = voices.filter(v => v.lang.startsWith("en"));
+    return en.find(v => v.default) || en[0] || voices.find(v => v.default) || voices[0];
+  }
   window._ttsSpeakBeat = function (idx) {
     const text = window._ttsBeats[idx];
     if (!text || typeof speechSynthesis === "undefined") return;
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    const voices = speechSynthesis.getVoices();
-    const en = voices.filter(v => v.lang.startsWith("en"));
-    const voice = en.find(v => v.default) || en[0] || voices.find(v => v.default) || voices[0];
+    const voice = _ttsPickVoice();
     if (voice) u.voice = voice;
     speechSynthesis.speak(u);
   };
@@ -546,7 +556,6 @@
       /* TTS */
       ttsEnabled: false,
       _ttsSpeaking: false,
-      _ttsVoices: [],
       diagnosticsBundleStatus: "",
       campaignExportStatus: "",
       campaignExport: {
@@ -707,7 +716,6 @@
         if (!ready) return;
         if (this._initializedAfterLink) return;
         this._initializedAfterLink = true;
-        this._ttsLoadVoices();
         try { this.ttsEnabled = localStorage.getItem("ttsEnabled") === "true"; } catch (_) {}
         this.$watch("ttsEnabled", (v) => { try { localStorage.setItem("ttsEnabled", v ? "true" : "false"); } catch (_) {} });
         this.loadPinnedTurns();
@@ -1502,25 +1510,6 @@
 
       /* ---- TTS ---- */
 
-      _ttsLoadVoices() {
-        if (typeof speechSynthesis === "undefined") return;
-        this._ttsVoices = speechSynthesis.getVoices();
-        if (!this._ttsVoices.length) {
-          speechSynthesis.addEventListener("voiceschanged", () => {
-            this._ttsVoices = speechSynthesis.getVoices();
-          }, { once: true });
-        }
-      },
-
-      _ttsPickVoice() {
-        const voices = this._ttsVoices;
-        if (!voices.length) return null;
-        // Prefer an English voice; prefer one marked as default
-        const en = voices.filter(v => v.lang.startsWith("en"));
-        const preferred = en.find(v => v.default) || en[0];
-        return preferred || voices.find(v => v.default) || voices[0];
-      },
-
       _ttsExtractText(entry) {
         const scene = entry && entry.meta && entry.meta.scene_output;
         if (scene && Array.isArray(scene.beats) && scene.beats.length) {
@@ -1548,7 +1537,7 @@
           }
         }
         if (chunk.trim()) chunks.push(chunk.trim());
-        const voice = this._ttsPickVoice();
+        const voice = _ttsPickVoice();
         this._ttsSpeaking = true;
         for (let i = 0; i < chunks.length; i++) {
           const u = new SpeechSynthesisUtterance(chunks[i]);
