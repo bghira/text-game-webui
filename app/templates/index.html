@@ -2355,8 +2355,8 @@
       <div class="drawer-header">
         <h2 class="sr-only">Settings</h2>
         <div class="settings-tabs" role="tablist" aria-label="Settings sections"
-             @keydown.left.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i-1+tabs.length)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
-             @keydown.right.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i+1)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
+             @keydown.left.prevent="(function(s){ var tabs=['llm','image','tts','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i-1+tabs.length)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
+             @keydown.right.prevent="(function(s){ var tabs=['llm','image','tts','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i+1)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
           <button type="button" role="tab" id="settings-tab-llm" class="settings-tab"
             :class="{ active: $store.app.settingsTab === 'llm' }"
             :aria-selected="$store.app.settingsTab === 'llm'"
@@ -2369,6 +2369,12 @@
             :tabindex="$store.app.settingsTab === 'image' ? 0 : -1"
             aria-controls="settings-panel-image"
             @click="$store.app.settingsTab = 'image'">Image</button>
+          <button type="button" role="tab" id="settings-tab-tts" class="settings-tab"
+            :class="{ active: $store.app.settingsTab === 'tts' }"
+            :aria-selected="$store.app.settingsTab === 'tts'"
+            :tabindex="$store.app.settingsTab === 'tts' ? 0 : -1"
+            aria-controls="settings-panel-tts"
+            @click="$store.app.settingsTab = 'tts'">TTS</button>
           <button type="button" role="tab" id="settings-tab-appearance" class="settings-tab"
             :class="{ active: $store.app.settingsTab === 'appearance' }"
             :aria-selected="$store.app.settingsTab === 'appearance'"
@@ -2659,6 +2665,54 @@
 
         <p class="settings-note">Some changes require a server restart.</p>
         <p class="settings-status" :class="imageSettingsStatus.ok === false ? 'error' : 'status'" x-show="imageSettingsStatus.message" x-text="imageSettingsStatus.message"></p>
+      </div>
+
+      <!-- TTS Settings Panel -->
+      <div id="settings-panel-tts" role="tabpanel" aria-labelledby="settings-tab-tts" class="stack" x-show="$store.app.settingsTab === 'tts'">
+        <div class="settings-group">
+          <p class="settings-group-title">General</p>
+          <div class="stack compact">
+            <label>
+              <input type="checkbox" x-model="ttsEnabled" />
+              Auto-read narration on turn complete
+            </label>
+            <label>
+              Narrator Voice
+              <select x-model="ttsNarratorVoice" @change="ttsApplySettings()">
+                <option value="">Disabled (characters only)</option>
+                <template x-for="[id, v] in Object.entries(window.KOKORO_VOICES || {})" :key="id">
+                  <option :value="id" x-text="v.name + ' (' + v.gender + ', ' + v.lang + ')'" :selected="id === ttsNarratorVoice"></option>
+                </template>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="settings-group">
+          <p class="settings-group-title">Chunking</p>
+          <div class="stack compact">
+            <label>
+              <input type="checkbox" x-model="ttsSplitOnPeriod" @change="ttsApplySettings()" />
+              Split on periods (adds pause after each sentence)
+            </label>
+          </div>
+        </div>
+        <div class="settings-group">
+          <p class="settings-group-title">Pause Durations (ms)</p>
+          <div class="stack compact">
+            <label>
+              After sentence (? !)
+              <input type="number" min="0" max="2000" step="50" x-model.number="ttsPauseSentence" @change="ttsApplySettings()" />
+            </label>
+            <label>
+              Voice switch (narrator / character)
+              <input type="number" min="0" max="2000" step="50" x-model.number="ttsPauseVoiceSwitch" @change="ttsApplySettings()" />
+            </label>
+            <label>
+              Between beats
+              <input type="number" min="0" max="2000" step="50" x-model.number="ttsPauseBeat" @change="ttsApplySettings()" />
+            </label>
+          </div>
+        </div>
       </div>
 
       <!-- Appearance Settings Panel -->

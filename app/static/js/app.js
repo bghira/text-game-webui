@@ -124,13 +124,18 @@
    * Split text into sentences. Each sentence keeps its trailing punctuation.
    * Returns array of trimmed sentence strings.
    */
+  /* Configurable TTS globals (overridden from Alpine settings) */
+  window._ttsSplitOnPeriod = false;
+  window._ttsPauseSentence = 350;
+  window._ttsPauseVoiceSwitch = 450;
+  window._ttsPauseBeat = 500;
+
   function _ttsSplitSentences(text) {
-    /* Split only on ? and ! (the model handles periods fine).
-       Each match grabs everything up to and including the ?/! */
+    /* Split on ? and ! always; optionally also on . if configured */
+    const puncPattern = window._ttsSplitOnPeriod ? /[^.!?]*[.!?]+[\s]*/g : /[^!?]*[!?]+[\s]*/g;
     const parts = [];
-    const re = /[^!?]*[!?]+[\s]*/g;
     let m, last = 0;
-    while ((m = re.exec(text)) !== null) {
+    while ((m = puncPattern.exec(text)) !== null) {
       parts.push(text.slice(last, m.index + m[0].length).trim());
       last = m.index + m[0].length;
     }
@@ -141,11 +146,6 @@
     return parts.length ? parts : [text.trim()].filter(Boolean);
   }
 
-  /* Pause durations (ms) inserted at split boundaries */
-  const _TTS_PAUSE_SENTENCE = 350;  /* after ! ? */
-  const _TTS_PAUSE_VOICE_SWITCH = 450; /* between narrator ↔ actor */
-  const _TTS_PAUSE_BEAT = 500;      /* between beats */
-
   /**
    * Build the full chunk queue for a turn's beats.
    * - Narrator beats: everything in narrator voice.
@@ -155,7 +155,8 @@
    * Queue items are either {text, voice} or {silence: ms}.
    */
   function _ttsBuildChunks(beats) {
-    const narratorVoice = window._ttsDefaultVoice;
+    const narratorVoice = window._ttsDefaultVoice; /* empty string = narrator disabled */
+    const narratorEnabled = !!narratorVoice;
     const items = [];
 
     for (let bi = 0; bi < beats.length; bi++) {
@@ -163,19 +164,22 @@
       const actorVoice = _ttsVoiceForSpeaker(b.speaker);
       const isNarrator = !b.speaker || b.speaker === "narrator";
 
-      /* Beat separator */
-      if (bi > 0) items.push({ silence: _TTS_PAUSE_BEAT });
-
       if (isNarrator) {
+        /* Skip entire narrator beats if narrator voice is disabled */
+        if (!narratorEnabled) continue;
+        if (items.length && window._ttsPauseBeat > 0) items.push({ silence: window._ttsPauseBeat });
         _ttsAddSentenceChunks(items, b.text, narratorVoice);
       } else {
+        if (items.length && window._ttsPauseBeat > 0) items.push({ silence: window._ttsPauseBeat });
         const segments = _ttsSplitDialogue(b.text);
         let lastVoice = null;
         for (const seg of segments) {
+          /* Skip narration segments within actor beats if narrator disabled */
+          if (!seg.isDialogue && !narratorEnabled) continue;
           const voice = seg.isDialogue ? actorVoice : narratorVoice;
           /* Pause on voice switch within a beat */
-          if (lastVoice && lastVoice !== voice) {
-            items.push({ silence: _TTS_PAUSE_VOICE_SWITCH });
+          if (lastVoice && lastVoice !== voice && window._ttsPauseVoiceSwitch > 0) {
+            items.push({ silence: window._ttsPauseVoiceSwitch });
           }
           _ttsAddSentenceChunks(items, seg.text, voice);
           lastVoice = voice;
@@ -193,8 +197,8 @@
     const sentences = _ttsSplitSentences(text);
     for (let i = 0; i < sentences.length; i++) {
       items.push({ text: sentences[i], voice: voice });
-      if (i < sentences.length - 1) {
-        items.push({ silence: _TTS_PAUSE_SENTENCE });
+      if (i < sentences.length - 1 && window._ttsPauseSentence > 0) {
+        items.push({ silence: window._ttsPauseSentence });
       }
     }
   }
@@ -924,6 +928,11 @@
       /* TTS */
       ttsEnabled: false,
       _ttsSpeaking: false,
+      ttsNarratorVoice: "af_heart",
+      ttsSplitOnPeriod: false,
+      ttsPauseSentence: 350,
+      ttsPauseVoiceSwitch: 450,
+      ttsPauseBeat: 500,
       diagnosticsBundleStatus: "",
       campaignExportStatus: "",
       campaignExport: {
@@ -1084,7 +1093,15 @@
         if (!ready) return;
         if (this._initializedAfterLink) return;
         this._initializedAfterLink = true;
-        try { this.ttsEnabled = localStorage.getItem("ttsEnabled") === "true"; } catch (_) {}
+        try {
+          this.ttsEnabled = localStorage.getItem("ttsEnabled") === "true";
+          this.ttsNarratorVoice = localStorage.getItem("ttsNarratorVoice") || "af_heart";
+          this.ttsSplitOnPeriod = localStorage.getItem("ttsSplitOnPeriod") === "true";
+          this.ttsPauseSentence = parseInt(localStorage.getItem("ttsPauseSentence"), 10) || 350;
+          this.ttsPauseVoiceSwitch = parseInt(localStorage.getItem("ttsPauseVoiceSwitch"), 10) || 450;
+          this.ttsPauseBeat = parseInt(localStorage.getItem("ttsPauseBeat"), 10) || 500;
+          this.ttsApplySettings();
+        } catch (_) {}
         this.$watch("ttsEnabled", (v) => { try { localStorage.setItem("ttsEnabled", v ? "true" : "false"); } catch (_) {} });
         this.loadPinnedTurns();
         this.loadComposerHistory();
@@ -1899,6 +1916,22 @@
       ttsStop() {
         _ttsStopNow();
         this._ttsSpeaking = false;
+      },
+
+      ttsApplySettings() {
+        try {
+          localStorage.setItem("ttsNarratorVoice", this.ttsNarratorVoice);
+          localStorage.setItem("ttsSplitOnPeriod", this.ttsSplitOnPeriod ? "true" : "false");
+          localStorage.setItem("ttsPauseSentence", String(this.ttsPauseSentence));
+          localStorage.setItem("ttsPauseVoiceSwitch", String(this.ttsPauseVoiceSwitch));
+          localStorage.setItem("ttsPauseBeat", String(this.ttsPauseBeat));
+        } catch (_) {}
+        /* Push to global TTS config */
+        window._ttsDefaultVoice = this.ttsNarratorVoice || "";
+        window._ttsSplitOnPeriod = this.ttsSplitOnPeriod;
+        window._ttsPauseSentence = this.ttsPauseSentence;
+        window._ttsPauseVoiceSwitch = this.ttsPauseVoiceSwitch;
+        window._ttsPauseBeat = this.ttsPauseBeat;
       },
 
       ttsSpeakEntry(entry) {
