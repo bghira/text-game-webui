@@ -29,14 +29,44 @@
     const en = voices.filter(v => v.lang.startsWith("en"));
     return en.find(v => v.default) || en[0] || voices.find(v => v.default) || voices[0];
   }
-  window._ttsSpeakBeat = function (idx) {
-    const text = window._ttsBeats[idx];
-    if (!text || typeof speechSynthesis === "undefined") return;
+  function _ttsSpeakNow(text) {
+    if (!text) { console.warn("[TTS] no text to speak"); return; }
+    if (typeof speechSynthesis === "undefined") {
+      console.warn("[TTS] speechSynthesis API not available");
+      alert("TTS not available: your browser doesn't support speechSynthesis");
+      return;
+    }
+    const voices = speechSynthesis.getVoices();
+    console.log("[TTS] voices available:", voices.length, voices.map(v => v.name + " (" + v.lang + ")"));
+    if (!voices.length) {
+      console.warn("[TTS] no voices found — system TTS may not be installed");
+      alert("TTS: no voices available. On Linux, install speech-dispatcher and espeak-ng:\n\nsudo emerge speech-dispatcher espeak-ng\n\nThen restart your browser.");
+      return;
+    }
+    /* cancel + resume clears Chrome's stuck-paused state */
     speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    const voice = _ttsPickVoice();
-    if (voice) u.voice = voice;
-    speechSynthesis.speak(u);
+    speechSynthesis.resume();
+    /* Small delay after cancel — Chrome sometimes ignores speak() called synchronously after cancel() */
+    setTimeout(() => {
+      const u = new SpeechSynthesisUtterance(text);
+      const voice = _ttsPickVoice();
+      console.log("[TTS] using voice:", voice ? voice.name : "default");
+      if (voice) u.voice = voice;
+      u.onstart = () => console.log("[TTS] started speaking");
+      u.onend = () => { console.log("[TTS] finished speaking"); clearInterval(keepAlive); };
+      u.onerror = (e) => { console.error("[TTS] error:", e.error); clearInterval(keepAlive); };
+      speechSynthesis.speak(u);
+      console.log("[TTS] speak() called, speaking:", speechSynthesis.speaking, "pending:", speechSynthesis.pending);
+      /* Chrome pauses long utterances after ~15s; keep-alive workaround */
+      const keepAlive = setInterval(() => {
+        if (!speechSynthesis.speaking) { clearInterval(keepAlive); return; }
+        speechSynthesis.pause();
+        speechSynthesis.resume();
+      }, 10000);
+    }, 50);
+  }
+  window._ttsSpeakBeat = function (idx) {
+    _ttsSpeakNow(window._ttsBeats[idx]);
   };
 
   function escapeHtml(text) {
