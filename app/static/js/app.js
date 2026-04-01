@@ -1095,13 +1095,17 @@
         this._initializedAfterLink = true;
         try {
           this.ttsEnabled = localStorage.getItem("ttsEnabled") === "true";
-          this.ttsNarratorVoice = localStorage.getItem("ttsNarratorVoice") || "af_heart";
-          this.ttsSplitOnPeriod = localStorage.getItem("ttsSplitOnPeriod") === "true";
-          this.ttsPauseSentence = parseInt(localStorage.getItem("ttsPauseSentence"), 10) || 350;
-          this.ttsPauseVoiceSwitch = parseInt(localStorage.getItem("ttsPauseVoiceSwitch"), 10) || 450;
-          this.ttsPauseBeat = parseInt(localStorage.getItem("ttsPauseBeat"), 10) || 500;
-          this.ttsApplySettings();
+          const lsNV = localStorage.getItem("ttsNarratorVoice");
+          if (lsNV !== null) this.ttsNarratorVoice = lsNV;
+          if (localStorage.getItem("ttsSplitOnPeriod") !== null) this.ttsSplitOnPeriod = localStorage.getItem("ttsSplitOnPeriod") === "true";
+          const lsPS = localStorage.getItem("ttsPauseSentence");
+          if (lsPS !== null && !isNaN(parseInt(lsPS, 10))) this.ttsPauseSentence = parseInt(lsPS, 10);
+          const lsVS = localStorage.getItem("ttsPauseVoiceSwitch");
+          if (lsVS !== null && !isNaN(parseInt(lsVS, 10))) this.ttsPauseVoiceSwitch = parseInt(lsVS, 10);
+          const lsPB = localStorage.getItem("ttsPauseBeat");
+          if (lsPB !== null && !isNaN(parseInt(lsPB, 10))) this.ttsPauseBeat = parseInt(lsPB, 10);
         } catch (_) {}
+        this.ttsApplySettings();
         this.$watch("ttsEnabled", (v) => { try { localStorage.setItem("ttsEnabled", v ? "true" : "false"); } catch (_) {} });
         this.loadPinnedTurns();
         this.loadComposerHistory();
@@ -1927,7 +1931,7 @@
           localStorage.setItem("ttsPauseBeat", String(this.ttsPauseBeat));
         } catch (_) {}
         /* Push to global TTS config */
-        window._ttsDefaultVoice = this.ttsNarratorVoice || "";
+        window._ttsDefaultVoice = this.ttsNarratorVoice === "off" ? "" : (this.ttsNarratorVoice || "af_heart");
         window._ttsSplitOnPeriod = this.ttsSplitOnPeriod;
         window._ttsPauseSentence = this.ttsPauseSentence;
         window._ttsPauseVoiceSwitch = this.ttsPauseVoiceSwitch;

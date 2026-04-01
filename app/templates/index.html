@@ -2679,9 +2679,9 @@
             <label>
               Narrator Voice
               <select x-model="ttsNarratorVoice" @change="ttsApplySettings()">
-                <option value="">Disabled (characters only)</option>
-                <template x-for="[id, v] in Object.entries(window.KOKORO_VOICES || {})" :key="id">
-                  <option :value="id" x-text="v.name + ' (' + v.gender + ', ' + v.lang + ')'" :selected="id === ttsNarratorVoice"></option>
+                <option value="off">Disabled (characters only)</option>
+                <template x-for="vid in Object.keys(window.KOKORO_VOICES || {})" :key="vid">
+                  <option :value="vid" x-text="window.KOKORO_VOICES[vid].name + ' (' + window.KOKORO_VOICES[vid].gender + ', ' + window.KOKORO_VOICES[vid].lang + ')'"></option>
                 </template>
               </select>
             </label>
