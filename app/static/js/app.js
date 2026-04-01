@@ -398,18 +398,19 @@
       const speaker = formatSceneSpeakerName(beat.speaker);
       const escapedText = renderSimpleMarkdown(text);
       const reasoning = String(beat.reasoning || "").trim();
-      let reasoningIcon = "";
+      let reasoningBtn = "";
+      let reasoningBlock = "";
       if (reasoning) {
-        reasoningIcon = ` <button class="beat-reasoning-btn" title="${escapeAttribute(reasoning)}" onclick="this.nextElementSibling.classList.toggle('open')">&#x2139;&#xFE0F;</button>`
-          + `<span class="beat-reasoning-popover">${escapeHtml(reasoning)}</span>`;
+        reasoningBtn = ` <button class="beat-reasoning-btn" title="${escapeAttribute(reasoning)}" onclick="this.closest('.beat-wrap').querySelector('.beat-reasoning-popover').classList.toggle('open')">&#x2139;&#xFE0F;</button>`;
+        reasoningBlock = `<div class="beat-reasoning-popover">${escapeHtml(reasoning)}</div>`;
       }
       const beatIdx = window._ttsBeats.length;
       const speakerSlug = String(beat.speaker || "").trim();
       window._ttsBeats.push({ text: text, speaker: speakerSlug });
       const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakBeat(${beatIdx}, this)">&#x1F50A;</button>`;
-      parts.push(`<span class="speaker-label">${escapeHtml(speaker)}${reasoningIcon}${ttsBtn}</span>${escapedText}`);
+      parts.push(`<div class="beat-wrap"><span class="speaker-label">${escapeHtml(speaker)}${reasoningBtn}${ttsBtn}</span>${reasoningBlock}${escapedText}</div>`);
     }
-    if (parts.length) return parts.join("<br><br>");
+    if (parts.length) return parts.join("");
     return renderSimpleMarkdown(fallbackText || "");
   }
 

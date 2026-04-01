@@ -1383,6 +1383,9 @@ button:disabled {
   transform: translateX(-50%) translateY(0);
 }
 
+.beat-wrap + .beat-wrap {
+  margin-top: 0.8em;
+}
 .beat-reasoning-popover {
   display: none;
   font-size: 0.72rem;
