@@ -177,30 +177,16 @@
   }
 
   /**
-   * Split text into sentences, group into word-limited chunks,
-   * and push {text, voice} items with sentence pauses between groups.
+   * Split text into sentences, emit one chunk per sentence
+   * with a pause between each (but not after the last).
    */
   function _ttsAddSentenceChunks(items, text, voice) {
     const sentences = _ttsSplitSentences(text);
-    let buf = "";
-    let count = 0;
-    for (const s of sentences) {
-      if (buf && (buf + " " + s).split(/\s+/).length > _TTS_CHUNK_WORD_LIMIT) {
-        items.push({ text: buf, voice: voice });
+    for (let i = 0; i < sentences.length; i++) {
+      items.push({ text: sentences[i], voice: voice });
+      if (i < sentences.length - 1) {
         items.push({ silence: _TTS_PAUSE_SENTENCE });
-        buf = s;
-        count++;
-      } else {
-        buf += (buf ? " " : "") + s;
       }
-    }
-    if (buf) {
-      items.push({ text: buf, voice: voice });
-      count++;
-    }
-    /* Add sentence pause after last chunk if there were multiple sentences */
-    if (sentences.length > 1 && count > 0) {
-      items.push({ silence: _TTS_PAUSE_SENTENCE });
     }
   }
 
