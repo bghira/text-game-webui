@@ -194,6 +194,8 @@
    * with a pause between each (but not after the last).
    */
   function _ttsAddSentenceChunks(items, text, voice) {
+    /* Strip markdown bold/italic asterisks — Kokoro reads them literally */
+    text = text.replace(/\*+/g, "");
     const sentences = _ttsSplitSentences(text);
     for (let i = 0; i < sentences.length; i++) {
       items.push({ text: sentences[i], voice: voice });

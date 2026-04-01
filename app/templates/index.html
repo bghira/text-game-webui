@@ -2678,10 +2678,10 @@
             </label>
             <label>
               Narrator Voice
-              <select x-model="ttsNarratorVoice" @change="ttsApplySettings()">
-                <option value="off">Disabled (characters only)</option>
+              <select :value="ttsNarratorVoice" @change="ttsNarratorVoice = $event.target.value; ttsApplySettings()">
+                <option value="off" :selected="ttsNarratorVoice === 'off'">Disabled (characters only)</option>
                 <template x-for="vid in Object.keys(window.KOKORO_VOICES || {})" :key="vid">
-                  <option :value="vid" x-text="window.KOKORO_VOICES[vid].name + ' (' + window.KOKORO_VOICES[vid].gender + ', ' + window.KOKORO_VOICES[vid].lang + ')'"></option>
+                  <option :value="vid" :selected="ttsNarratorVoice === vid" x-text="window.KOKORO_VOICES[vid].name + ' (' + window.KOKORO_VOICES[vid].gender + ', ' + window.KOKORO_VOICES[vid].lang + ')'"></option>
                 </template>
               </select>
             </label>
