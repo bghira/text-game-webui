@@ -125,15 +125,24 @@
    * Returns array of trimmed sentence strings.
    */
   function _ttsSplitSentences(text) {
-    /* Split on sentence-ending punctuation followed by space or end.
-       Handles ". ", "! ", "? ", ".\u201d ", etc. */
-    const raw = text.replace(/\n+/g, " ").match(/[^.!?]*[.!?]+[\s]*/g);
-    if (!raw) return [text.trim()].filter(Boolean);
-    return raw.map(s => s.trim()).filter(Boolean);
+    /* Split only on ? and ! (the model handles periods fine).
+       Each match grabs everything up to and including the ?/! */
+    const parts = [];
+    const re = /[^!?]*[!?]+[\s]*/g;
+    let m, last = 0;
+    while ((m = re.exec(text)) !== null) {
+      parts.push(text.slice(last, m.index + m[0].length).trim());
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) {
+      const tail = text.slice(last).trim();
+      if (tail) parts.push(tail);
+    }
+    return parts.length ? parts : [text.trim()].filter(Boolean);
   }
 
-  /* Pause durations (ms) inserted after punctuation boundaries */
-  const _TTS_PAUSE_SENTENCE = 350;  /* after . ! ? */
+  /* Pause durations (ms) inserted at split boundaries */
+  const _TTS_PAUSE_SENTENCE = 350;  /* after ! ? */
   const _TTS_PAUSE_VOICE_SWITCH = 450; /* between narrator ↔ actor */
   const _TTS_PAUSE_BEAT = 500;      /* between beats */
 
