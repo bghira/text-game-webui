@@ -4370,6 +4370,8 @@ class TextGameEngineGateway(EngineGateway):
                     "location": pstate.get("location") or pstate.get("room_title") or "unknown",
                     "status": pstate.get("current_status") or "active",
                     "player": True,
+                    "gender": pstate.get("gender") or "",
+                    "voice_assignment": pstate.get("voice_assignment") or "",
                 }
             )
         if isinstance(characters, dict):
@@ -4385,6 +4387,8 @@ class TextGameEngineGateway(EngineGateway):
                         "location": payload.get("location") or "unknown",
                         "status": payload.get("current_status") or "active",
                         "player": False,
+                        "gender": payload.get("gender") or "",
+                        "voice_assignment": payload.get("voice_assignment") or "",
                     }
                 )
 

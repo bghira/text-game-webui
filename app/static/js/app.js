@@ -16,13 +16,53 @@
   }
 
   /* Global TTS — Kokoro 82M via WebGPU worker */
-  window._ttsBeats = [];
+  window._ttsBeats = [];  /* [{text, speaker}] */
   window._ttsActiveBtnEl = null;
   window._ttsAudio = null;
   window._ttsWorker = null;
   window._ttsReady = false;
-  window._ttsVoice = localStorage.getItem("ttsVoice") || "af_heart";
-  window._ttsQueue = []; /* pending {text, btnEl} while model loads */
+  window._ttsDefaultVoice = "af_heart";
+  window._ttsQueue = []; /* pending {text, voice, btnEl} while model loads */
+
+  /* Kokoro voice catalog — id → {name, gender, lang} */
+  window.KOKORO_VOICES = {
+    af_heart:    { name: "Heart",    gender: "f", lang: "en-us" },
+    af_alloy:    { name: "Alloy",    gender: "f", lang: "en-us" },
+    af_aoede:    { name: "Aoede",    gender: "f", lang: "en-us" },
+    af_bella:    { name: "Bella",    gender: "f", lang: "en-us" },
+    af_jessica:  { name: "Jessica",  gender: "f", lang: "en-us" },
+    af_kore:     { name: "Kore",     gender: "f", lang: "en-us" },
+    af_nicole:   { name: "Nicole",   gender: "f", lang: "en-us" },
+    af_nova:     { name: "Nova",     gender: "f", lang: "en-us" },
+    af_river:    { name: "River",    gender: "f", lang: "en-us" },
+    af_sarah:    { name: "Sarah",    gender: "f", lang: "en-us" },
+    af_sky:      { name: "Sky",      gender: "f", lang: "en-us" },
+    am_adam:     { name: "Adam",     gender: "m", lang: "en-us" },
+    am_echo:     { name: "Echo",     gender: "m", lang: "en-us" },
+    am_eric:     { name: "Eric",     gender: "m", lang: "en-us" },
+    am_fenrir:   { name: "Fenrir",   gender: "m", lang: "en-us" },
+    am_liam:     { name: "Liam",     gender: "m", lang: "en-us" },
+    am_michael:  { name: "Michael",  gender: "m", lang: "en-us" },
+    am_onyx:     { name: "Onyx",     gender: "m", lang: "en-us" },
+    am_puck:     { name: "Puck",     gender: "m", lang: "en-us" },
+    bf_emma:     { name: "Emma",     gender: "f", lang: "en-gb" },
+    bf_isabella: { name: "Isabella", gender: "f", lang: "en-gb" },
+    bf_alice:    { name: "Alice",    gender: "f", lang: "en-gb" },
+    bf_lily:     { name: "Lily",     gender: "f", lang: "en-gb" },
+    bm_george:   { name: "George",   gender: "m", lang: "en-gb" },
+    bm_lewis:    { name: "Lewis",    gender: "m", lang: "en-gb" },
+    bm_daniel:   { name: "Daniel",   gender: "m", lang: "en-gb" },
+    bm_fable:    { name: "Fable",    gender: "m", lang: "en-gb" },
+  };
+
+  /* Resolve the voice ID for a speaker slug using the roster */
+  function _ttsVoiceForSpeaker(speakerSlug) {
+    if (!speakerSlug || speakerSlug === "narrator") return window._ttsDefaultVoice;
+    /* Check roster voice assignments (populated by Alpine) */
+    const map = window._ttsVoiceMap || {};
+    if (map[speakerSlug]) return map[speakerSlug];
+    return window._ttsDefaultVoice;
+  }
 
   function _ttsGetWorker() {
     if (window._ttsWorker) return window._ttsWorker;
@@ -39,7 +79,7 @@
         _ttsHideLoading();
         /* Flush queue */
         const q = window._ttsQueue.splice(0);
-        if (q.length) _ttsSpeakNow(q[0].text, q[0].btnEl);
+        if (q.length) _ttsSpeakNow(q[0].text, q[0].btnEl, q[0].voice);
       } else if (d.status === "complete") {
         _ttsHideLoading();
         if (d.audio) {
@@ -89,17 +129,18 @@
     if (banner) banner.classList.remove("visible");
   }
 
-  function _ttsSpeakNow(text, btnEl) {
+  function _ttsSpeakNow(text, btnEl, voice) {
     if (!text) return;
+    voice = voice || window._ttsDefaultVoice;
     _ttsStopNow();
     _ttsShowLoading(btnEl || null);
     const w = _ttsGetWorker();
     if (!window._ttsReady) {
-      /* Model still loading — queue this request */
-      window._ttsQueue = [{ text: text, btnEl: btnEl }];
+      window._ttsQueue = [{ text: text, btnEl: btnEl, voice: voice }];
       return;
     }
-    w.postMessage({ text: text, voice: window._ttsVoice });
+    console.log("[TTS] speaking as", voice + ":", text.substring(0, 60) + "...");
+    w.postMessage({ text: text, voice: voice });
   }
 
   function _ttsStopNow() {
@@ -112,7 +153,10 @@
   }
 
   window._ttsSpeakBeat = function (idx, btnEl) {
-    _ttsSpeakNow(window._ttsBeats[idx], btnEl);
+    const beat = window._ttsBeats[idx];
+    if (!beat) return;
+    const voice = _ttsVoiceForSpeaker(beat.speaker);
+    _ttsSpeakNow(beat.text, btnEl, voice);
   };
 
   function escapeHtml(text) {
@@ -282,7 +326,8 @@
           + `<span class="beat-reasoning-popover">${escapeHtml(reasoning)}</span>`;
       }
       const beatIdx = window._ttsBeats.length;
-      window._ttsBeats.push(text);
+      const speakerSlug = String(beat.speaker || "").trim();
+      window._ttsBeats.push({ text: text, speaker: speakerSlug });
       const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakBeat(${beatIdx}, this)">&#x1F50A;</button>`;
       parts.push(`<span class="speaker-label">${escapeHtml(speaker)}${reasoningIcon}${ttsBtn}</span>${escapedText}`);
     }
@@ -1618,12 +1663,97 @@
         if (!this.ttsEnabled) return;
         const scene = data && data.scene_output;
         if (scene && Array.isArray(scene.beats) && scene.beats.length) {
-          const text = scene.beats
-            .map(b => String(b && b.text || "").trim())
-            .filter(Boolean)
-            .join("\n\n");
-          if (text) this.ttsSpeak(text);
+          /* Play each beat with its character's voice sequentially */
+          const beats = scene.beats
+            .map(b => ({ text: String(b && b.text || "").trim(), speaker: String(b && b.speaker || "").trim() }))
+            .filter(b => b.text);
+          if (!beats.length) return;
+          /* For auto-speak, concatenate all text but use the first beat's speaker voice */
+          const text = beats.map(b => b.text).join("\n\n");
+          const voice = _ttsVoiceForSpeaker(beats[0].speaker);
+          _ttsSpeakNow(text, null, voice);
         }
+      },
+
+      /**
+       * Build the global voice map from roster data.
+       * Auto-assigns voices to characters that don't have one yet.
+       */
+      _buildTtsVoiceMap() {
+        const chars = Array.isArray(this.rosterCharacters) ? this.rosterCharacters : [];
+        const map = {};
+        const assigned = new Set();
+        const needAssignment = [];
+
+        /* First pass: collect existing assignments */
+        for (const ch of chars) {
+          const slug = String(ch.slug || "").trim();
+          const va = String(ch.voice_assignment || "").trim();
+          if (slug && va && window.KOKORO_VOICES[va]) {
+            map[slug] = va;
+            assigned.add(va);
+          } else if (slug) {
+            needAssignment.push(ch);
+          }
+        }
+
+        /* Second pass: auto-assign from unassigned pool, gender-matched */
+        if (needAssignment.length) {
+          const allVoiceIds = Object.keys(window.KOKORO_VOICES);
+          const available = { f: [], m: [], nb: [] };
+          for (const vid of allVoiceIds) {
+            if (!assigned.has(vid)) {
+              available[window.KOKORO_VOICES[vid].gender].push(vid);
+            }
+          }
+          /* Shuffle pools for variety */
+          for (const k of Object.keys(available)) {
+            for (let i = available[k].length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [available[k][i], available[k][j]] = [available[k][j], available[k][i]];
+            }
+          }
+
+          const toSave = [];
+          for (const ch of needAssignment) {
+            const slug = String(ch.slug || "").trim();
+            const gender = String(ch.gender || "").toLowerCase();
+            let pool;
+            if (gender.includes("female") || gender === "f") pool = available.f;
+            else if (gender.includes("male") || gender === "m") pool = available.m;
+            else pool = available.nb.length ? available.nb : (available.f.length >= available.m.length ? available.f : available.m);
+
+            /* Fall back to any available if preferred pool empty */
+            if (!pool.length) pool = available.f.length ? available.f : available.m;
+            if (!pool.length) {
+              /* All voices assigned — reuse default */
+              map[slug] = window._ttsDefaultVoice;
+              continue;
+            }
+
+            const voice = pool.shift();
+            assigned.add(voice);
+            map[slug] = voice;
+            toSave.push({ slug: slug, voice: voice, player: ch.player === true });
+          }
+
+          /* Persist auto-assignments to server */
+          if (toSave.length && this.selectedCampaignId) {
+            for (const item of toSave) {
+              this.api(`/api/campaigns/${this.selectedCampaignId}/roster/upsert`, {
+                method: "POST",
+                body: JSON.stringify({
+                  slug: item.slug,
+                  player: item.player,
+                  fields: { voice_assignment: item.voice },
+                }),
+              }).catch(e => console.warn("[TTS] failed to save voice for", item.slug, e));
+            }
+          }
+        }
+
+        window._ttsVoiceMap = map;
+        console.log("[TTS] voice map:", map);
       },
 
       async handleBrowserLlmRequest(payload) {
@@ -5137,6 +5267,7 @@
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster`);
           this.rosterCharacters = Array.isArray(body.characters) ? body.characters.slice() : [];
           this.rosterText = formatJson(body);
+          this._buildTtsVoiceMap();
         } catch (_err) {
           /* background refresh */
         }
