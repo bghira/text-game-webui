@@ -286,6 +286,14 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(app_dir / "static")), name="static")
 
     @app.middleware("http")
+    async def _cross_origin_isolation(request, call_next):
+        """Enable SharedArrayBuffer for WebGPU (kokoro TTS worker)."""
+        response = await call_next(request)
+        response.headers["Cross-Origin-Embedder-Policy"] = "credentialless"
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        return response
+
+    @app.middleware("http")
     async def _dtm_link_guard(request, call_next):
         settings = request.app.state.settings
         linked = get_linked_actor_from_request(request)

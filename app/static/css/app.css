@@ -1354,6 +1354,34 @@ button:disabled {
 .beat-tts-btn:hover {
   opacity: 0.85;
 }
+.beat-tts-btn.tts-loading {
+  animation: tts-pulse 0.8s ease-in-out infinite;
+  opacity: 0.9;
+}
+@keyframes tts-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+#tts-loading-banner {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(3rem);
+  background: var(--surface, #222);
+  color: var(--fg, #eee);
+  padding: 0.5rem 1.2rem;
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 9999;
+}
+#tts-loading-banner.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
 
 .beat-reasoning-popover {
   display: none;

@@ -15,35 +15,104 @@
     return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
   }
 
-  /* Global TTS helpers — uses tts.rocks (Kokoro neural TTS, client-side ONNX) */
+  /* Global TTS — Kokoro 82M via WebGPU worker */
   window._ttsBeats = [];
+  window._ttsActiveBtnEl = null;
+  window._ttsAudio = null;
+  window._ttsWorker = null;
+  window._ttsReady = false;
+  window._ttsVoice = localStorage.getItem("ttsVoice") || "af_heart";
+  window._ttsQueue = []; /* pending {text, btnEl} while model loads */
 
-  function _ttsInit() {
-    if (typeof window.TTS === "undefined") return;
-    TTS.TTSProvider = "kokoro";
-    TTS.speech = true;
+  function _ttsGetWorker() {
+    if (window._ttsWorker) return window._ttsWorker;
+    const w = new Worker("/static/js/kokoro-worker.js", { type: "module" });
+    window._ttsWorker = w;
+    w.addEventListener("message", function (e) {
+      const d = e.data;
+      if (d.status === "device") {
+        _ttsSetBanner("Loading Kokoro TTS (" + d.device + ")\u2026");
+      } else if (d.status === "ready") {
+        window._ttsReady = true;
+        window._ttsVoices = d.voices;
+        console.log("[TTS] ready, device=" + d.device + ", voices=" + Object.keys(d.voices).length);
+        _ttsHideLoading();
+        /* Flush queue */
+        const q = window._ttsQueue.splice(0);
+        if (q.length) _ttsSpeakNow(q[0].text, q[0].btnEl);
+      } else if (d.status === "complete") {
+        _ttsHideLoading();
+        if (d.audio) {
+          const audio = new Audio(d.audio);
+          window._ttsAudio = audio;
+          audio.onended = function () { window._ttsAudio = null; };
+          audio.onerror = function () { window._ttsAudio = null; };
+          audio.play().catch(function (err) { console.error("[TTS] play error:", err); });
+        }
+      } else if (d.status === "error") {
+        console.error("[TTS] worker error:", d.error);
+        _ttsHideLoading();
+      }
+    });
+    return w;
   }
 
-  async function _ttsSpeakNow(text) {
-    if (!text || typeof window.TTS === "undefined") {
-      console.warn("[TTS] not available");
+  function _ttsSetBanner(msg) {
+    let banner = document.getElementById("tts-loading-banner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "tts-loading-banner";
+      document.body.appendChild(banner);
+    }
+    banner.textContent = msg;
+    banner.classList.add("visible");
+  }
+
+  function _ttsShowLoading(btnEl) {
+    if (btnEl) {
+      btnEl.dataset.origText = btnEl.innerHTML;
+      btnEl.innerHTML = "&#x23F3;";
+      btnEl.classList.add("tts-loading");
+      window._ttsActiveBtnEl = btnEl;
+    }
+    _ttsSetBanner(window._ttsReady ? "Generating speech\u2026" : "Loading Kokoro TTS model\u2026");
+  }
+
+  function _ttsHideLoading() {
+    const btnEl = window._ttsActiveBtnEl;
+    if (btnEl) {
+      if (btnEl.dataset.origText) btnEl.innerHTML = btnEl.dataset.origText;
+      btnEl.classList.remove("tts-loading");
+      window._ttsActiveBtnEl = null;
+    }
+    const banner = document.getElementById("tts-loading-banner");
+    if (banner) banner.classList.remove("visible");
+  }
+
+  function _ttsSpeakNow(text, btnEl) {
+    if (!text) return;
+    _ttsStopNow();
+    _ttsShowLoading(btnEl || null);
+    const w = _ttsGetWorker();
+    if (!window._ttsReady) {
+      /* Model still loading — queue this request */
+      window._ttsQueue = [{ text: text, btnEl: btnEl }];
       return;
     }
-    _ttsInit();
-    try {
-      console.log("[TTS] speaking:", text.substring(0, 80) + "...");
-      TTS.speak(text, true);
-    } catch (e) {
-      console.error("[TTS] error:", e);
-    }
+    w.postMessage({ text: text, voice: window._ttsVoice });
   }
+
   function _ttsStopNow() {
-    if (typeof window.TTS !== "undefined" && TTS.clearQueue) {
-      TTS.clearQueue();
+    _ttsHideLoading();
+    if (window._ttsAudio) {
+      window._ttsAudio.pause();
+      window._ttsAudio.currentTime = 0;
+      window._ttsAudio = null;
     }
   }
-  window._ttsSpeakBeat = function (idx) {
-    _ttsSpeakNow(window._ttsBeats[idx]);
+
+  window._ttsSpeakBeat = function (idx, btnEl) {
+    _ttsSpeakNow(window._ttsBeats[idx], btnEl);
   };
 
   function escapeHtml(text) {
@@ -214,7 +283,7 @@
       }
       const beatIdx = window._ttsBeats.length;
       window._ttsBeats.push(text);
-      const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakBeat(${beatIdx})">&#x1F50A;</button>`;
+      const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakBeat(${beatIdx}, this)">&#x1F50A;</button>`;
       parts.push(`<span class="speaker-label">${escapeHtml(speaker)}${reasoningIcon}${ttsBtn}</span>${escapedText}`);
     }
     if (parts.length) return parts.join("<br><br>");
