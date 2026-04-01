@@ -15,55 +15,53 @@
     return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
   }
 
-  /* Global TTS helpers */
+  /* Global TTS helpers — uses tts.rocks (Kokoro neural TTS, client-side ONNX) */
   window._ttsBeats = [];
-  /* Prime voice list early — Firefox populates it lazily */
-  if (typeof speechSynthesis !== "undefined") {
-    speechSynthesis.getVoices();
-    speechSynthesis.addEventListener("voiceschanged", () => speechSynthesis.getVoices(), { once: true });
+  window._ttsReady = false;
+  window._ttsInitializing = false;
+
+  async function _ttsEnsureReady() {
+    if (window._ttsReady) return true;
+    if (typeof window.TTS === "undefined") {
+      console.warn("[TTS] tts.rocks library not loaded");
+      return false;
+    }
+    if (window._ttsInitializing) {
+      /* Wait for in-progress init */
+      for (let i = 0; i < 300; i++) {
+        await new Promise(r => setTimeout(r, 200));
+        if (window._ttsReady) return true;
+      }
+      return false;
+    }
+    window._ttsInitializing = true;
+    try {
+      TTS.TTSProvider = "kokoro";
+      console.log("[TTS] initializing Kokoro (~82 MB first load, cached after)...");
+      await TTS.initKokoro();
+      window._ttsReady = true;
+      console.log("[TTS] Kokoro ready");
+      return true;
+    } catch (e) {
+      console.error("[TTS] Kokoro init failed:", e);
+      window._ttsInitializing = false;
+      return false;
+    }
   }
-  function _ttsPickVoice() {
-    if (typeof speechSynthesis === "undefined") return null;
-    const voices = speechSynthesis.getVoices();
-    if (!voices.length) return null;
-    const en = voices.filter(v => v.lang.startsWith("en"));
-    return en.find(v => v.default) || en[0] || voices.find(v => v.default) || voices[0];
-  }
-  function _ttsSpeakNow(text) {
-    if (!text) { console.warn("[TTS] no text to speak"); return; }
-    if (typeof speechSynthesis === "undefined") {
-      console.warn("[TTS] speechSynthesis API not available");
-      alert("TTS not available: your browser doesn't support speechSynthesis");
+
+  async function _ttsSpeakNow(text) {
+    if (!text) return;
+    const ready = await _ttsEnsureReady();
+    if (!ready) {
+      console.warn("[TTS] engine not available");
       return;
     }
-    const voices = speechSynthesis.getVoices();
-    console.log("[TTS] voices available:", voices.length, voices.map(v => v.name + " (" + v.lang + ")"));
-    if (!voices.length) {
-      console.warn("[TTS] no voices found — system TTS may not be installed");
-      alert("TTS: no voices available. On Linux, install speech-dispatcher and espeak-ng:\n\nsudo emerge speech-dispatcher espeak-ng\n\nThen restart your browser.");
-      return;
+    try {
+      TTS.clearQueue();
+      await TTS.kokoroTTS(text);
+    } catch (e) {
+      console.error("[TTS] speak error:", e);
     }
-    /* cancel + resume clears Chrome's stuck-paused state */
-    speechSynthesis.cancel();
-    speechSynthesis.resume();
-    /* Small delay after cancel — Chrome sometimes ignores speak() called synchronously after cancel() */
-    setTimeout(() => {
-      const u = new SpeechSynthesisUtterance(text);
-      const voice = _ttsPickVoice();
-      console.log("[TTS] using voice:", voice ? voice.name : "default");
-      if (voice) u.voice = voice;
-      u.onstart = () => console.log("[TTS] started speaking");
-      u.onend = () => { console.log("[TTS] finished speaking"); clearInterval(keepAlive); };
-      u.onerror = (e) => { console.error("[TTS] error:", e.error); clearInterval(keepAlive); };
-      speechSynthesis.speak(u);
-      console.log("[TTS] speak() called, speaking:", speechSynthesis.speaking, "pending:", speechSynthesis.pending);
-      /* Chrome pauses long utterances after ~15s; keep-alive workaround */
-      const keepAlive = setInterval(() => {
-        if (!speechSynthesis.speaking) { clearInterval(keepAlive); return; }
-        speechSynthesis.pause();
-        speechSynthesis.resume();
-      }, 10000);
-    }, 50);
   }
   window._ttsSpeakBeat = function (idx) {
     _ttsSpeakNow(window._ttsBeats[idx]);
@@ -1551,39 +1549,21 @@
         return String(entry && entry.text || "").trim();
       },
 
-      ttsSpeak(text) {
-        if (typeof speechSynthesis === "undefined" || !text) return;
+      async ttsSpeak(text) {
+        if (!text) return;
         this.ttsStop();
-        // Chrome silently cuts off long utterances; chunk at ~180 words
-        const sentences = text.replace(/\n+/g, " ").match(/[^.!?]+[.!?]+[\s]*/g) || [text];
-        let chunk = "";
-        const chunks = [];
-        for (const s of sentences) {
-          if ((chunk + s).split(/\s+/).length > 180) {
-            if (chunk.trim()) chunks.push(chunk.trim());
-            chunk = s;
-          } else {
-            chunk += s;
-          }
-        }
-        if (chunk.trim()) chunks.push(chunk.trim());
-        const voice = _ttsPickVoice();
         this._ttsSpeaking = true;
-        for (let i = 0; i < chunks.length; i++) {
-          const u = new SpeechSynthesisUtterance(chunks[i]);
-          if (voice) u.voice = voice;
-          u.rate = 1.0;
-          if (i === chunks.length - 1) {
-            u.onend = () => { this._ttsSpeaking = false; };
-            u.onerror = () => { this._ttsSpeaking = false; };
-          }
-          speechSynthesis.speak(u);
+        try {
+          await _ttsSpeakNow(text);
+        } finally {
+          this._ttsSpeaking = false;
         }
       },
 
       ttsStop() {
-        if (typeof speechSynthesis === "undefined") return;
-        speechSynthesis.cancel();
+        if (typeof TTS !== "undefined" && TTS.clearQueue) {
+          TTS.clearQueue();
+        }
         this._ttsSpeaking = false;
       },
 
