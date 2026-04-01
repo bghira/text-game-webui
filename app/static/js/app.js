@@ -15,6 +15,19 @@
     return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
   }
 
+  /* Global TTS helper for inline beat buttons */
+  window._ttsSpeakText = function (btn) {
+    const text = btn && btn.dataset && btn.dataset.ttsText;
+    if (!text || typeof speechSynthesis === "undefined") return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const voices = speechSynthesis.getVoices();
+    const en = voices.filter(v => v.lang.startsWith("en"));
+    const voice = en.find(v => v.default) || en[0] || voices.find(v => v.default) || voices[0];
+    if (voice) u.voice = voice;
+    speechSynthesis.speak(u);
+  };
+
   function escapeHtml(text) {
     return String(text || "")
       .replace(/&/g, "&amp;")
@@ -175,7 +188,14 @@
       if (!text) continue;
       const speaker = formatSceneSpeakerName(beat.speaker);
       const escapedText = renderSimpleMarkdown(text);
-      parts.push(`<span class="speaker-label">${escapeHtml(speaker)}</span>${escapedText}`);
+      const reasoning = String(beat.reasoning || "").trim();
+      let reasoningIcon = "";
+      if (reasoning) {
+        reasoningIcon = ` <button class="beat-reasoning-btn" title="${escapeAttribute(reasoning)}" onclick="this.nextElementSibling.classList.toggle('open')">&#x2139;&#xFE0F;</button>`
+          + `<span class="beat-reasoning-popover">${escapeHtml(reasoning)}</span>`;
+      }
+      const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakText(this)" data-tts-text="${escapeAttribute(text)}">&#x1F50A;</button>`;
+      parts.push(`<span class="speaker-label">${escapeHtml(speaker)}${reasoningIcon}${ttsBtn}</span>${escapedText}`);
     }
     if (parts.length) return parts.join("<br><br>");
     return renderSimpleMarkdown(fallbackText || "");
@@ -519,6 +539,11 @@
       smsInboxLoading: false,
       smsInboxCompose: "",
       debugText: "",
+
+      /* TTS */
+      ttsEnabled: false,
+      _ttsSpeaking: false,
+      _ttsVoices: [],
       diagnosticsBundleStatus: "",
       campaignExportStatus: "",
       campaignExport: {
@@ -679,6 +704,9 @@
         if (!ready) return;
         if (this._initializedAfterLink) return;
         this._initializedAfterLink = true;
+        this._ttsLoadVoices();
+        try { this.ttsEnabled = localStorage.getItem("ttsEnabled") === "true"; } catch (_) {}
+        this.$watch("ttsEnabled", (v) => { try { localStorage.setItem("ttsEnabled", v ? "true" : "false"); } catch (_) {} });
         this.loadPinnedTurns();
         this.loadComposerHistory();
         await this.loadRuntime();
@@ -1466,6 +1494,91 @@
           await this.copyToClipboard(entry && entry.text ? entry.text : "", "Turn text copied.");
         } catch (error) {
           this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- TTS ---- */
+
+      _ttsLoadVoices() {
+        if (typeof speechSynthesis === "undefined") return;
+        this._ttsVoices = speechSynthesis.getVoices();
+        if (!this._ttsVoices.length) {
+          speechSynthesis.addEventListener("voiceschanged", () => {
+            this._ttsVoices = speechSynthesis.getVoices();
+          }, { once: true });
+        }
+      },
+
+      _ttsPickVoice() {
+        const voices = this._ttsVoices;
+        if (!voices.length) return null;
+        // Prefer an English voice; prefer one marked as default
+        const en = voices.filter(v => v.lang.startsWith("en"));
+        const preferred = en.find(v => v.default) || en[0];
+        return preferred || voices.find(v => v.default) || voices[0];
+      },
+
+      _ttsExtractText(entry) {
+        const scene = entry && entry.meta && entry.meta.scene_output;
+        if (scene && Array.isArray(scene.beats) && scene.beats.length) {
+          return scene.beats
+            .map(b => String(b && b.text || "").trim())
+            .filter(Boolean)
+            .join("\n\n");
+        }
+        return String(entry && entry.text || "").trim();
+      },
+
+      ttsSpeak(text) {
+        if (typeof speechSynthesis === "undefined" || !text) return;
+        this.ttsStop();
+        // Chrome silently cuts off long utterances; chunk at ~180 words
+        const sentences = text.replace(/\n+/g, " ").match(/[^.!?]+[.!?]+[\s]*/g) || [text];
+        let chunk = "";
+        const chunks = [];
+        for (const s of sentences) {
+          if ((chunk + s).split(/\s+/).length > 180) {
+            if (chunk.trim()) chunks.push(chunk.trim());
+            chunk = s;
+          } else {
+            chunk += s;
+          }
+        }
+        if (chunk.trim()) chunks.push(chunk.trim());
+        const voice = this._ttsPickVoice();
+        this._ttsSpeaking = true;
+        for (let i = 0; i < chunks.length; i++) {
+          const u = new SpeechSynthesisUtterance(chunks[i]);
+          if (voice) u.voice = voice;
+          u.rate = 1.0;
+          if (i === chunks.length - 1) {
+            u.onend = () => { this._ttsSpeaking = false; };
+            u.onerror = () => { this._ttsSpeaking = false; };
+          }
+          speechSynthesis.speak(u);
+        }
+      },
+
+      ttsStop() {
+        if (typeof speechSynthesis === "undefined") return;
+        speechSynthesis.cancel();
+        this._ttsSpeaking = false;
+      },
+
+      ttsSpeakEntry(entry) {
+        const text = this._ttsExtractText(entry);
+        if (text) this.ttsSpeak(text);
+      },
+
+      ttsAutoSpeak(data) {
+        if (!this.ttsEnabled) return;
+        const scene = data && data.scene_output;
+        if (scene && Array.isArray(scene.beats) && scene.beats.length) {
+          const text = scene.beats
+            .map(b => String(b && b.text || "").trim())
+            .filter(Boolean)
+            .join("\n\n");
+          if (text) this.ttsSpeak(text);
         }
       },
 
@@ -4508,7 +4621,11 @@
             if (data.state_update && data.state_update.game_time) {
               entry.meta._game_time = data.state_update.game_time;
             }
+            if (data.scene_output && Array.isArray(data.scene_output.beats)) {
+              entry.meta.scene_output = data.scene_output;
+            }
           }
+          this.ttsAutoSpeak(data);
           /* Supplementary entries — same as non-streaming path */
           normalizeTurnNotices(data).forEach((notice) => {
             this.pushStream("notice", notice, { notice });
@@ -4692,6 +4809,7 @@
               narratorMeta._game_time = body.state_update.game_time;
             }
             this.pushStream("narrator", narration, narratorMeta);
+            this.ttsAutoSpeak(body);
             if (body.reasoning) {
               this.pushStream("reasoning", body.reasoning, body);
             }

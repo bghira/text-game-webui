@@ -684,6 +684,10 @@
               </div>
             </template>
           </div>
+          <label class="tts-toggle" title="Read narration aloud when turns complete">
+            <input type="checkbox" x-model="ttsEnabled" />
+            <span class="tts-toggle-icon" :class="{ active: ttsEnabled }">&#x1F50A;</span>
+          </label>
           <button
             type="submit"
             :disabled="!selectedCampaignId || imageGenerating > 0"
