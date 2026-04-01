@@ -1767,7 +1767,7 @@
             window._ttsQueue = [{ text: fullText, btnEl: null, voice: _ttsVoiceForSpeaker(beats[0].speaker) }];
             return;
           }
-          console.log("[TTS] auto-speak:", allChunks.length, "chunk(s) across", beats.length, "beats");
+          console.log("[TTS] auto-speak:", allChunks.length, "chunk(s) across", beats.length, "beats", allChunks.map(c => c.voice + ": " + c.text.substring(0, 30)));
           _ttsGenerateNextChunk();
         }
       },
