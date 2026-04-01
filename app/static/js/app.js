@@ -16,8 +16,9 @@
   }
 
   /* Global TTS helper for inline beat buttons */
-  window._ttsSpeakText = function (btn) {
-    const text = btn && btn.dataset && btn.dataset.ttsText;
+  window._ttsBeats = [];
+  window._ttsSpeakBeat = function (idx) {
+    const text = window._ttsBeats[idx];
     if (!text || typeof speechSynthesis === "undefined") return;
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -194,7 +195,9 @@
         reasoningIcon = ` <button class="beat-reasoning-btn" title="${escapeAttribute(reasoning)}" onclick="this.nextElementSibling.classList.toggle('open')">&#x2139;&#xFE0F;</button>`
           + `<span class="beat-reasoning-popover">${escapeHtml(reasoning)}</span>`;
       }
-      const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakText(this)" data-tts-text="${escapeAttribute(text)}">&#x1F50A;</button>`;
+      const beatIdx = window._ttsBeats.length;
+      window._ttsBeats.push(text);
+      const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakBeat(${beatIdx})">&#x1F50A;</button>`;
       parts.push(`<span class="speaker-label">${escapeHtml(speaker)}${reasoningIcon}${ttsBtn}</span>${escapedText}`);
     }
     if (parts.length) return parts.join("<br><br>");
