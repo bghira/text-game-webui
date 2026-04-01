@@ -17,50 +17,29 @@
 
   /* Global TTS helpers — uses tts.rocks (Kokoro neural TTS, client-side ONNX) */
   window._ttsBeats = [];
-  window._ttsReady = false;
-  window._ttsInitializing = false;
 
-  async function _ttsEnsureReady() {
-    if (window._ttsReady) return true;
-    if (typeof window.TTS === "undefined") {
-      console.warn("[TTS] tts.rocks library not loaded");
-      return false;
-    }
-    if (window._ttsInitializing) {
-      /* Wait for in-progress init */
-      for (let i = 0; i < 300; i++) {
-        await new Promise(r => setTimeout(r, 200));
-        if (window._ttsReady) return true;
-      }
-      return false;
-    }
-    window._ttsInitializing = true;
-    try {
-      TTS.TTSProvider = "kokoro";
-      console.log("[TTS] initializing Kokoro (~82 MB first load, cached after)...");
-      await TTS.initKokoro();
-      window._ttsReady = true;
-      console.log("[TTS] Kokoro ready");
-      return true;
-    } catch (e) {
-      console.error("[TTS] Kokoro init failed:", e);
-      window._ttsInitializing = false;
-      return false;
-    }
+  function _ttsInit() {
+    if (typeof window.TTS === "undefined") return;
+    TTS.TTSProvider = "kokoro";
+    TTS.speech = true;
   }
 
   async function _ttsSpeakNow(text) {
-    if (!text) return;
-    const ready = await _ttsEnsureReady();
-    if (!ready) {
-      console.warn("[TTS] engine not available");
+    if (!text || typeof window.TTS === "undefined") {
+      console.warn("[TTS] not available");
       return;
     }
+    _ttsInit();
     try {
-      TTS.clearQueue();
-      await TTS.kokoroTTS(text);
+      console.log("[TTS] speaking:", text.substring(0, 80) + "...");
+      TTS.speak(text, true);
     } catch (e) {
-      console.error("[TTS] speak error:", e);
+      console.error("[TTS] error:", e);
+    }
+  }
+  function _ttsStopNow() {
+    if (typeof window.TTS !== "undefined" && TTS.clearQueue) {
+      TTS.clearQueue();
     }
   }
   window._ttsSpeakBeat = function (idx) {
@@ -1549,21 +1528,15 @@
         return String(entry && entry.text || "").trim();
       },
 
-      async ttsSpeak(text) {
+      ttsSpeak(text) {
         if (!text) return;
         this.ttsStop();
         this._ttsSpeaking = true;
-        try {
-          await _ttsSpeakNow(text);
-        } finally {
-          this._ttsSpeaking = false;
-        }
+        _ttsSpeakNow(text);
       },
 
       ttsStop() {
-        if (typeof TTS !== "undefined" && TTS.clearQueue) {
-          TTS.clearQueue();
-        }
+        _ttsStopNow();
         this._ttsSpeaking = false;
       },
 
