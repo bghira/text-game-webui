@@ -71,8 +71,8 @@
    */
   const _TTS_CHUNK_WORD_LIMIT = 250; /* stay well under 511 tokens */
 
-  function _ttsChunkText(text) {
-    /* Split into sentences, then group into chunks under the word limit */
+  function _ttsChunkLongText(text) {
+    /* Split a single segment into word-limited chunks at sentence boundaries */
     const sentences = text.replace(/\n+/g, " ").match(/[^.!?]+[.!?]+[\s]*/g);
     if (!sentences) return [text.trim()].filter(Boolean);
     const chunks = [];
@@ -89,9 +89,84 @@
     return chunks.length ? chunks : [text.trim()].filter(Boolean);
   }
 
+  /**
+   * Split beat text into voiced segments: narration vs dialogue.
+   * Returns [{text, isDialogue}] in order.
+   * Quoted text ("..." or \u201c...\u201d) → dialogue.
+   * Everything else → narration.
+   */
+  function _ttsSplitDialogue(text) {
+    const segments = [];
+    /* Match straight or curly double quotes */
+    const re = /["\u201c]((?:[^"\u201d]|\\.)*)["\u201d]/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      /* Narration before this quote */
+      if (m.index > last) {
+        const narr = text.slice(last, m.index).trim();
+        if (narr) segments.push({ text: narr, isDialogue: false });
+      }
+      /* The quoted dialogue (without the quotes) */
+      const dialogue = m[1].trim();
+      if (dialogue) segments.push({ text: dialogue, isDialogue: true });
+      last = m.index + m[0].length;
+    }
+    /* Trailing narration */
+    if (last < text.length) {
+      const narr = text.slice(last).trim();
+      if (narr) segments.push({ text: narr, isDialogue: false });
+    }
+    return segments.length ? segments : [{ text: text.trim(), isDialogue: false }];
+  }
+
+  /**
+   * Build the full chunk queue for a turn's beats.
+   * - Narrator beats: everything in narrator voice.
+   * - Actor beats: split on quotes — dialogue in actor voice, narration in narrator voice.
+   * Each segment gets further split if it exceeds the word limit.
+   */
+  function _ttsBuildChunks(beats) {
+    const narratorVoice = window._ttsDefaultVoice;
+    const chunks = [];
+    for (const b of beats) {
+      const actorVoice = _ttsVoiceForSpeaker(b.speaker);
+      const isNarrator = !b.speaker || b.speaker === "narrator";
+
+      if (isNarrator) {
+        /* Narrator beat: all text in narrator voice */
+        for (const c of _ttsChunkLongText(b.text)) {
+          chunks.push({ text: c, voice: narratorVoice });
+        }
+      } else {
+        /* Actor beat: split dialogue vs narration */
+        const segments = _ttsSplitDialogue(b.text);
+        for (const seg of segments) {
+          const voice = seg.isDialogue ? actorVoice : narratorVoice;
+          for (const c of _ttsChunkLongText(seg.text)) {
+            chunks.push({ text: c, voice: voice });
+          }
+        }
+      }
+    }
+    /* Merge consecutive chunks with the same voice to reduce generation calls */
+    const merged = [];
+    for (const c of chunks) {
+      const prev = merged.length ? merged[merged.length - 1] : null;
+      if (prev && prev.voice === c.voice && (prev.text + " " + c.text).split(/\s+/).length <= _TTS_CHUNK_WORD_LIMIT) {
+        prev.text += " " + c.text;
+      } else {
+        merged.push({ text: c.text, voice: c.voice });
+      }
+    }
+    return merged;
+  }
+
   /* Playback state for the chunk pipeline */
-  window._ttsChunks = [];   /* [{text, voice}] remaining to generate */
-  window._ttsPlaying = [];  /* Audio objects queued/playing in order */
+  window._ttsChunks = [];     /* [{text, voice}] remaining to generate */
+  window._ttsAudioQueue = []; /* blob URLs ready to play, in order */
+  window._ttsCurrentAudio = null;
+  window._ttsGenerating = false; /* true while worker is processing a chunk */
   window._ttsCancelled = false;
 
   function _ttsGetWorker() {
@@ -109,10 +184,10 @@
         _ttsHideLoading();
         /* Flush pending request */
         const q = window._ttsQueue.splice(0);
-        if (q.length) _ttsSpeakNow(q[0].text, q[0].btnEl, q[0].voice);
+        if (q.length) _ttsSpeakNow(q[0].text, q[0].btnEl, q[0].speaker);
       } else if (d.status === "complete") {
         if (window._ttsCancelled) return;
-        _ttsPlayCompletedChunk(d.audio);
+        _ttsOnChunkGenerated(d.audio);
       } else if (d.status === "error") {
         console.error("[TTS] worker error:", d.error);
         _ttsFinishAll();
@@ -121,40 +196,56 @@
     return w;
   }
 
-  function _ttsPlayCompletedChunk(blobUrl) {
+  function _ttsOnChunkGenerated(blobUrl) {
     if (!blobUrl || window._ttsCancelled) { _ttsFinishAll(); return; }
-    const audio = new Audio(blobUrl);
-    window._ttsPlaying.push(audio);
-
-    /* Start generating the next chunk while this one plays */
+    /* Buffer the generated audio */
+    window._ttsAudioQueue.push(blobUrl);
+    window._ttsGenerating = false;
+    /* Kick off next generation (pre-buffer while playing) */
     _ttsGenerateNextChunk();
+    /* If nothing is currently playing, start playback */
+    if (!window._ttsCurrentAudio) {
+      _ttsPlayNext();
+    }
+  }
 
-    audio.onended = function () {
-      URL.revokeObjectURL(blobUrl);
-      /* Remove from playing list */
-      window._ttsPlaying = window._ttsPlaying.filter(a => a !== audio);
-      /* If nothing left generating or playing, we're done */
-      if (!window._ttsChunks.length && !window._ttsPlaying.length) {
+  function _ttsPlayNext() {
+    if (window._ttsCancelled) { _ttsFinishAll(); return; }
+    const blobUrl = window._ttsAudioQueue.shift();
+    if (!blobUrl) {
+      /* Nothing buffered — if still generating, wait; otherwise done */
+      if (!window._ttsGenerating && !window._ttsChunks.length) {
         _ttsFinishAll();
       }
+      return;
+    }
+    const audio = new Audio(blobUrl);
+    window._ttsCurrentAudio = audio;
+    audio.onended = function () {
+      URL.revokeObjectURL(blobUrl);
+      window._ttsCurrentAudio = null;
+      _ttsPlayNext();
     };
     audio.onerror = function () {
       URL.revokeObjectURL(blobUrl);
+      window._ttsCurrentAudio = null;
       _ttsFinishAll();
     };
     audio.play().catch(function (err) {
       console.error("[TTS] play error:", err);
+      window._ttsCurrentAudio = null;
       _ttsFinishAll();
     });
   }
 
   function _ttsGenerateNextChunk() {
-    if (window._ttsCancelled) return;
+    if (window._ttsCancelled || window._ttsGenerating) return;
     const next = window._ttsChunks.shift();
     if (!next) return;
+    window._ttsGenerating = true;
     const remaining = window._ttsChunks.length;
     if (remaining > 0) {
-      _ttsSetBanner("Generating speech\u2026 (" + (remaining + 1) + " chunks left)");
+      _ttsSetBanner("Generating speech\u2026 (" + (remaining + 1) + " left)");
     }
     window._ttsWorker.postMessage({ text: next.text, voice: next.voice });
   }
@@ -162,6 +253,9 @@
   function _ttsFinishAll() {
     _ttsHideLoading();
     window._ttsChunks = [];
+    window._ttsAudioQueue.forEach(u => URL.revokeObjectURL(u));
+    window._ttsAudioQueue = [];
+    window._ttsGenerating = false;
     window._ttsCancelled = false;
   }
 
@@ -197,21 +291,22 @@
     if (banner) banner.classList.remove("visible");
   }
 
-  function _ttsSpeakNow(text, btnEl, voice) {
+  function _ttsSpeakNow(text, btnEl, speaker) {
     if (!text) return;
-    voice = voice || window._ttsDefaultVoice;
     _ttsStopNow();
     _ttsShowLoading(btnEl || null);
 
-    const chunks = _ttsChunkText(text);
-    console.log("[TTS] speaking as", voice + ":", chunks.length, "chunk(s),", text.split(/\s+/).length, "words");
+    /* Build chunks with dialogue/narration voice splitting */
+    const beats = [{ text: text, speaker: speaker || "" }];
+    const chunks = _ttsBuildChunks(beats);
+    console.log("[TTS] speaking:", chunks.length, "chunk(s),", chunks.map(c => c.voice + ": " + c.text.substring(0, 30)));
 
     window._ttsCancelled = false;
-    window._ttsChunks = chunks.map(c => ({ text: c, voice: voice }));
+    window._ttsChunks = chunks;
 
     const w = _ttsGetWorker();
     if (!window._ttsReady) {
-      window._ttsQueue = [{ text: text, btnEl: btnEl, voice: voice }];
+      window._ttsQueue = [{ text: text, btnEl: btnEl, speaker: speaker }];
       return;
     }
 
@@ -222,19 +317,20 @@
   function _ttsStopNow() {
     window._ttsCancelled = true;
     window._ttsChunks = [];
+    window._ttsGenerating = false;
     _ttsHideLoading();
-    for (const a of window._ttsPlaying) {
-      try { a.pause(); a.currentTime = 0; } catch (_) {}
+    if (window._ttsCurrentAudio) {
+      try { window._ttsCurrentAudio.pause(); } catch (_) {}
+      window._ttsCurrentAudio = null;
     }
-    window._ttsPlaying = [];
-    window._ttsAudio = null;
+    window._ttsAudioQueue.forEach(u => URL.revokeObjectURL(u));
+    window._ttsAudioQueue = [];
   }
 
   window._ttsSpeakBeat = function (idx, btnEl) {
     const beat = window._ttsBeats[idx];
     if (!beat) return;
-    const voice = _ttsVoiceForSpeaker(beat.speaker);
-    _ttsSpeakNow(beat.text, btnEl, voice);
+    _ttsSpeakNow(beat.text, btnEl, beat.speaker);
   };
 
   function escapeHtml(text) {
@@ -1746,28 +1842,23 @@
             .map(b => ({ text: String(b && b.text || "").trim(), speaker: String(b && b.speaker || "").trim() }))
             .filter(b => b.text);
           if (!beats.length) return;
-          /* Build chunk queue with per-beat voices — each beat gets
-             split further if it exceeds the word limit */
+
           _ttsStopNow();
           this._ttsSpeaking = true;
-          const allChunks = [];
-          for (const b of beats) {
-            const voice = _ttsVoiceForSpeaker(b.speaker);
-            for (const c of _ttsChunkText(b.text)) {
-              allChunks.push({ text: c, voice: voice });
-            }
-          }
+          const chunks = _ttsBuildChunks(beats);
+
           window._ttsCancelled = false;
-          window._ttsChunks = allChunks;
+          window._ttsChunks = chunks;
           _ttsShowLoading(null);
+
           const w = _ttsGetWorker();
           if (!window._ttsReady) {
-            /* Queue as raw text; once ready it'll flush */
             const fullText = beats.map(b => b.text).join("\n\n");
-            window._ttsQueue = [{ text: fullText, btnEl: null, voice: _ttsVoiceForSpeaker(beats[0].speaker) }];
+            window._ttsQueue = [{ text: fullText, btnEl: null, speaker: beats[0].speaker }];
             return;
           }
-          console.log("[TTS] auto-speak:", allChunks.length, "chunk(s) across", beats.length, "beats", allChunks.map(c => c.voice + ": " + c.text.substring(0, 30)));
+          console.log("[TTS] auto-speak:", chunks.length, "chunk(s) across", beats.length, "beats",
+            chunks.map(c => c.voice + ": " + c.text.substring(0, 30)));
           _ttsGenerateNextChunk();
         }
       },
