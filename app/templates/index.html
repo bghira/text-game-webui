@@ -2670,21 +2670,47 @@
       <!-- TTS Settings Panel -->
       <div id="settings-panel-tts" role="tabpanel" aria-labelledby="settings-tab-tts" class="stack" x-show="$store.app.settingsTab === 'tts'">
         <div class="settings-group">
+          <p class="settings-group-title">Engine</p>
+          <div class="stack compact">
+            <label>
+              TTS Engine
+              <select :value="ttsEngine" @change="ttsEngine = $event.target.value; ttsApplySettings()">
+                <option value="kokoro" :selected="ttsEngine === 'kokoro'">Kokoro 82M (fast, 27 voices)</option>
+                <option value="chatterbox" :selected="ttsEngine === 'chatterbox'">Chatterbox Turbo (voice cloning, emotives)</option>
+              </select>
+            </label>
+            <small x-show="ttsEngine === 'chatterbox'" style="color: var(--ink-muted);">
+              ~539 MB model download. Supports voice cloning from reference audio and emotive tags like &lt;laughter&gt;, &lt;whisper&gt;.
+            </small>
+          </div>
+        </div>
+        <div class="settings-group">
           <p class="settings-group-title">General</p>
           <div class="stack compact">
             <label>
               <input type="checkbox" x-model="ttsEnabled" />
               Auto-read narration on turn complete
             </label>
-            <label>
-              Narrator Voice
-              <select :value="ttsNarratorVoice" @change="ttsNarratorVoice = $event.target.value; ttsApplySettings()">
-                <option value="off" :selected="ttsNarratorVoice === 'off'">Disabled (characters only)</option>
-                <template x-for="vid in Object.keys(window.KOKORO_VOICES || {})" :key="vid">
-                  <option :value="vid" :selected="ttsNarratorVoice === vid" x-text="window.KOKORO_VOICES[vid].name + ' (' + window.KOKORO_VOICES[vid].gender + ', ' + window.KOKORO_VOICES[vid].lang + ')'"></option>
-                </template>
-              </select>
-            </label>
+            <template x-if="ttsEngine === 'kokoro'">
+              <label>
+                Narrator Voice
+                <select :value="ttsNarratorVoice" @change="ttsNarratorVoice = $event.target.value; ttsApplySettings()">
+                  <option value="off" :selected="ttsNarratorVoice === 'off'">Disabled (characters only)</option>
+                  <template x-for="vid in Object.keys(window.KOKORO_VOICES || {})" :key="vid">
+                    <option :value="vid" :selected="ttsNarratorVoice === vid" x-text="window.KOKORO_VOICES[vid].name + ' (' + window.KOKORO_VOICES[vid].gender + ', ' + window.KOKORO_VOICES[vid].lang + ')'"></option>
+                  </template>
+                </select>
+              </label>
+            </template>
+            <template x-if="ttsEngine === 'chatterbox'">
+              <label>
+                Narrator
+                <select :value="ttsNarratorVoice" @change="ttsNarratorVoice = $event.target.value; ttsApplySettings()">
+                  <option value="off" :selected="ttsNarratorVoice === 'off'">Disabled (characters only)</option>
+                  <option value="chatterbox_default" :selected="ttsNarratorVoice === 'chatterbox_default'">Default Chatterbox voice</option>
+                </select>
+              </label>
+            </template>
           </div>
         </div>
         <div class="settings-group">

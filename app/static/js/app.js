@@ -20,7 +20,16 @@
   window._ttsActiveBtnEl = null;
   window._ttsAudio = null;
   window._ttsWorker = null;
-  window._ttsReady = false;
+  window._ttsKokoroReady = false;
+  window._ttsChatterboxReady = false;
+  /* _ttsReady is a per-engine getter/setter so switching engines doesn't lose readiness */
+  Object.defineProperty(window, '_ttsReady', {
+    get() { return window._ttsEngine === "chatterbox" ? window._ttsChatterboxReady : window._ttsKokoroReady; },
+    set(v) {
+      if (window._ttsEngine === "chatterbox") window._ttsChatterboxReady = v;
+      else window._ttsKokoroReady = v;
+    },
+  });
   window._ttsDefaultVoice = "af_heart";
   window._ttsQueue = []; /* pending {text, voice, btnEl} while model loads */
 
@@ -63,6 +72,35 @@
     if (map[speakerSlug]) return map[speakerSlug];
     return window._ttsDefaultVoice;
   }
+
+  /* ---- TTS engine selection ---- */
+  window._ttsEngine = "kokoro"; /* "kokoro" or "chatterbox" */
+  window._ttsChatterboxWorker = null;
+
+  /* ---- Emotive tag processing ---- */
+  /* Known Chatterbox emotive tokens — stripped from display, kept for TTS */
+  const TTS_EMOTIVE_TAGS = new Set([
+    "giggle", "laughter", "guffaw", "sigh", "cry", "gasp", "groan",
+    "inhale", "exhale", "whisper", "mumble", "uh", "um",
+    "singing", "humming", "cough", "sneeze", "sniff", "clear_throat",
+    "shhh",
+  ]);
+
+  /** Strip <emotive> tags from text for display purposes. */
+  function _ttsStripEmotives(text) {
+    return text.replace(/<(\w+)>/g, function (m, tag) {
+      return TTS_EMOTIVE_TAGS.has(tag.toLowerCase()) ? "" : m;
+    }).replace(/\s{2,}/g, " ").trim();
+  }
+
+  /** Resolve reference-audio URL for a speaker (Chatterbox voice cloning). */
+  function _ttsRefAudioForSpeaker(speakerSlug) {
+    const map = window._ttsVoiceRefMap || {};
+    if (speakerSlug && map[speakerSlug]) return map[speakerSlug];
+    return window._ttsDefaultRefAudio || null;
+  }
+  window._ttsVoiceRefMap = {};
+  window._ttsDefaultRefAudio = null;
 
   /*
    * Kokoro has a ~511-token context window (~300-400 words).
@@ -157,18 +195,24 @@
   function _ttsBuildChunks(beats) {
     const narratorVoice = window._ttsDefaultVoice; /* empty string = narrator disabled */
     const narratorEnabled = !!narratorVoice;
+    const isChatterbox = window._ttsEngine === "chatterbox";
     const items = [];
 
     for (let bi = 0; bi < beats.length; bi++) {
       const b = beats[bi];
       const actorVoice = _ttsVoiceForSpeaker(b.speaker);
       const isNarrator = !b.speaker || b.speaker === "narrator";
+      /* Engine-specific extras for Chatterbox */
+      const extra = isChatterbox ? {
+        referenceAudioUrl: _ttsRefAudioForSpeaker(b.speaker),
+        exaggeration: Number(b.vocalIntensity) || 0.5,
+      } : null;
 
       if (isNarrator) {
         /* Skip entire narrator beats if narrator voice is disabled */
         if (!narratorEnabled) continue;
         if (items.length && window._ttsPauseBeat > 0) items.push({ silence: window._ttsPauseBeat });
-        _ttsAddSentenceChunks(items, b.text, narratorVoice);
+        _ttsAddSentenceChunks(items, b.text, narratorVoice, extra);
       } else {
         if (items.length && window._ttsPauseBeat > 0) items.push({ silence: window._ttsPauseBeat });
         const segments = _ttsSplitDialogue(b.text);
@@ -181,7 +225,7 @@
           if (lastVoice && lastVoice !== voice && window._ttsPauseVoiceSwitch > 0) {
             items.push({ silence: window._ttsPauseVoiceSwitch });
           }
-          _ttsAddSentenceChunks(items, seg.text, voice);
+          _ttsAddSentenceChunks(items, seg.text, voice, extra);
           lastVoice = voice;
         }
       }
@@ -193,12 +237,18 @@
    * Split text into sentences, emit one chunk per sentence
    * with a pause between each (but not after the last).
    */
-  function _ttsAddSentenceChunks(items, text, voice) {
+  function _ttsAddSentenceChunks(items, text, voice, extra) {
     /* Strip markdown bold/italic asterisks — Kokoro reads them literally */
     text = text.replace(/\*+/g, "");
+    /* For non-Chatterbox engines, strip emotive tags from TTS input too */
+    if (window._ttsEngine !== "chatterbox") {
+      text = _ttsStripEmotives(text);
+    }
     const sentences = _ttsSplitSentences(text);
     for (let i = 0; i < sentences.length; i++) {
-      items.push({ text: sentences[i], voice: voice });
+      const chunk = { text: sentences[i], voice: voice };
+      if (extra) Object.assign(chunk, extra);
+      items.push(chunk);
       if (i < sentences.length - 1 && window._ttsPauseSentence > 0) {
         items.push({ silence: window._ttsPauseSentence });
       }
@@ -212,18 +262,20 @@
   window._ttsGenerating = false; /* true while worker is processing a chunk */
   window._ttsCancelled = false;
 
-  function _ttsGetWorker() {
-    if (window._ttsWorker) return window._ttsWorker;
-    const w = new Worker("/static/js/kokoro-worker.js", { type: "module" });
-    window._ttsWorker = w;
+  function _ttsAttachWorkerListeners(w, engineLabel, engineKey) {
     w.addEventListener("message", function (e) {
       const d = e.data;
       if (d.status === "device") {
-        _ttsSetBanner("Loading Kokoro TTS (" + d.device + ")\u2026");
+        _ttsSetBanner("Loading " + engineLabel + " (" + d.device + ")\u2026");
+      } else if (d.status === "loading") {
+        _ttsSetBanner(d.message || ("Loading " + engineLabel + "\u2026"));
       } else if (d.status === "ready") {
-        window._ttsReady = true;
-        window._ttsVoices = d.voices;
-        console.log("[TTS] ready, device=" + d.device + ", voices=" + Object.keys(d.voices).length);
+        /* Set the correct per-engine flag directly (the callback may fire
+           after the user has switched to a different engine). */
+        if (engineKey === "chatterbox") window._ttsChatterboxReady = true;
+        else window._ttsKokoroReady = true;
+        if (d.voices) window._ttsVoices = d.voices;
+        console.log("[TTS] " + engineLabel + " ready, device=" + d.device);
         _ttsHideLoading();
         /* Flush pending request */
         const q = window._ttsQueue.splice(0);
@@ -232,10 +284,25 @@
         if (window._ttsCancelled) return;
         _ttsOnChunkGenerated(d.audio);
       } else if (d.status === "error") {
-        console.error("[TTS] worker error:", d.error);
+        console.error("[TTS] worker error:", d.error || d.message);
         _ttsFinishAll();
       }
     });
+  }
+
+  function _ttsGetWorker() {
+    if (window._ttsEngine === "chatterbox") {
+      if (window._ttsChatterboxWorker) return window._ttsChatterboxWorker;
+      const w = new Worker("/static/js/chatterbox-worker.js", { type: "module" });
+      window._ttsChatterboxWorker = w;
+      _ttsAttachWorkerListeners(w, "Chatterbox TTS", "chatterbox");
+      return w;
+    }
+    /* Default: Kokoro */
+    if (window._ttsWorker) return window._ttsWorker;
+    const w = new Worker("/static/js/kokoro-worker.js", { type: "module" });
+    window._ttsWorker = w;
+    _ttsAttachWorkerListeners(w, "Kokoro TTS", "kokoro");
     return w;
   }
 
@@ -325,7 +392,11 @@
     if (remaining > 0) {
       _ttsSetBanner("Generating speech\u2026 (" + (remaining + 1) + " left)");
     }
-    window._ttsWorker.postMessage({ text: next.text, voice: next.voice });
+    const w = _ttsGetWorker();
+    const msg = { text: next.text, voice: next.voice };
+    if (next.referenceAudioUrl) msg.referenceAudioUrl = next.referenceAudioUrl;
+    if (next.exaggeration != null) msg.exaggeration = next.exaggeration;
+    w.postMessage(msg);
   }
 
   function _ttsFinishAll() {
@@ -355,7 +426,8 @@
       btnEl.classList.add("tts-loading");
       window._ttsActiveBtnEl = btnEl;
     }
-    _ttsSetBanner(window._ttsReady ? "Generating speech\u2026" : "Loading Kokoro TTS model\u2026");
+    const label = window._ttsEngine === "chatterbox" ? "Chatterbox" : "Kokoro";
+    _ttsSetBanner(window._ttsReady ? "Generating speech\u2026" : ("Loading " + label + " TTS model\u2026"));
   }
 
   function _ttsHideLoading() {
@@ -567,10 +639,12 @@
     const parts = [];
     for (const beat of sceneOutput.beats) {
       if (!beat || typeof beat !== "object") continue;
-      const text = String(beat.text || "").trim();
-      if (!text) continue;
+      const rawText = String(beat.text || "").trim();
+      if (!rawText) continue;
+      /* Strip emotive tags for display; keep raw text for TTS */
+      const displayText = _ttsStripEmotives(rawText);
       const speaker = formatSceneSpeakerName(beat.speaker);
-      const escapedText = renderSimpleMarkdown(text);
+      const escapedText = renderSimpleMarkdown(displayText);
       const reasoning = String(beat.reasoning || "").trim();
       let reasoningBtn = "";
       let reasoningBlock = "";
@@ -580,7 +654,7 @@
       }
       const beatIdx = window._ttsBeats.length;
       const speakerSlug = String(beat.speaker || "").trim();
-      window._ttsBeats.push({ text: text, speaker: speakerSlug });
+      window._ttsBeats.push({ text: rawText, speaker: speakerSlug, vocalIntensity: beat.vocal_intensity });
       const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakBeat(${beatIdx}, this)">&#x1F50A;</button>`;
       parts.push(`<div class="beat-wrap"><span class="speaker-label">${escapeHtml(speaker)}${reasoningBtn}${ttsBtn}</span>${reasoningBlock}${escapedText}</div>`);
     }
@@ -590,7 +664,7 @@
 
   function normalizeTurnNarration(payload) {
     if (payload.narration && payload.narration.trim().length > 0) {
-      return renderDiscordTimestamps(stripTrailingInventory(payload.narration));
+      return _ttsStripEmotives(renderDiscordTimestamps(stripTrailingInventory(payload.narration)));
     }
     if (Object.keys(payload.state_update || {}).length > 0 || Object.keys(payload.player_state_update || {}).length > 0) {
       return "[No narration returned. State updates were applied.]";
@@ -930,6 +1004,7 @@
       /* TTS */
       ttsEnabled: false,
       _ttsSpeaking: false,
+      ttsEngine: "kokoro",
       ttsNarratorVoice: "af_heart",
       ttsSplitOnPeriod: false,
       ttsPauseSentence: 350,
@@ -1097,6 +1172,8 @@
         this._initializedAfterLink = true;
         try {
           this.ttsEnabled = localStorage.getItem("ttsEnabled") === "true";
+          const lsEng = localStorage.getItem("ttsEngine");
+          if (lsEng === "kokoro" || lsEng === "chatterbox") this.ttsEngine = lsEng;
           const lsNV = localStorage.getItem("ttsNarratorVoice");
           if (lsNV !== null) this.ttsNarratorVoice = lsNV;
           if (localStorage.getItem("ttsSplitOnPeriod") !== null) this.ttsSplitOnPeriod = localStorage.getItem("ttsSplitOnPeriod") === "true";
@@ -1285,7 +1362,7 @@
               id: counter,
               type: turn.kind === "player" ? "player" : "narrator",
               at: rememberedSubmitAt || (turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : ""),
-              text: renderDiscordTimestamps(stripTrailingInventory(turn.content || "[No content]")),
+              text: _ttsStripEmotives(renderDiscordTimestamps(stripTrailingInventory(turn.content || "[No content]"))),
               meta: {
                 actor_id: turn.actor_id || "",
                 actor_name: turn.actor_name || "",
@@ -1926,6 +2003,7 @@
 
       ttsApplySettings() {
         try {
+          localStorage.setItem("ttsEngine", this.ttsEngine);
           localStorage.setItem("ttsNarratorVoice", this.ttsNarratorVoice);
           localStorage.setItem("ttsSplitOnPeriod", this.ttsSplitOnPeriod ? "true" : "false");
           localStorage.setItem("ttsPauseSentence", String(this.ttsPauseSentence));
@@ -1933,11 +2011,14 @@
           localStorage.setItem("ttsPauseBeat", String(this.ttsPauseBeat));
         } catch (_) {}
         /* Push to global TTS config */
+        window._ttsEngine = this.ttsEngine || "kokoro";
         window._ttsDefaultVoice = this.ttsNarratorVoice === "off" ? "" : (this.ttsNarratorVoice || "af_heart");
         window._ttsSplitOnPeriod = this.ttsSplitOnPeriod;
         window._ttsPauseSentence = this.ttsPauseSentence;
         window._ttsPauseVoiceSwitch = this.ttsPauseVoiceSwitch;
         window._ttsPauseBeat = this.ttsPauseBeat;
+        /* Per-engine readiness is tracked via _ttsKokoroReady / _ttsChatterboxReady,
+           so switching engines naturally reflects the correct readiness state. */
       },
 
       ttsSpeakEntry(entry) {
@@ -1950,7 +2031,7 @@
         const scene = data && data.scene_output;
         if (scene && Array.isArray(scene.beats) && scene.beats.length) {
           const beats = scene.beats
-            .map(b => ({ text: String(b && b.text || "").trim(), speaker: String(b && b.speaker || "").trim() }))
+            .map(b => ({ text: String(b && b.text || "").trim(), speaker: String(b && b.speaker || "").trim(), vocalIntensity: b && b.vocal_intensity }))
             .filter(b => b.text);
           if (!beats.length) return;
 
