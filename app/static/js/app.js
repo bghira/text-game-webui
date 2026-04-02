@@ -5090,6 +5090,7 @@
             entry._phaseText = false;
             entry.text = normalizeTurnNarration(data);
             entry._streaming = false;
+            entry._backendTurnId = Number(data.turn_id) || null;
             entry.meta = { ...data };
             if (data.state_update && data.state_update.game_time) {
               entry.meta._game_time = data.state_update.game_time;
@@ -5097,6 +5098,8 @@
             if (data.scene_output && Array.isArray(data.scene_output.beats)) {
               entry.meta.scene_output = data.scene_output;
             }
+            /* Force Alpine to re-evaluate x-for / x-html bindings */
+            this.turnStream = [...this.turnStream];
           }
           this.ttsAutoSpeak(data);
           /* Supplementary entries — same as non-streaming path */
