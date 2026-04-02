@@ -5608,6 +5608,7 @@ class TextGameEngineGateway(EngineGateway):
         query: str | None = None,
     ) -> dict[str, Any]:
         query_text = str(query or "").strip().lower()
+        query_words = query_text.split() if query_text else []
         if query_text:
             raw_limit = int(limit or 0)
             safe_limit = max(1, raw_limit) if raw_limit > 0 else 10000
@@ -5685,8 +5686,14 @@ class TextGameEngineGateway(EngineGateway):
                         for_display=True,
                     ):
                         continue
-                    if query_text and query_text not in str(turn.content or "").lower():
-                        continue
+                    if query_words:
+                        content_lower = str(turn.content or "").lower()
+                        if not all(
+                            fnmatch(content_lower, f"*{w}*") if "*" in w or "?" in w
+                            else w in content_lower
+                            for w in query_words
+                        ):
+                            continue
                     row = self._turn_row_for_webui(campaign_id, turn, player_labels)
                     if not self._turn_row_matches_session(row, selected_session, actor_id_text):
                         continue
