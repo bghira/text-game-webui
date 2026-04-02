@@ -6156,11 +6156,13 @@
         const turnId = Number(result && result.id) || 0;
         if (turnId <= 0) return;
         this.turnSearch.highlightTurnId = turnId;
+        this.turnSearch.status = "Loading turn history\u2026";
         const loaded = await this.ensureTurnLoaded(turnId);
         if (!loaded) {
-          this.turnSearch.status = "That turn is outside the currently loaded visible history.";
+          this.turnSearch.status = "Could not find that turn in the visible history for this session.";
           return;
         }
+        this.turnSearch.status = "";
         this.populateTurnStreamFromHistory(false);
         this.$nextTick(() => {
           const entry = this._findTurnStreamEntryByBackendId(turnId);
