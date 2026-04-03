@@ -1,28 +1,52 @@
 /**
  * Chatterbox TTS Web Worker
- * Runs Chatterbox Turbo via WebGPU using transformers.js v4.
+ * Runs Chatterbox via WebGPU/WASM using transformers.js v4.
  *
  * Message protocol (same shape as kokoro-worker):
  *   IN:  { text, referenceAudioUrl?, exaggeration? }
  *   OUT: { status: "device"|"loading"|"ready"|"complete"|"error", ... }
+ *
+ * Speaker embeddings are computed once per reference-audio URL and cached.
+ */
+/*
+ * Local copy of transformers.js v4.0.1 web bundle (422 KB).
+ * The CDN builds have a stale cache missing ChatterboxModel registration,
+ * so we serve the bundle locally from node_modules dist.
  */
 import {
-  AutoModel,
+  ChatterboxModel,
   AutoProcessor,
+  Tensor,
   env,
-} from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4";
+} from "/static/js/transformers.web.min.js";
 
 env.allowLocalModels = false;
 
-const MODEL_ID = "spacekaren/chatterbox-turbo-webgpu";
+const MODEL_ID = "onnx-community/chatterbox-ONNX";
 const SAMPLE_RATE = 24000;
+
+/* Per-session dtype — only language_model has quantized variants */
+const DTYPE_CONFIGS = {
+  webgpu: {
+    embed_tokens: "fp32",
+    speech_encoder: "fp32",
+    language_model: "q4f16",
+    conditional_decoder: "fp32",
+  },
+  wasm: {
+    embed_tokens: "fp32",
+    speech_encoder: "fp32",
+    language_model: "q4",
+    conditional_decoder: "fp32",
+  },
+};
 
 let model = null;
 let processor = null;
 let loadPromise = null;
 
-/* ---- Reference-audio cache (keyed by URL) ---- */
-const refCache = new Map();
+/* ---- Speaker-embedding cache (keyed by ref-audio URL) ---- */
+const speakerCache = new Map();
 
 /* ==== WAV helpers ==== */
 
@@ -95,19 +119,29 @@ function decodeWav(buffer) {
   return out;
 }
 
+/** Fetch + decode WAV reference audio, returning Float32Array. */
 async function fetchRefAudio(url) {
   if (!url) return null;
-  if (refCache.has(url)) return refCache.get(url);
-  try {
-    const resp = await fetch(url);
-    const buf = await resp.arrayBuffer();
-    const data = decodeWav(buf);
-    refCache.set(url, data);
-    return data;
-  } catch (err) {
-    console.warn("[Chatterbox] ref-audio fetch failed:", err);
-    return null;
-  }
+  const resp = await fetch(url);
+  const buf = await resp.arrayBuffer();
+  return decodeWav(buf);
+}
+
+/**
+ * Encode reference audio into speaker embeddings and cache them.
+ * Returns the speaker-embedding object ({ ... tensors ... }) for generate().
+ */
+async function encodeSpeaker(refAudioUrl) {
+  if (!refAudioUrl) return null;
+  if (speakerCache.has(refAudioUrl)) return speakerCache.get(refAudioUrl);
+
+  const audioData = await fetchRefAudio(refAudioUrl);
+  if (!audioData) return null;
+
+  const audioTensor = new Tensor("float32", audioData, [1, audioData.length]);
+  const embeddings = await model.encode_speech(audioTensor);
+  speakerCache.set(refAudioUrl, embeddings);
+  return embeddings;
 }
 
 /* ==== Model lifecycle ==== */
@@ -118,11 +152,22 @@ async function ensureModel() {
 
   loadPromise = (async () => {
     let device = "webgpu";
+    let dtype = DTYPE_CONFIGS.webgpu;
     try {
-      self.postMessage({ status: "device", device: "webgpu" });
-      model = await AutoModel.from_pretrained(MODEL_ID, {
-        device: "webgpu",
-        dtype: "q4f16",
+      /* Probe WebGPU availability */
+      if (!self.navigator || !self.navigator.gpu) throw new Error("No WebGPU");
+      const adapter = await self.navigator.gpu.requestAdapter();
+      if (!adapter) throw new Error("No GPU adapter");
+    } catch (_) {
+      device = "wasm";
+      dtype = DTYPE_CONFIGS.wasm;
+    }
+
+    try {
+      self.postMessage({ status: "device", device });
+      model = await ChatterboxModel.from_pretrained(MODEL_ID, {
+        device,
+        dtype,
         progress_callback: (p) => {
           if (p.status === "progress" && p.progress != null) {
             self.postMessage({
@@ -135,14 +180,33 @@ async function ensureModel() {
       });
       processor = await AutoProcessor.from_pretrained(MODEL_ID);
     } catch (err) {
-      console.warn("[Chatterbox] WebGPU failed, trying WASM:", err);
-      device = "wasm";
-      try {
-        self.postMessage({ status: "device", device: "wasm" });
-        model = await AutoModel.from_pretrained(MODEL_ID, { device: "wasm", dtype: "q4" });
-        processor = await AutoProcessor.from_pretrained(MODEL_ID);
-      } catch (err2) {
-        self.postMessage({ status: "error", message: "Failed to load Chatterbox: " + err2.message });
+      /* If WebGPU failed, try WASM fallback */
+      if (device === "webgpu") {
+        console.warn("[Chatterbox] WebGPU failed, trying WASM:", err);
+        device = "wasm";
+        dtype = DTYPE_CONFIGS.wasm;
+        try {
+          self.postMessage({ status: "device", device: "wasm" });
+          model = await ChatterboxModel.from_pretrained(MODEL_ID, {
+            device: "wasm",
+            dtype,
+            progress_callback: (p) => {
+              if (p.status === "progress" && p.progress != null) {
+                self.postMessage({
+                  status: "loading",
+                  progress: Math.round(p.progress),
+                  message: "Loading Chatterbox (" + Math.round(p.progress) + "%)…",
+                });
+              }
+            },
+          });
+          processor = await AutoProcessor.from_pretrained(MODEL_ID);
+        } catch (err2) {
+          self.postMessage({ status: "error", message: "Failed to load Chatterbox: " + err2.message });
+          return;
+        }
+      } else {
+        self.postMessage({ status: "error", message: "Failed to load Chatterbox: " + err.message });
         return;
       }
     }
@@ -169,14 +233,21 @@ self.onmessage = async (e) => {
     /* Convert <emotive> → [emotive] for Chatterbox tokenizer */
     text = (text || "").replace(/<(\w+)>/g, "[$1]");
 
-    const refAudio = await fetchRefAudio(referenceAudioUrl);
-    const inputs = await processor(text, refAudio);
+    /* Encode speaker from reference audio (cached after first call) */
+    const speakerEmbeddings = await encodeSpeaker(referenceAudioUrl);
 
-    const waveform = await model.generate({
+    /* Tokenize text */
+    const inputs = await processor._call(text);
+
+    /* Generate waveform */
+    const genArgs = {
       ...inputs,
       exaggeration,
-      max_new_tokens: 2048,
-    });
+      max_new_tokens: 256,
+    };
+    if (speakerEmbeddings) Object.assign(genArgs, speakerEmbeddings);
+
+    const waveform = await model.generate(genArgs);
 
     const raw = waveform.data || waveform;
     const samples = raw instanceof Float32Array ? raw : new Float32Array(raw);
