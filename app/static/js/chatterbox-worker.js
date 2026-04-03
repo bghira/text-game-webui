@@ -45,8 +45,27 @@ let model = null;
 let processor = null;
 let loadPromise = null;
 
-/* ---- Speaker-embedding cache (keyed by ref-audio URL) ---- */
-const speakerCache = new Map();
+/* ---- Speaker-embedding cache (keyed by ref-audio URL, LRU, max 8) ---- */
+const SPEAKER_CACHE_MAX = 8;
+const _speakerMap = new Map();
+const speakerCache = {
+  has(k) { return _speakerMap.has(k); },
+  get(k) {
+    if (!_speakerMap.has(k)) return undefined;
+    const v = _speakerMap.get(k);
+    _speakerMap.delete(k);
+    _speakerMap.set(k, v);
+    return v;
+  },
+  set(k, v) {
+    if (_speakerMap.has(k)) _speakerMap.delete(k);
+    _speakerMap.set(k, v);
+    while (_speakerMap.size > SPEAKER_CACHE_MAX) {
+      const oldest = _speakerMap.keys().next().value;
+      _speakerMap.delete(oldest);
+    }
+  },
+};
 
 /* ==== WAV helpers ==== */
 
@@ -123,6 +142,10 @@ function decodeWav(buffer) {
 async function fetchRefAudio(url) {
   if (!url) return null;
   const resp = await fetch(url);
+  if (!resp.ok) {
+    console.warn("[Chatterbox] ref-audio fetch failed:", resp.status, resp.statusText);
+    return null;
+  }
   const buf = await resp.arrayBuffer();
   return decodeWav(buf);
 }
@@ -130,18 +153,29 @@ async function fetchRefAudio(url) {
 /**
  * Encode reference audio into speaker embeddings and cache them.
  * Returns the speaker-embedding object ({ ... tensors ... }) for generate().
+ * In-flight promises are deduped so concurrent requests share one encode.
  */
+const _inflight = new Map();
 async function encodeSpeaker(refAudioUrl) {
   if (!refAudioUrl) return null;
   if (speakerCache.has(refAudioUrl)) return speakerCache.get(refAudioUrl);
+  if (_inflight.has(refAudioUrl)) return _inflight.get(refAudioUrl);
 
-  const audioData = await fetchRefAudio(refAudioUrl);
-  if (!audioData) return null;
+  const promise = (async () => {
+    try {
+      const audioData = await fetchRefAudio(refAudioUrl);
+      if (!audioData) return null;
+      const audioTensor = new Tensor("float32", audioData, [1, audioData.length]);
+      const embeddings = await model.encode_speech(audioTensor);
+      speakerCache.set(refAudioUrl, embeddings);
+      return embeddings;
+    } finally {
+      _inflight.delete(refAudioUrl);
+    }
+  })();
 
-  const audioTensor = new Tensor("float32", audioData, [1, audioData.length]);
-  const embeddings = await model.encode_speech(audioTensor);
-  speakerCache.set(refAudioUrl, embeddings);
-  return embeddings;
+  _inflight.set(refAudioUrl, promise);
+  return promise;
 }
 
 /* ==== Model lifecycle ==== */
@@ -237,13 +271,16 @@ self.onmessage = async (e) => {
     const speakerEmbeddings = await encodeSpeaker(referenceAudioUrl);
 
     /* Tokenize text */
-    const inputs = await processor._call(text);
+    const inputs = await processor(text);
 
     /* Generate waveform */
+    /* Scale token budget by input length; ~3 tokens per char is generous.
+       Clamp between 256 and 2048 to avoid runaway generation. */
+    const maxTokens = Math.max(256, Math.min(2048, Math.ceil(text.length * 3)));
     const genArgs = {
       ...inputs,
       exaggeration,
-      max_new_tokens: 256,
+      max_new_tokens: maxTokens,
     };
     if (speakerEmbeddings) Object.assign(genArgs, speakerEmbeddings);
 
