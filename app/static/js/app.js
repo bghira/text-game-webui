@@ -90,7 +90,7 @@
   function _ttsStripEmotives(text) {
     return text.replace(/<(\w+)>/g, function (m, tag) {
       return TTS_EMOTIVE_TAGS.has(tag.toLowerCase()) ? "" : m;
-    }).replace(/\s{2,}/g, " ").trim();
+    }).replace(/ {2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
   }
 
   /** Resolve reference-audio URL for a speaker (Chatterbox voice cloning). */
