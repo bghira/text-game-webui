@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="layout" x-data="textGameApp()" x-init="init()">
+<section class="layout" x-data="textGameApp()" x-init="init()" @topbar-search-toggle.window="if(selectedCampaignId) toggleTurnSearch()">
   <template x-if="dtmLink.enabled && !dtmLink.linked">
     <div class="panel main-column stack">
       <h2>Link Discord Account</h2>
@@ -339,7 +339,7 @@
     </div>
 
     <!-- Turn Stream -->
-    <div class="section-head">
+    <div class="section-head turn-stream-section-head">
       <div class="section-head-main">
         <h2>Turn Stream</h2>
         <small>

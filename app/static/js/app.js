@@ -83,7 +83,7 @@
     "giggle", "laughter", "guffaw", "sigh", "cry", "gasp", "groan",
     "inhale", "exhale", "whisper", "mumble", "uh", "um",
     "singing", "humming", "cough", "sneeze", "sniff", "clear_throat",
-    "shhh",
+    "shhh", "silence",
   ]);
 
   /** Strip <emotive> tags from text for display purposes. */
@@ -240,17 +240,27 @@
   function _ttsAddSentenceChunks(items, text, voice, extra) {
     /* Strip markdown bold/italic asterisks — Kokoro reads them literally */
     text = text.replace(/\*+/g, "");
-    /* For non-Chatterbox engines, strip emotive tags from TTS input too */
-    if (window._ttsEngine !== "chatterbox") {
-      text = _ttsStripEmotives(text);
-    }
-    const sentences = _ttsSplitSentences(text);
-    for (let i = 0; i < sentences.length; i++) {
-      const chunk = { text: sentences[i], voice: voice };
-      if (extra) Object.assign(chunk, extra);
-      items.push(chunk);
-      if (i < sentences.length - 1 && window._ttsPauseSentence > 0) {
-        items.push({ silence: window._ttsPauseSentence });
+    /* Split on <silence> tags — insert a beat-length pause for each */
+    const silenceParts = text.split(/<silence>/gi);
+    for (let si = 0; si < silenceParts.length; si++) {
+      if (si > 0 && window._ttsPauseBeat > 0) {
+        items.push({ silence: window._ttsPauseBeat });
+      }
+      let part = silenceParts[si];
+      if (!part.trim()) continue;
+      /* For non-Chatterbox engines, strip emotive tags from TTS input too */
+      if (window._ttsEngine !== "chatterbox") {
+        part = _ttsStripEmotives(part);
+      }
+      if (!part.trim()) continue;
+      const sentences = _ttsSplitSentences(part);
+      for (let i = 0; i < sentences.length; i++) {
+        const chunk = { text: sentences[i], voice: voice };
+        if (extra) Object.assign(chunk, extra);
+        items.push(chunk);
+        if (i < sentences.length - 1 && window._ttsPauseSentence > 0) {
+          items.push({ silence: window._ttsPauseSentence });
+        }
       }
     }
   }

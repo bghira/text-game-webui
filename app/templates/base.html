@@ -52,6 +52,13 @@
         </label>
         <button
           type="button"
+          class="gear-btn topbar-search-btn"
+          title="Search Turns"
+          aria-label="Search Turns"
+          @click="$dispatch('topbar-search-toggle')"
+        >&#x1F50D;</button>
+        <button
+          type="button"
           class="gear-btn"
           title="Pinned turns"
           aria-label="Pinned turns"
