@@ -14,7 +14,16 @@ class RealtimeSubscription:
 
 class RealtimeHub:
     # Event types that carry session/actor scope and must honour visibility rules.
-    _SESSION_SCOPED_TYPES: frozenset[str] = frozenset({"turn", "media", "timers", "turn_progress"})
+    _SESSION_SCOPED_TYPES: frozenset[str] = frozenset(
+        {
+            "turn",
+            "media",
+            "timers",
+            "turn_progress",
+            "pending_shared_turn",
+            "pending_shared_turn_clear",
+        }
+    )
 
     def __init__(self) -> None:
         self._subs: dict[str, set[RealtimeSubscription]] = defaultdict(set)
@@ -62,6 +71,27 @@ class RealtimeHub:
         return None
 
     @staticmethod
+    def _audience_actor_ids_for_event(payload: dict) -> set[str]:
+        out: set[str] = set()
+        raw_top_level = payload.get("visible_actor_ids")
+        if isinstance(raw_top_level, list):
+            out.update(
+                str(item or "").strip()
+                for item in raw_top_level
+                if str(item or "").strip()
+            )
+        body = payload.get("payload")
+        if isinstance(body, dict):
+            raw_body = body.get("visible_actor_ids")
+            if isinstance(raw_body, list):
+                out.update(
+                    str(item or "").strip()
+                    for item in raw_body
+                    if str(item or "").strip()
+                )
+        return out
+
+    @staticmethod
     def _turn_visibility_for_event(payload: dict) -> dict | None:
         body = payload.get("payload")
         if not isinstance(body, dict):
@@ -73,22 +103,29 @@ class RealtimeHub:
     def _event_visible_to_subscription(cls, sub: RealtimeSubscription, payload: dict) -> bool:
         payload_type = str(payload.get("type") or "").strip().lower()
         event_session_id = cls._session_id_for_event(payload)
+        session_mismatch = False
         if sub.session_id:
             if event_session_id is not None and event_session_id != sub.session_id:
-                return False
+                session_mismatch = True
         elif event_session_id is not None and payload_type in cls._SESSION_SCOPED_TYPES:
             return False
 
         if payload_type not in cls._SESSION_SCOPED_TYPES:
             return True
 
+        if payload_type == "turn_progress":
+            if not event_actor_id or not sub.actor_id:
+                return False
+            audience = cls._audience_actor_ids_for_event(payload)
+            if sub.actor_id == event_actor_id:
+                return True
+            return sub.actor_id in audience
+
         visibility = cls._turn_visibility_for_event(payload)
         if not isinstance(visibility, dict):
             return True
         scope = str(visibility.get("scope") or "public").strip().lower()
         if scope in {"", "public"}:
-            return True
-        if scope == "local" and sub.session_id and event_session_id and sub.session_id == event_session_id:
             return True
         if not sub.actor_id:
             return False
@@ -100,6 +137,10 @@ class RealtimeHub:
             allowed = {str(item or "").strip() for item in raw_actor_ids if str(item or "").strip()}
             if sub.actor_id in allowed:
                 return True
+        if session_mismatch:
+            return False
+        if scope == "local":
+            return False
         return False
 
     async def publish(self, campaign_id: str, payload: dict) -> None:
@@ -118,6 +159,13 @@ class RealtimeHub:
             for cid, subs in list(self._subs.items())
             if any(sub.actor_id == actor_id for sub in subs)
         ]
+
+    def has_actor_subscription(self, campaign_id: str, actor_id: str) -> bool:
+        wanted_campaign = str(campaign_id or "").strip()
+        wanted_actor = str(actor_id or "").strip()
+        if not wanted_campaign or not wanted_actor:
+            return False
+        return any(sub.actor_id == wanted_actor for sub in list(self._subs[wanted_campaign]))
 
     async def publish_to_actor(self, campaign_id: str, actor_id: str, payload: dict) -> None:
         """Send a message only to subscriptions matching a specific actor_id."""

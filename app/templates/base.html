@@ -41,12 +41,29 @@
   </head>
   <body>
     <header class="topbar">
-      <h1>{{ app_name or "text-game-webui" }}</h1>
+      <div class="topbar-left" x-data>
+        <button type="button" class="sidebar-toggle" title="Toggle sidebar" @click="$store.app.sidebarOpen = !$store.app.sidebarOpen" aria-label="Toggle sidebar">&#x2630;</button>
+        <h1>{{ app_name or "text-game-webui" }}</h1>
+      </div>
       <div class="topbar-controls" x-data>
         <label class="debug-toggle">
           <input type="checkbox" :checked="$store.app.debugMode" @change="$store.app.toggleDebugMode()" />
           <span>Debug</span>
         </label>
+        <button
+          type="button"
+          class="gear-btn topbar-search-btn"
+          title="Search Turns"
+          aria-label="Search Turns"
+          @click="$dispatch('topbar-search-toggle')"
+        >&#x1F50D;</button>
+        <button
+          type="button"
+          class="gear-btn"
+          title="Pinned turns"
+          aria-label="Pinned turns"
+          @click="$store.app.pinsOpen = !$store.app.pinsOpen"
+        >&#x1F4CC;</button>
         <button type="button" class="gear-btn" title="Settings" @click="$store.app.settingsOpen = !$store.app.settingsOpen">&#9881;</button>
       </div>
     </header>

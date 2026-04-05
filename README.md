@@ -5,15 +5,99 @@ Web UI shell for [bghira/text-game-engine](https://github.com/bghira/text-game-e
 <img width="440" alt="image" src="https://github.com/user-attachments/assets/35358b9d-b064-4322-bd03-2e380b8499d0" />
 
 
-## Current status
-- Multiple LLM backends (Claude Code, Codex, OpenAI API, Ollama)
-- Image generation for scene images and character avatars via local Diffusers daemon or external ComfyUI server.
-- Campaign creation with document upload (`.txt`/`.md` drag-and-drop), automatic source-material digest, and setup wizard auto-start.
-  - Allows uploading a TV show or movie episode script or something to create an interactive game from it
-- Multiplayer capable, but no security / auth
+## Features
+
+### Campaign & session management
+- Create campaigns with document upload (`.txt`/`.md` drag-and-drop), automatic source-material digest, and guided setup wizard.
+  - Upload a TV show script, movie screenplay, or novel to create an interactive game from it.
+- Multiple sessions per campaign: main session plus private windows (solo, with actor, with NPC).
 - State restoration: selected campaign and session persist to `localStorage` and restore on refresh, with turn stream hydrated from history.
-- Runtime checks endpoint for gateway/database/LLM probe status (`GET /api/runtime/checks`).
-  - Supports explicit probe override: `GET /api/runtime/checks?probe_llm=true`.
+- Multiplayer capable, but no security / auth.
+
+### Turn stream
+- Real-time streaming narration with live token-by-token display.
+- Turn types: narrator, player, notice, summary, reasoning, image prompt, dice results.
+- Turn management: pin/unpin, rewind, edit in-place, delete, copy to clipboard, collapse/expand.
+- Full-text turn search with jump-to-result (side rail on desktop, magnifying glass icon on mobile).
+- Pinned turns overlay accessible from the topbar.
+- Game time display (in-game day/hour/minute) on narrator turns.
+
+### Character & player state
+- Character sheet: avatar, name (editable), level, XP bar, attributes with point allocation, inventory list.
+- Level-up system with XP threshold tracking.
+- Avatar generation: accept/decline proposals during character creation, generate from custom prompt, or set portrait by URL.
+- Actor selector for players controlling multiple characters.
+- `@mention` autocomplete for addressing NPCs and other actors in the action input.
+- Quick-info sidebar widget: avatar thumbnail, name, level/XP, current room, and quick-action buttons.
+
+### World state
+- **Map**: Room graph with connections, rendered in the inspector.
+- **Calendar**: Upcoming events with title, time, location, and description. Public/private visibility toggle and delete controls.
+- **Chapters**: Story progression with current chapter highlight, status indicators, scene list, and summary.
+- **Game clock**: In-game time widget in the sidebar, updated in real time via WebSocket.
+
+### Narrator & AI controls
+- Multiple LLM backends: Claude Code, Codex, OpenAI-compatible API, native Ollama.
+- LLM settings: completion mode, base URL, API key, model, temperature, max tokens, timeout, keep-alive, Ollama options.
+- Campaign flags: guardrails, on-rails story mode, timed events, difficulty (story through impossible), speed multiplier, clock type.
+- Narrator persona: customizable voice description (max 140 chars).
+- Timed events with active timer indicator, cancel control, and real-time WebSocket push.
+
+### Image generation
+- Scene images and character avatars via local Diffusers daemon or external ComfyUI server.
+- Generate/re-generate buttons on image prompt turns. Inline display below prompt.
+- Avatar accept/decline during character creation. Manual portrait setting from Roster tab.
+- Configurable resolution, steps, guidance scale, and cache size. Settings adjustable at runtime.
+
+### Text-to-speech
+- In-browser TTS toggle in the action bar.
+- Engines: Kokoro (local WebGPU, 21+ voices) and Chatterbox (with reference audio for voice cloning).
+- Per-NPC voice assignment via roster.
+- Configurable sentence splitting, pause timings, and emotive tag handling.
+
+### Tools & mechanics
+- **SMS**: Inbox with threaded conversations. Read, write, reply, edit, delete, and schedule messages.
+- **Memory**: Full-text search with category filter, key terms lookup, turn recall, and manual store.
+- **Roster**: NPC/character list with add/remove, field editing, and portrait management.
+- **Puzzles**: Active puzzle display with answer submission and hint system.
+- **Minigames**: Board state display with move submission (e.g. chess, card games).
+- **Dice**: Roll results displayed as color-coded success/fail cards in the turn stream.
+
+### Source material & world building
+- Upload source material with format tagging (story/prose, rulebook, generic/notes, auto-detect).
+- Full-text search across uploaded documents.
+- Source material digest: automatic summarization for better context reuse.
+- Campaign rules: key-value store for persistent game rules.
+- Literary styles: narrator voice profile gallery.
+
+### Real-time & multiplayer
+- Persistent WebSocket connection with auto-reconnect.
+- Event types: turn refresh, DM/channel notifications, song notifications, timer expiry, pending mentions, shared session turns, media job updates.
+- Discord account linking (DTM mode) with bot command flow and session cookie.
+
+### Song player
+- YouTube song queue parsed from in-game channel messages.
+- Embedded playback with previous/next controls and queue position counter.
+
+### Debug & inspection
+- Debug mode toggle in the topbar (persisted to `localStorage`).
+- Inspector panel with tabs: Map, Player, Campaign, History, Story, Sessions, Timers, Calendar, Roster, Media, Memory, SMS, Debug.
+- Raw model output, reasoning traces, and tool call inspection.
+
+### Settings & theming
+- Settings panel with LLM, image generation, and TTS configuration.
+- Theme system: built-in light/dark themes plus custom CSS upload.
+- All settings persisted to the database and restored on reload.
+
+### Runtime status
+- Sidebar health panel: gateway, database, and LLM probe status with green/red indicators.
+- GPU stats (when available): name, utilization, VRAM, temperature, loaded Ollama models.
+- Runtime checks endpoint: `GET /api/runtime/checks` with optional `?probe_llm=true`.
+
+### Mobile
+- Responsive layout: sidebar becomes an overlay drawer, turn stream goes edge-to-edge.
+- Compact topbar with magnifying glass search icon.
+- Sticky action bar with virtual keyboard awareness.
 
 ## Local run
 ```bash

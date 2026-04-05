@@ -1,9 +1,24 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="layout" x-data="textGameApp()" x-init="init()">
+<section class="layout" x-data="textGameApp()" x-init="init()" @topbar-search-toggle.window="if(selectedCampaignId) toggleTurnSearch()">
+  <template x-if="dtmLink.enabled && !dtmLink.linked">
+    <div class="panel main-column stack">
+      <h2>Link Discord Account</h2>
+      <p>This DTM web UI only unlocks after you link your Discord account. Use this command in Discord from the account you play with:</p>
+      <pre><code x-text="dtmLink.command || ('+zork link-account ' + (dtmLink.link_code || '...'))"></code></pre>
+      <p x-show="dtmLink.link_code">
+        Waiting for confirmation of code:
+        <strong x-text="dtmLink.link_code"></strong>
+      </p>
+      <p x-show="dtmLink.error" class="error" x-text="dtmLink.error"></p>
+      <p>After Discord confirms the link, this page will unlock automatically.</p>
+    </div>
+  </template>
+  <template x-if="!dtmLink.enabled || dtmLink.linked">
+  <div class="dtm-linked-shell">
 
   <!-- ====== SIDEBAR ====== -->
-  <aside class="panel sidebar">
+  <aside class="panel sidebar" :class="{ 'sidebar-open': $store.app.sidebarOpen }">
     <!-- Campaign Selector -->
     <div class="campaign-selector-row">
       <select :value="selectedCampaignId || ''" @change="$event.target.value && selectCampaign($event.target.value)">
@@ -38,6 +53,7 @@
         <div class="quick-info-buttons">
           <button type="button" @click="$store.app.openModal('playerSheet')">Character</button>
           <button type="button" @click="$store.app.openModal('mapView')">Map</button>
+          <button type="button" @click="$store.app.openModal('smsInbox')">SMS</button>
           <button type="button" @click="$store.app.openModal('campaignConfig')">Config</button>
         </div>
       </div>
@@ -47,6 +63,12 @@
     <div class="game-time-widget" x-show="gameTime && gameTime.day">
       <span class="game-time-label" x-text="gameTime.date_label || ('Day ' + (gameTime.day||1) + ', ' + (gameTime.period||''))"></span>
       <small class="game-time-clock" x-text="String(gameTime.hour||0).padStart(2,'0') + ':' + String(gameTime.minute||0).padStart(2,'0')"></small>
+    </div>
+
+    <!-- Active Timer Indicator -->
+    <div class="timer-indicator" x-show="_activeTimerCount > 0" x-cloak>
+      <span class="timer-indicator-icon">&#x23F2;</span>
+      <span class="timer-indicator-label" x-text="_activeTimerLabel"></span>
     </div>
 
     <!-- Chapters Panel -->
@@ -87,9 +109,63 @@
       </div>
     </template>
 
+    <template x-if="selectedCampaignId">
+      <div class="calendar-panel">
+        <button
+          type="button"
+          class="chapters-heading"
+          @click="calendarPanelOpen = !calendarPanelOpen"
+          :aria-expanded="calendarPanelOpen"
+          aria-controls="sidebar-calendar-list"
+        >
+          Calendar <small x-text="calendarPanelOpen ? '\u25B4' : '\u25BE'"></small>
+        </button>
+        <div x-show="calendarPanelOpen" class="calendar-list" id="sidebar-calendar-list">
+          <template x-if="sidebarCalendarEvents().length === 0">
+            <p class="calendar-empty">No upcoming events.</p>
+          </template>
+          <template x-for="(calEvt, idx) in sidebarCalendarEvents()" :key="idx">
+            <div class="calendar-entry" :class="'calendar-status-' + (calEvt.status || 'upcoming')">
+              <div class="calendar-entry-top">
+                <span class="calendar-title" x-text="calEvt.title || calEvt.name || calEvt.event_key || 'Untitled event'"></span>
+                <small class="calendar-time" x-text="calendarSidebarTimeLabel(calEvt)"></small>
+              </div>
+              <div class="calendar-actions">
+                <button
+                  type="button"
+                  class="calendar-visibility-button"
+                  :class="{ active: (calEvt.scope || '') === 'global' }"
+                  @click="setCalendarEventVisibility(calEvt, 'public')"
+                  :disabled="calendarVisibilityUpdating[calEvt.event_key || '']"
+                >Public</button>
+                <button
+                  type="button"
+                  class="calendar-visibility-button"
+                  :class="{ active: (calEvt.scope || '') === 'targeted' }"
+                  @click="setCalendarEventVisibility(calEvt, 'private')"
+                  :disabled="calendarVisibilityUpdating[calEvt.event_key || '']"
+                >Private</button>
+                <button
+                  type="button"
+                  class="calendar-delete-button"
+                  title="Delete event"
+                  @click="deleteCalendarEvent(calEvt)"
+                >&#x1F5D1;</button>
+              </div>
+              <template x-if="calEvt.location">
+                <p class="calendar-location" x-text="calEvt.location"></p>
+              </template>
+              <template x-if="calEvt.description && !calEvt.location">
+                <p class="calendar-location" x-text="calEvt.description"></p>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+
     <h2>Rooms</h2>
     <div class="stack compact">
-      <button type="button" @click="ensureSharedWindow()" :disabled="!selectedCampaignId">Shared Room</button>
       <div class="private-window-row">
         <select x-model="sessions.quick_private_kind" class="private-kind-select">
           <option value="solo">Solo</option>
@@ -109,10 +185,10 @@
           :class="{ active: selectedSessionId === row.id, 'has-unseen': sessionHasUnseen(row.id) }"
           @click="selectSession(row.id)"
         >
-          <span x-text="(row.metadata && row.metadata.label) || row.surface_key || row.id"></span>
+          <span class="campaign-button-label" x-text="sessionDisplayLabel(row)"></span>
         </button>
       </template>
-      <p x-show="sessionsList.length === 0 && selectedCampaignId" class="sidebar-hint">Click "Shared Room" to open a room.</p>
+      <p x-show="sessionsList.length === 0 && selectedCampaignId" class="sidebar-hint">No rooms available.</p>
     </div>
 
     <h2>Status</h2>
@@ -241,6 +317,7 @@
       </div>
     </template>
   </aside>
+  <div class="sidebar-backdrop" x-show="$store.app.sidebarOpen" @click="$store.app.sidebarOpen = false" x-cloak></div>
 
   <!-- ====== MAIN COLUMN ====== -->
   <section class="panel main-column">
@@ -262,36 +339,167 @@
     </div>
 
     <!-- Turn Stream -->
-    <div class="section-head">
-      <h2>Turn Stream</h2>
-      <small x-text="selectedCampaignId ? `${selectedCampaignId} • ${currentSessionLabel()}` : 'No campaign selected'"></small>
+    <div class="section-head turn-stream-section-head">
+      <div class="section-head-main">
+        <h2>Turn Stream</h2>
+        <small>
+          <template x-if="$store.app.debugMode">
+            <span x-text="selectedCampaignId ? selectedCampaignId + ' • ' : ''"></span>
+          </template>
+          <span x-text="selectedCampaignId ? currentSessionLabel() : 'No campaign selected'"></span>
+        </small>
+      </div>
+      <div class="section-head-actions">
+        <button type="button" class="turn-search-toggle" @click="toggleTurnSearch()" :disabled="!selectedCampaignId">
+          <span x-text="turnSearch.open ? 'Hide Search' : 'Search Turns'"></span>
+        </button>
+      </div>
     </div>
 
-    <div class="turn-stream" id="turn-stream">
-      <div x-show="_turnStreamLoadingOlder" class="turn-stream-loading">
-        <small>Loading older turns...</small>
+    <div class="pins-overlay" x-show="$store.app.pinsOpen" x-cloak>
+      <div class="pins-overlay-card">
+        <div class="pins-overlay-header">
+          <strong>Pinned Turns</strong>
+          <button type="button" class="turn-action-btn pins-close-btn" @click="$store.app.pinsOpen = false">Close</button>
+        </div>
+        <div class="pins-overlay-body">
+          <template x-for="pin in pinnedTurnsForSelectedCampaign()" :key="'pin-' + pin.turn_id">
+            <article class="pins-entry">
+              <header class="pins-entry-head">
+                <strong x-text="pin.actor_name || pin.type || 'turn'"></strong>
+                <small x-text="pin.created_at ? new Date(pin.created_at).toLocaleString() : ('Turn ' + pin.turn_id)"></small>
+              </header>
+              <p class="pins-entry-preview" x-text="pin.preview || pin.text || ''"></p>
+              <div class="pins-entry-actions">
+                <button type="button" class="turn-search-jump" @click="jumpToPinnedTurn(pin)">Jump</button>
+                <button type="button" class="turn-action-btn turn-pin-btn pinned" @click="removePinnedTurn(pin.turn_id)">📌</button>
+              </div>
+            </article>
+          </template>
+          <p x-show="pinnedTurnsForSelectedCampaign().length === 0" class="turn-search-empty">
+            No pinned turns in this campaign.
+          </p>
+        </div>
       </div>
-      <template x-for="entry in visibleTurnStream()" :key="entry.id">
-        <article class="turn-entry" :class="'turn-type-' + entry.type">
+    </div>
+
+    <div class="turn-stream-layout" :class="{ 'turn-search-open': turnSearch.open }">
+      <div class="turn-stream-shell">
+        <div class="turn-stream" id="turn-stream" @click="handleTurnStreamClick($event)">
+          <div x-show="_turnStreamLoadingOlder" class="turn-stream-loading">
+            <small>Loading older turns...</small>
+          </div>
+          <template x-for="entry in visibleTurnStream()" :key="entry.id">
+            <article class="turn-entry" :id="'turn-entry-' + entry.id" :class="'turn-type-' + entry.type">
           <template x-if="entry.type === 'narrator'">
-            <div class="turn-narrator">
-              <p class="narrator-text" :class="{ 'streaming': entry._streaming, 'phase-text': entry._phaseText }" x-html="entry._streaming ? renderSimpleMarkdown(entry.text) : renderNarratorHtml(entry)"></p>
-              <span class="turn-footer">
-                <template x-if="entry.meta && entry.meta._game_time && entry.meta._game_time.day">
-                  <small class="turn-game-time" x-text="'Day ' + entry.meta._game_time.day + ', ' + String(entry.meta._game_time.hour||0).padStart(2,'0') + ':' + String(entry.meta._game_time.minute||0).padStart(2,'0')"></small>
-                </template>
-                <small class="turn-time" x-text="entry.at"></small>
-                <template x-if="entry._backendTurnId > 0 && !entry._streaming">
-                  <button type="button" class="rewind-btn" title="Rewind to this turn" aria-label="Rewind to this turn"
-                    @click="rewindToTurnId(entry._backendTurnId)" :disabled="submitting">&#x23EA;</button>
-                </template>
-              </span>
+            <div class="turn-narrator" :class="{ 'turn-timed-event': entry.meta && entry.meta.timed_event }">
+              <template x-if="entry.meta && entry.meta.timed_event">
+                <span class="timed-event-badge">&#x23F2; Timed Event</span>
+              </template>
+              <template x-if="!turnIsCollapsed(entry)">
+                <div>
+                  <template x-if="!turnIsEditing(entry)">
+                    <div class="narrator-text" :class="{ 'streaming': entry._streaming, 'phase-text': entry._phaseText }" x-html="entry._streaming ? renderSimpleMarkdown(entry.text) : renderNarratorHtml(entry)"></div>
+                  </template>
+                  <template x-if="turnIsEditing(entry)">
+                    <div class="turn-editor">
+                      <textarea class="turn-editor-input" x-model="editingTurnDraft" rows="6"></textarea>
+                      <div class="turn-editor-actions">
+                        <button type="button" @click="saveTurnEdit(entry)" :disabled="submitting || turnMutationBusy">Save</button>
+                        <button type="button" @click="cancelTurnEdit()" :disabled="turnMutationBusy">Cancel</button>
+                      </div>
+                    </div>
+                  </template>
+                  <span class="turn-footer">
+                    <template x-if="entry.meta && entry.meta._game_time && entry.meta._game_time.day">
+                      <small class="turn-game-time" x-text="'Day ' + entry.meta._game_time.day + ', ' + String(entry.meta._game_time.hour||0).padStart(2,'0') + ':' + String(entry.meta._game_time.minute||0).padStart(2,'0')"></small>
+                    </template>
+                    <small class="turn-time" x-text="entry.at"></small>
+                    <template x-if="entry._backendTurnId > 0 && !entry._streaming">
+                      <span class="turn-actions">
+                        <button type="button" class="turn-action-btn turn-pin-btn" :class="{ pinned: turnIsPinned(entry) }" :title="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'" :aria-label="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'"
+                          @click="toggleTurnPinned(entry)">&#x1F4CC;</button>
+                        <button type="button" class="turn-action-btn rewind-btn" title="Rewind to this turn" aria-label="Rewind to this turn"
+                          @click="rewindEntry(entry)" :disabled="submitting">&#x23EA;</button>
+                        <button type="button" class="turn-action-btn" title="Edit this turn" aria-label="Edit this turn"
+                          @click="startTurnEdit(entry)" :disabled="turnMutationBusy">&#x270E;</button>
+                        <button type="button" class="turn-action-btn" :title="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'" :aria-label="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'"
+                          @click="toggleTurnCollapsed(entry)">&#x1F648;</button>
+                        <button type="button" class="turn-action-btn" title="Copy turn text" aria-label="Copy turn text"
+                          @click="copyTurnText(entry)">&#x1F4CB;</button>
+                        <button type="button" class="turn-action-btn turn-delete-btn" title="Delete this turn" aria-label="Delete this turn"
+                          @click="deleteTurnEntry(entry)" :disabled="turnMutationBusy">&#x1F5D1;</button>
+                      </span>
+                    </template>
+                  </span>
+                </div>
+              </template>
+              <template x-if="turnIsCollapsed(entry)">
+                <div class="turn-collapsed">
+                  <span>Turn collapsed</span>
+                  <span class="turn-actions">
+                    <button type="button" class="turn-action-btn" @click="toggleTurnCollapsed(entry)">Show</button>
+                    <button type="button" class="turn-action-btn" @click="copyTurnText(entry)">Copy</button>
+                  </span>
+                </div>
+              </template>
             </div>
           </template>
           <template x-if="entry.type === 'player'">
-            <div class="turn-player">
-              <span class="player-action-text" x-text="entry.text"></span>
-              <small class="turn-time" x-text="entry.at"></small>
+            <div class="turn-player" :class="{ 'turn-player-queued': turnIsQueued(entry), 'turn-player-other': turnIsOtherPlayer(entry) }">
+              <template x-if="!turnIsCollapsed(entry)">
+                <div class="turn-player-shell">
+                  <div class="turn-player-body">
+                    <span class="turn-player-actor" x-text="turnEntryActorLabel(entry)"></span>
+                    <template x-if="turnIsQueued(entry)">
+                      <span class="turn-player-queue-badge">Queued</span>
+                    </template>
+                    <template x-if="!turnIsEditing(entry)">
+                      <div class="player-action-text" x-html="renderSimpleMarkdown(entry.text)"></div>
+                    </template>
+                    <template x-if="turnIsEditing(entry)">
+                      <div class="turn-editor">
+                        <textarea class="turn-editor-input" x-model="editingTurnDraft" rows="4"></textarea>
+                        <div class="turn-editor-actions">
+                          <button type="button" @click="saveTurnEdit(entry)" :disabled="turnIsQueued(entry) ? false : (submitting || turnMutationBusy)">Save</button>
+                          <button type="button" @click="cancelTurnEdit()" :disabled="turnIsQueued(entry) ? false : turnMutationBusy">Cancel</button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="turn-player-meta">
+                    <template x-if="entry.meta && entry.meta.pending_mention_note">
+                      <small class="turn-player-footnote" x-text="entry.meta.pending_mention_note"></small>
+                    </template>
+                    <small class="turn-time" x-text="entry.at"></small>
+                    <template x-if="entry._backendTurnId > 0 || turnIsQueued(entry)">
+                      <span class="turn-actions">
+                        <template x-if="entry._backendTurnId > 0">
+                          <button type="button" class="turn-action-btn turn-pin-btn" :class="{ pinned: turnIsPinned(entry) }" :title="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'" :aria-label="turnIsPinned(entry) ? 'Unpin this turn' : 'Pin this turn'"
+                            @click="toggleTurnPinned(entry)">&#x1F4CC;</button>
+                        </template>
+                        <button type="button" class="turn-action-btn" title="Edit this turn" aria-label="Edit this turn"
+                          @click="startTurnEdit(entry)" :disabled="turnMutationBusy">&#x270E;</button>
+                        <button type="button" class="turn-action-btn" :title="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'" :aria-label="turnIsCollapsed(entry) ? 'Show this turn' : 'Hide this turn'"
+                          @click="toggleTurnCollapsed(entry)">&#x1F648;</button>
+                        <button type="button" class="turn-action-btn" title="Copy turn text" aria-label="Copy turn text"
+                          @click="copyTurnText(entry)">&#x1F4CB;</button>
+                        <button type="button" class="turn-action-btn turn-delete-btn" :title="turnIsQueued(entry) ? 'Remove queued action' : 'Delete this turn'" :aria-label="turnIsQueued(entry) ? 'Remove queued action' : 'Delete this turn'"
+                          @click="deleteTurnEntry(entry)" :disabled="turnMutationBusy">&#x1F5D1;</button>
+                      </span>
+                    </template>
+                  </div>
+                </div>
+              </template>
+              <template x-if="turnIsCollapsed(entry)">
+                <div class="turn-collapsed">
+                  <span x-text="turnEntryActorLabel(entry) + ' turn collapsed'"></span>
+                  <span class="turn-actions">
+                    <button type="button" class="turn-action-btn" @click="toggleTurnCollapsed(entry)">Show</button>
+                    <button type="button" class="turn-action-btn" @click="copyTurnText(entry)">Copy</button>
+                  </span>
+                </div>
+              </template>
             </div>
           </template>
           <template x-if="entry.type === 'notice'">
@@ -364,11 +572,46 @@
               <pre x-text="entry.text"></pre>
             </div>
           </template>
-        </article>
-      </template>
-      <p x-show="turnStream.length === 0 && !selectedCampaignId" class="empty">No turns yet.</p>
-      <p x-show="turnStream.length === 0 && selectedCampaignId && setupMode" class="empty">Your campaign is ready for setup. Open <strong>Config</strong> from the sidebar to continue.</p>
-      <p x-show="turnStream.length === 0 && selectedCampaignId && !setupMode" class="empty">Type an action below to begin your adventure.</p>
+            </article>
+          </template>
+          <p x-show="turnStream.length === 0 && !selectedCampaignId" class="empty">No turns yet.</p>
+          <p x-show="turnStream.length === 0 && selectedCampaignId && setupMode" class="empty">Your campaign is ready for setup. Open <strong>Config</strong> from the sidebar to continue.</p>
+          <p x-show="turnStream.length === 0 && selectedCampaignId && !setupMode" class="empty">Type an action below to begin your adventure.</p>
+        </div>
+      </div>
+      <aside class="turn-search-rail" x-show="turnSearch.open" x-cloak>
+        <div class="turn-search-header">
+          <strong>Search</strong>
+          <small x-text="selectedCampaignId ? currentSessionLabel() : ''"></small>
+        </div>
+        <form class="turn-search-form" @submit.prevent="runTurnSearch()">
+          <input
+            type="search"
+            x-model="turnSearch.query"
+            placeholder="Search visible turns..."
+            :disabled="!selectedCampaignId"
+          />
+          <button type="submit" :disabled="!selectedCampaignId || turnSearch.loading">Find</button>
+        </form>
+        <p class="turn-search-status" x-show="turnSearch.status" x-text="turnSearch.status"></p>
+        <div class="turn-search-results">
+          <template x-for="result in turnSearch.results" :key="'search-' + result.id">
+            <article class="turn-search-result" :class="{ active: Number(turnSearch.highlightTurnId || 0) === Number(result.id || 0) }">
+              <header class="turn-search-result-head">
+                <strong x-text="result.actor_name || result.kind || 'turn'"></strong>
+                <small x-text="result.created_at ? new Date(result.created_at).toLocaleString() : ''"></small>
+              </header>
+              <p class="turn-search-preview" x-text="result.preview || result.content || ''"></p>
+              <div class="turn-search-result-actions">
+                <button type="button" class="turn-search-jump" @click="jumpToSearchTurn(result)">Jump</button>
+              </div>
+            </article>
+          </template>
+          <p x-show="turnSearch.open && !turnSearch.loading && turnSearch.results.length === 0 && !turnSearch.status" class="turn-search-empty">
+            Search results will appear here.
+          </p>
+        </div>
+      </aside>
     </div>
 
     <!-- Character HUD + Action Bar -->
@@ -377,41 +620,81 @@
         <img :src="playerData?.state?.avatar_url" :alt="resolveCharacterName('') + ' avatar'" class="action-bar-avatar" />
       </template>
       <div class="action-bar-column">
-        <div class="char-hud">
-          <div class="char-hud-top">
-            <strong class="char-hud-name" x-text="resolveCharacterName()"></strong>
-            <select x-show="uniqueActors().length > 1" x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
-              <template x-for="actor in uniqueActors()" :key="actor">
-                <option :value="actor" x-text="actor"></option>
-              </template>
-            </select>
-          </div>
-          <template x-if="playerData">
-            <div class="char-hud-stats">
-              <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
-              <div class="xp-bar-track char-hud-xp">
-                <div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div>
-              </div>
-              <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+        <template x-if="showComposerHud()">
+          <div class="char-hud">
+            <div class="char-hud-top">
+              <strong class="char-hud-name" x-text="resolveCharacterName()"></strong>
+              <select x-show="uniqueActors().length > 1" x-model="turnForm.actor_id" @change="handleActorIdentityChange()" class="actor-select">
+                <template x-for="actor in uniqueActors()" :key="actor">
+                  <option :value="actor" x-text="actor"></option>
+                </template>
+              </select>
             </div>
-          </template>
-          <template x-if="playerData?.state?.room_title">
-            <span class="char-hud-location" x-text="playerData?.state?.room_title"></span>
-          </template>
-        </div>
+            <template x-if="playerData">
+              <div class="char-hud-stats">
+                <span class="xp-level">Lv <span x-text="playerData.level || 1"></span></span>
+                <div class="xp-bar-track char-hud-xp">
+                  <div class="xp-bar-fill" :style="'width:' + Math.min(100, ((playerData.xp || 0) % 100)) + '%'"></div>
+                </div>
+                <span class="xp-value" x-text="(playerData.xp || 0) + ' XP'"></span>
+              </div>
+            </template>
+            <template x-if="playerData?.state?.room_title">
+              <span class="char-hud-location" x-text="playerData?.state?.room_title"></span>
+            </template>
+          </div>
+        </template>
         <form class="action-bar" @submit.prevent="submitTurn()">
           <span class="action-prompt">&gt;</span>
-          <textarea
-            x-model="turnForm.action"
-            placeholder="What do you do?"
-            class="action-input"
-            required
-            id="action-input"
-            rows="1"
-            @keydown.enter="if (!$event.shiftKey) { $event.preventDefault(); if (turnForm.action.trim()) $el.closest('form').requestSubmit(); }"
-            @input="$el.style.height = 'auto'; $el.style.height = $el.scrollHeight + 'px'"
-          ></textarea>
-          <button type="submit" :disabled="!selectedCampaignId || submitting || imageGenerating > 0" class="action-submit" :class="{ 'action-thinking': submitting || imageGenerating > 0 }" x-text="submitting ? 'Thinking...' : (imageGenerating > 0 ? 'Generating...' : 'Submit')"></button>
+          <div class="action-input-shell">
+            <textarea
+              x-model="turnForm.action"
+              placeholder="What do you do?"
+              class="action-input"
+              required
+              autocomplete="off"
+              id="action-input"
+              rows="1"
+              @keydown="handleComposerKeydown($event)"
+              @input="
+                const _ts = document.getElementById('turn-stream');
+                const _bOff = _ts ? (_ts.scrollHeight - _ts.scrollTop - _ts.clientHeight) : 0;
+                if (!CSS.supports('field-sizing','content')) { $el.style.height = '0'; $el.style.height = $el.scrollHeight + 'px'; }
+                requestAnimationFrame(() => { if (_ts) _ts.scrollTop = _ts.scrollHeight - _ts.clientHeight - _bOff; });
+                updateMentionAutocomplete($event);
+              "
+              @click="updateMentionAutocomplete($event)"
+              @keyup="updateMentionAutocomplete($event)"
+              @focus="ensureComposerVisible()"
+              @blur="setTimeout(() => closeMentionAutocomplete(), 120)"
+            ></textarea>
+            <template x-if="composerMentionActive()">
+              <div class="mention-menu">
+                <template x-for="(candidate, index) in filteredMentionCandidates()" :key="candidate.actor_id">
+                  <button
+                    type="button"
+                    class="mention-option"
+                    :class="{ active: mentionState.selectedIndex === index }"
+                    @mousedown.prevent="applyMentionCandidate(candidate)"
+                  >
+                    <span class="mention-option-name" x-text="candidate.name"></span>
+                    <span class="mention-option-id" x-text="'@' + candidate.actor_id"></span>
+                  </button>
+                </template>
+              </div>
+            </template>
+          </div>
+          <label class="tts-toggle" title="Read narration aloud when turns complete">
+            <input type="checkbox" x-model="ttsEnabled" />
+            <span class="tts-toggle-icon" :class="{ active: ttsEnabled }">&#x1F50A;</span>
+          </label>
+          <button
+            type="submit"
+            :disabled="!selectedCampaignId || imageGenerating > 0"
+            class="action-submit"
+            :class="{ 'action-thinking': imageGenerating > 0, 'action-queuing': _timedEventInProgress }"
+            x-text="submitButtonLabel()"
+          ></button>
         </form>
       </div>
     </div>
@@ -459,8 +742,17 @@
       </div>
 
       <div x-show="inspectorTab === 'map'" class="stack">
-        <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
+          <button type="button" @click="loadMapGraph()" :disabled="!selectedCampaignId">Graph JSON</button>
+        </div>
         <pre x-text="mapText"></pre>
+        <template x-if="mapGraphVisible">
+          <details open style="margin-top:0.5rem;">
+            <summary style="cursor:pointer;font-weight:bold;font-size:0.85rem;">Room Map Graph</summary>
+            <pre x-text="mapGraphJson" style="font-size:0.75rem;max-height:25rem;overflow:auto;background:var(--bg-secondary,#1a1a1a);padding:0.5rem;border-radius:4px;"></pre>
+          </details>
+        </template>
       </div>
 
       <div x-show="inspectorTab === 'player'" class="stack">
@@ -1536,8 +1828,83 @@
             <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
           </div>
           <div class="modal-body">
-            <button type="button" @click="loadMap()" :disabled="!selectedCampaignId" style="margin-bottom:0.5rem;">Refresh Map</button>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.5rem;">
+              <button type="button" @click="loadMap()" :disabled="!selectedCampaignId">Refresh Map</button>
+              <button type="button" @click="loadMapGraph()" :disabled="!selectedCampaignId">Graph JSON</button>
+            </div>
             <pre x-text="mapText"></pre>
+            <template x-if="mapGraphVisible">
+              <details open style="margin-top:0.5rem;">
+                <summary style="cursor:pointer;font-weight:bold;font-size:0.85rem;">Room Map Graph</summary>
+                <pre x-text="mapGraphJson" style="font-size:0.75rem;max-height:25rem;overflow:auto;background:var(--bg-secondary,#1a1a1a);padding:0.5rem;border-radius:4px;"></pre>
+              </details>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- ---- SMS Inbox Modal ---- -->
+      <template x-if="$store.app.modal === 'smsInbox'">
+        <div class="modal-panel modal-panel--md" x-init="loadSmsInbox()">
+          <div class="modal-header">
+            <h3>SMS</h3>
+            <button type="button" class="modal-close" @click="$store.app.closeModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <template x-if="smsInboxLoading">
+              <p class="muted">Loading threads...</p>
+            </template>
+            <template x-if="!smsInboxLoading && smsInboxThreads.length === 0">
+              <p class="muted">No SMS threads yet.</p>
+            </template>
+            <template x-if="!smsInboxLoading && smsInboxThreads.length > 0">
+              <div class="sms-inbox-layout">
+                <div class="sms-inbox-threads">
+                  <template x-for="t in smsInboxThreads" :key="t.thread || t">
+                    <div class="sms-thread-row" :class="{ active: smsInboxThread === (t.thread || t) }">
+                      <button type="button" class="sms-thread-btn"
+                        :class="{ active: smsInboxThread === (t.thread || t) }"
+                        @click="smsInboxThread = t.thread || t; cancelSmsEdit(); loadSmsInboxThread();">
+                        <span class="sms-thread-name" x-text="t.label || t.thread || t"></span>
+                        <span class="sms-thread-meta" x-show="t.count" x-text="t.count + ' msg' + (t.count === 1 ? '' : 's')"></span>
+                      </button>
+                      <button type="button" class="sms-thread-delete" title="Delete thread"
+                        @click.stop="deleteSmsThread(t.thread || t)">&#x1F5D1;</button>
+                    </div>
+                  </template>
+                </div>
+                <div class="sms-inbox-messages">
+                  <div class="sms-message-list">
+                    <template x-for="(msg, i) in smsInboxMessages" :key="i">
+                      <div class="sms-bubble" :class="{ 'sms-bubble--self': (msg.from || msg.sender || '') === (turnForm.actor_id || '').trim() }">
+                        <div class="sms-bubble-sender" x-text="msg.from || msg.sender || ''"></div>
+                        <template x-if="_smsEditingIndex !== i">
+                          <div class="sms-bubble-text" x-text="msg.message || msg.body || ''"></div>
+                        </template>
+                        <template x-if="_smsEditingIndex === i">
+                          <div class="sms-edit-inline">
+                            <textarea class="sms-edit-input" x-model="_smsEditingText" rows="2"></textarea>
+                            <div class="sms-edit-actions">
+                              <button type="button" @click="saveSmsEdit()">Save</button>
+                              <button type="button" @click="cancelSmsEdit()">Cancel</button>
+                            </div>
+                          </div>
+                        </template>
+                        <div class="sms-bubble-actions" x-show="_smsEditingIndex !== i">
+                          <button type="button" class="sms-msg-action" title="Edit" @click="startSmsEdit(i)">&#x270E;</button>
+                          <button type="button" class="sms-msg-action sms-msg-delete" title="Delete" @click="deleteSmsMessage(i)">&#x1F5D1;</button>
+                        </div>
+                      </div>
+                    </template>
+                    <p x-show="smsInboxMessages.length === 0" class="muted">No messages in this thread.</p>
+                  </div>
+                  <form class="sms-compose" @submit.prevent="sendSmsInboxMessage()">
+                    <input x-model="smsInboxCompose" placeholder="Type a message..." autocomplete="off" />
+                    <button type="submit" :disabled="!smsInboxCompose.trim()">Send</button>
+                  </form>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
       </template>
@@ -1988,8 +2355,8 @@
       <div class="drawer-header">
         <h2 class="sr-only">Settings</h2>
         <div class="settings-tabs" role="tablist" aria-label="Settings sections"
-             @keydown.left.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i-1+tabs.length)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
-             @keydown.right.prevent="(function(s){ var tabs=['llm','image','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i+1)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
+             @keydown.left.prevent="(function(s){ var tabs=['llm','image','tts','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i-1+tabs.length)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())"
+             @keydown.right.prevent="(function(s){ var tabs=['llm','image','tts','appearance']; var i=tabs.indexOf(s.settingsTab); s.settingsTab=tabs[(i+1)%tabs.length]; })($store.app); $nextTick(() => $el.querySelector('[aria-selected=true]')?.focus())">
           <button type="button" role="tab" id="settings-tab-llm" class="settings-tab"
             :class="{ active: $store.app.settingsTab === 'llm' }"
             :aria-selected="$store.app.settingsTab === 'llm'"
@@ -2002,6 +2369,12 @@
             :tabindex="$store.app.settingsTab === 'image' ? 0 : -1"
             aria-controls="settings-panel-image"
             @click="$store.app.settingsTab = 'image'">Image</button>
+          <button type="button" role="tab" id="settings-tab-tts" class="settings-tab"
+            :class="{ active: $store.app.settingsTab === 'tts' }"
+            :aria-selected="$store.app.settingsTab === 'tts'"
+            :tabindex="$store.app.settingsTab === 'tts' ? 0 : -1"
+            aria-controls="settings-panel-tts"
+            @click="$store.app.settingsTab = 'tts'">TTS</button>
           <button type="button" role="tab" id="settings-tab-appearance" class="settings-tab"
             :class="{ active: $store.app.settingsTab === 'appearance' }"
             :aria-selected="$store.app.settingsTab === 'appearance'"
@@ -2017,30 +2390,90 @@
         <template x-if="runtimeInfo.gateway_backend && runtimeInfo.gateway_backend !== 'tge'">
           <p class="settings-note" style="margin-top:0">Backend is <strong x-text="runtimeInfo.gateway_backend"></strong>. LLM settings only apply to the tge backend.</p>
         </template>
+        <template x-if="settingsLocked">
+          <p class="settings-note" style="margin-top:0">
+            Managed by DTM sync.
+            <span x-text="settingsLockMessage || 'Use Discord-side backend controls instead.'"></span>
+          </p>
+        </template>
+
+        <div class="settings-group">
+          <p class="settings-group-title">Browser-Local Ollama</p>
+          <p class="settings-note" style="margin-top:0">
+            Uses this browser tab to call your own local Ollama for your turns only. This does not change the campaign backend for other players.
+          </p>
+          <p class="settings-note" style="margin-top:0">
+            Your local Ollama must allow this web UI's browser origin via <code>OLLAMA_ORIGINS</code>, or browser requests to <code>/api/chat</code> will be blocked.
+          </p>
+          <div class="stack compact">
+            <label class="checkbox-inline">
+              <input type="checkbox" x-model="browserLocalOllama.enabled" />
+              <span>Use my local Ollama for my turns</span>
+            </label>
+
+            <label>
+              Local Base URL
+              <input x-model="browserLocalOllama.base_url" placeholder="http://127.0.0.1:11434" />
+            </label>
+
+            <label>
+              Local Model
+              <input x-model="browserLocalOllama.model" placeholder="llama3.1:8b" />
+            </label>
+
+            <label>
+              Keep-Alive
+              <input x-model="browserLocalOllama.keep_alive" placeholder="30m" />
+            </label>
+
+            <label>
+              Timeout (seconds)
+              <input type="number" x-model.number="browserLocalOllama.timeout_seconds" min="1" max="3600" />
+            </label>
+
+            <details>
+              <summary>Advanced Options</summary>
+              <label>
+                Options JSON
+                <textarea x-model="browserLocalOllama.ollama_options_json" rows="3" placeholder="{}"></textarea>
+              </label>
+            </details>
+          </div>
+          <div class="drawer-actions">
+            <button type="button" @click="testBrowserLocalOllama()">Test Local Ollama</button>
+            <button type="button" @click="saveBrowserLocalOllamaSettings()" class="btn-primary">Save Browser Settings</button>
+          </div>
+          <p class="settings-status" :class="browserLocalOllamaStatus.ok === false ? 'error' : 'status'" x-show="browserLocalOllamaStatus.message" x-text="browserLocalOllamaStatus.message"></p>
+        </div>
 
         <div class="settings-group">
           <p class="settings-group-title">Connection</p>
           <div class="stack compact">
             <label>
               Model
-              <select x-model="settingsForm.model" x-show="ollamaModels.length > 0">
+              <select x-model="settingsForm.model" x-show="ollamaModels.length > 0 && settingsForm.completion_mode === 'ollama'" :disabled="settingsSaving || settingsLocked">
                 <template x-for="m in ollamaModels" :key="m.name">
                   <option :value="m.name" x-text="m.name"></option>
                 </template>
               </select>
-              <input x-model="settingsForm.model" placeholder="model name" x-show="ollamaModels.length === 0" />
+              <input x-model="settingsForm.model" placeholder="model name" x-show="ollamaModels.length === 0 || settingsForm.completion_mode !== 'ollama'" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
               Base URL
-              <input x-model="settingsForm.base_url" placeholder="http://127.0.0.1:11434" @change="loadOllamaModels()" />
+              <input x-model="settingsForm.base_url" placeholder="http://127.0.0.1:11434" @change="loadOllamaModels()" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
               Completion Mode
-              <select x-model="settingsForm.completion_mode" @change="loadOllamaModels()">
+              <select x-model="settingsForm.completion_mode" @change="loadOllamaModels()" :disabled="settingsSaving || settingsLocked">
+                <option value="zai">Z.ai</option>
                 <option value="ollama">Ollama</option>
                 <option value="openai">OpenAI Compatible</option>
+                <option value="codex">Codex</option>
+                <option value="claude">Claude</option>
+                <option value="gemini">Gemini</option>
+                <option value="opencode">Opencode</option>
                 <option value="deterministic">Deterministic (no LLM)</option>
               </select>
             </label>
@@ -2052,17 +2485,17 @@
           <div class="stack compact">
             <label>
               Temperature: <strong x-text="Number(settingsForm.temperature).toFixed(2)"></strong>
-              <input type="range" min="0" max="2" step="0.05" x-model.number="settingsForm.temperature" />
+              <input type="range" min="0" max="2" step="0.05" x-model.number="settingsForm.temperature" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
               Max Tokens
-              <input type="number" x-model.number="settingsForm.max_tokens" min="64" max="65536" />
+              <input type="number" x-model.number="settingsForm.max_tokens" min="64" max="65536" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
               Timeout (seconds)
-              <input type="number" x-model.number="settingsForm.timeout_seconds" min="1" max="600" />
+              <input type="number" x-model.number="settingsForm.timeout_seconds" min="1" max="600" :disabled="settingsSaving || settingsLocked" />
             </label>
           </div>
         </div>
@@ -2072,25 +2505,25 @@
           <div class="stack compact">
             <label>
               Keep-Alive
-              <input x-model="settingsForm.keep_alive" placeholder="30m" />
+              <input x-model="settingsForm.keep_alive" placeholder="30m" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <details>
               <summary>Advanced Options</summary>
               <label>
                 Options JSON
-                <textarea x-model="settingsForm.ollama_options_json" rows="3" placeholder="{}"></textarea>
+                <textarea x-model="settingsForm.ollama_options_json" rows="3" placeholder="{}" :disabled="settingsSaving || settingsLocked"></textarea>
               </label>
             </details>
           </div>
         </div>
 
         <div class="drawer-actions">
-          <button type="button" @click="testConnection()" :disabled="settingsSaving">Test Connection</button>
-          <button type="button" @click="applySettings()" :disabled="settingsSaving" class="btn-primary">Apply Changes</button>
+          <button type="button" @click="testConnection()" :disabled="settingsSaving || settingsLocked">Test Connection</button>
+          <button type="button" @click="applySettings()" :disabled="settingsSaving || settingsLocked" class="btn-primary">Apply Changes</button>
         </div>
 
-        <p class="settings-note">Settings persist across restarts after clicking Apply.</p>
+        <p class="settings-note" x-show="!settingsLocked">Settings persist across restarts after clicking Apply.</p>
         <p class="settings-status" :class="settingsStatus.ok === false ? 'error' : 'status'" x-show="settingsStatus.message" x-text="settingsStatus.message"></p>
       </div>
 
@@ -2234,6 +2667,80 @@
         <p class="settings-status" :class="imageSettingsStatus.ok === false ? 'error' : 'status'" x-show="imageSettingsStatus.message" x-text="imageSettingsStatus.message"></p>
       </div>
 
+      <!-- TTS Settings Panel -->
+      <div id="settings-panel-tts" role="tabpanel" aria-labelledby="settings-tab-tts" class="stack" x-show="$store.app.settingsTab === 'tts'">
+        <div class="settings-group">
+          <p class="settings-group-title">Engine</p>
+          <div class="stack compact">
+            <label>
+              TTS Engine
+              <select :value="ttsEngine" @change="ttsEngine = $event.target.value; ttsApplySettings()">
+                <option value="kokoro" :selected="ttsEngine === 'kokoro'">Kokoro 82M (fast, 27 voices)</option>
+                <option value="chatterbox" :selected="ttsEngine === 'chatterbox'">Chatterbox Turbo (voice cloning, emotives)</option>
+              </select>
+            </label>
+            <small x-show="ttsEngine === 'chatterbox'" style="color: var(--ink-muted);">
+              ~539 MB model download. Supports voice cloning from reference audio and emotive tags like &lt;laughter&gt;, &lt;whisper&gt;.
+            </small>
+          </div>
+        </div>
+        <div class="settings-group">
+          <p class="settings-group-title">General</p>
+          <div class="stack compact">
+            <label>
+              <input type="checkbox" x-model="ttsEnabled" />
+              Auto-read narration on turn complete
+            </label>
+            <template x-if="ttsEngine === 'kokoro'">
+              <label>
+                Narrator Voice
+                <select :value="ttsNarratorVoice" @change="ttsNarratorVoice = $event.target.value; ttsApplySettings()">
+                  <option value="off" :selected="ttsNarratorVoice === 'off'">Disabled (characters only)</option>
+                  <template x-for="vid in Object.keys(window.KOKORO_VOICES || {})" :key="vid">
+                    <option :value="vid" :selected="ttsNarratorVoice === vid" x-text="window.KOKORO_VOICES[vid].name + ' (' + window.KOKORO_VOICES[vid].gender + ', ' + window.KOKORO_VOICES[vid].lang + ')'"></option>
+                  </template>
+                </select>
+              </label>
+            </template>
+            <template x-if="ttsEngine === 'chatterbox'">
+              <label>
+                Narrator
+                <select :value="ttsNarratorVoice" @change="ttsNarratorVoice = $event.target.value; ttsApplySettings()">
+                  <option value="off" :selected="ttsNarratorVoice === 'off'">Disabled (characters only)</option>
+                  <option value="chatterbox_default" :selected="ttsNarratorVoice === 'chatterbox_default'">Default Chatterbox voice</option>
+                </select>
+              </label>
+            </template>
+          </div>
+        </div>
+        <div class="settings-group">
+          <p class="settings-group-title">Chunking</p>
+          <div class="stack compact">
+            <label>
+              <input type="checkbox" x-model="ttsSplitOnPeriod" @change="ttsApplySettings()" />
+              Split on periods (adds pause after each sentence)
+            </label>
+          </div>
+        </div>
+        <div class="settings-group">
+          <p class="settings-group-title">Pause Durations (ms)</p>
+          <div class="stack compact">
+            <label>
+              After sentence (? !)
+              <input type="number" min="0" max="2000" step="50" x-model.number="ttsPauseSentence" @change="ttsApplySettings()" />
+            </label>
+            <label>
+              Voice switch (narrator / character)
+              <input type="number" min="0" max="2000" step="50" x-model.number="ttsPauseVoiceSwitch" @change="ttsApplySettings()" />
+            </label>
+            <label>
+              Between beats
+              <input type="number" min="0" max="2000" step="50" x-model.number="ttsPauseBeat" @change="ttsApplySettings()" />
+            </label>
+          </div>
+        </div>
+      </div>
+
       <!-- Appearance Settings Panel -->
       <div id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" class="stack" x-show="$store.app.settingsTab === 'appearance'">
         <div class="settings-group">
@@ -2253,6 +2760,7 @@
       </div>
     </aside>
   </div>
+  </template>
 
 </section>
 {% endblock %}

@@ -18,6 +18,20 @@ class TurnRequest(BaseModel):
     actor_id: str
     action: str
     session_id: str | None = None
+    mentioned_actor_ids: list[str] = Field(default_factory=list)
+    browser_local_ollama: dict[str, Any] | None = None
+
+
+class TurnCancelRequest(BaseModel):
+    actor_id: str | None = None
+
+
+class TurnEditRequest(BaseModel):
+    content: str
+
+
+class CalendarVisibilityUpdateRequest(BaseModel):
+    visibility: str
 
 
 class SessionCreateRequest(BaseModel):
@@ -59,6 +73,7 @@ class RosterRemoveRequest(BaseModel):
 
 
 class TurnResult(BaseModel):
+    turn_id: int | None = None
     actor_id: str | None = None
     session_id: str | None = None
     narration: str
@@ -106,6 +121,7 @@ class MemoryStoreRequest(BaseModel):
 
 class SmsListRequest(BaseModel):
     wildcard: str = "*"
+    viewer_actor_id: str | None = None
 
 
 class SmsReadRequest(BaseModel):
@@ -119,6 +135,21 @@ class SmsWriteRequest(BaseModel):
     sender: str
     recipient: str
     message: str
+
+
+class SmsDeleteThreadRequest(BaseModel):
+    thread: str
+
+
+class SmsDeleteMessageRequest(BaseModel):
+    thread: str
+    message_seq: int
+
+
+class SmsEditMessageRequest(BaseModel):
+    thread: str
+    message_seq: int
+    new_text: str
 
 
 class SmsMessage(BaseModel):

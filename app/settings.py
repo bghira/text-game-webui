@@ -125,6 +125,16 @@ def persist_settings(settings: Settings) -> None:
         pass
 
 
+def _default_tge_model() -> str:
+    explicit = str(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "")).strip()
+    if explicit:
+        return explicit
+    mode = str(os.getenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "ollama") or "").strip().lower()
+    if mode == "zai":
+        return "glm-5.1"
+    return "local-model"
+
+
 class Settings(BaseModel):
     theme: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_THEME", "light"))
     app_name: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_APP_NAME", "text-game-webui"))
@@ -149,7 +159,7 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_LLM_BASE_URL", "http://127.0.0.1:11434")
     )
     tge_llm_api_key: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_LLM_API_KEY", "sk-local"))
-    tge_llm_model: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "local-model"))
+    tge_llm_model: str = Field(default_factory=_default_tge_model)
     tge_llm_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_TIMEOUT_SECONDS", "90"))
     )
@@ -174,11 +184,23 @@ class Settings(BaseModel):
     tge_runtime_probe_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS", "8"))
     )
+    dtm_link_auth_enabled: bool = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_LINK_AUTH", "0") in {"1", "true", "True"}
+    )
+    dtm_link_secret: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_LINK_SECRET", "")
+    )
+    dtm_command_prefix: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_COMMAND_PREFIX", "+")
+    )
 
     # -- Image generation settings ------------------------------------------
     image_backend: str = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_IMAGE_BACKEND", "none")
-    )  # none | diffusers | comfyui
+    )  # none | diffusers | comfyui | dtm
+    dtm_image_api_url: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_IMAGE_API_URL", "https://127.0.0.1:5000")
+    )
     diffusers_host: str = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_HOST", "127.0.0.1")
     )

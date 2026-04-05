@@ -15,25 +15,593 @@
     return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
   }
 
-  /**
-   * Lightweight markdown→HTML: **bold**, *italic*, newlines→<br>.
-   * Input is escaped first to avoid XSS when used with x-html.
+  /* Global TTS — Kokoro 82M via WebGPU worker */
+  window._ttsBeats = [];  /* [{text, speaker}] */
+  window._ttsActiveBtnEl = null;
+  window._ttsAudio = null;
+  window._ttsWorker = null;
+  window._ttsKokoroReady = false;
+  window._ttsChatterboxReady = false;
+  /* _ttsReady is a per-engine getter/setter so switching engines doesn't lose readiness */
+  Object.defineProperty(window, '_ttsReady', {
+    get() { return window._ttsEngine === "chatterbox" ? window._ttsChatterboxReady : window._ttsKokoroReady; },
+    set(v) {
+      if (window._ttsEngine === "chatterbox") window._ttsChatterboxReady = v;
+      else window._ttsKokoroReady = v;
+    },
+  });
+  window._ttsDefaultVoice = "af_heart";
+  window._ttsQueue = []; /* pending {text, voice, btnEl} while model loads */
+
+  /* Kokoro voice catalog — id → {name, gender, lang} */
+  window.KOKORO_VOICES = {
+    af_heart:    { name: "Heart",    gender: "f", lang: "en-us" },
+    af_alloy:    { name: "Alloy",    gender: "f", lang: "en-us" },
+    af_aoede:    { name: "Aoede",    gender: "f", lang: "en-us" },
+    af_bella:    { name: "Bella",    gender: "f", lang: "en-us" },
+    af_jessica:  { name: "Jessica",  gender: "f", lang: "en-us" },
+    af_kore:     { name: "Kore",     gender: "f", lang: "en-us" },
+    af_nicole:   { name: "Nicole",   gender: "f", lang: "en-us" },
+    af_nova:     { name: "Nova",     gender: "f", lang: "en-us" },
+    af_river:    { name: "River",    gender: "f", lang: "en-us" },
+    af_sarah:    { name: "Sarah",    gender: "f", lang: "en-us" },
+    af_sky:      { name: "Sky",      gender: "f", lang: "en-us" },
+    am_adam:     { name: "Adam",     gender: "m", lang: "en-us" },
+    am_echo:     { name: "Echo",     gender: "m", lang: "en-us" },
+    am_eric:     { name: "Eric",     gender: "m", lang: "en-us" },
+    am_fenrir:   { name: "Fenrir",   gender: "m", lang: "en-us" },
+    am_liam:     { name: "Liam",     gender: "m", lang: "en-us" },
+    am_michael:  { name: "Michael",  gender: "m", lang: "en-us" },
+    am_onyx:     { name: "Onyx",     gender: "m", lang: "en-us" },
+    am_puck:     { name: "Puck",     gender: "m", lang: "en-us" },
+    bf_emma:     { name: "Emma",     gender: "f", lang: "en-gb" },
+    bf_isabella: { name: "Isabella", gender: "f", lang: "en-gb" },
+    bf_alice:    { name: "Alice",    gender: "f", lang: "en-gb" },
+    bf_lily:     { name: "Lily",     gender: "f", lang: "en-gb" },
+    bm_george:   { name: "George",   gender: "m", lang: "en-gb" },
+    bm_lewis:    { name: "Lewis",    gender: "m", lang: "en-gb" },
+    bm_daniel:   { name: "Daniel",   gender: "m", lang: "en-gb" },
+    bm_fable:    { name: "Fable",    gender: "m", lang: "en-gb" },
+  };
+
+  /* Resolve the voice ID for a speaker slug using the roster */
+  function _ttsVoiceForSpeaker(speakerSlug) {
+    if (!speakerSlug || speakerSlug === "narrator") return window._ttsDefaultVoice;
+    /* Check roster voice assignments (populated by Alpine) */
+    const map = window._ttsVoiceMap || {};
+    if (map[speakerSlug]) return map[speakerSlug];
+    return window._ttsDefaultVoice;
+  }
+
+  /* ---- TTS engine selection ---- */
+  window._ttsEngine = "kokoro"; /* "kokoro" or "chatterbox" */
+  window._ttsChatterboxWorker = null;
+
+  /* ---- Emotive tag processing ---- */
+  /* Known Chatterbox emotive tokens — stripped from display, kept for TTS */
+  const TTS_EMOTIVE_TAGS = new Set([
+    "giggle", "laughter", "guffaw", "sigh", "cry", "gasp", "groan",
+    "inhale", "exhale", "whisper", "mumble", "uh", "um",
+    "singing", "humming", "cough", "sneeze", "sniff", "clear_throat",
+    "shhh", "silence",
+  ]);
+
+  /** Strip <emotive> tags from text for display purposes. */
+  function _ttsStripEmotives(text) {
+    return text.replace(/<(\w+)>/g, function (m, tag) {
+      return TTS_EMOTIVE_TAGS.has(tag.toLowerCase()) ? "" : m;
+    }).replace(/ {2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  /** Resolve reference-audio URL for a speaker (Chatterbox voice cloning). */
+  function _ttsRefAudioForSpeaker(speakerSlug) {
+    const map = window._ttsVoiceRefMap || {};
+    if (speakerSlug && map[speakerSlug]) return map[speakerSlug];
+    return window._ttsDefaultRefAudio || null;
+  }
+  window._ttsVoiceRefMap = {};
+  window._ttsDefaultRefAudio = null;
+
+  /*
+   * Kokoro has a ~511-token context window (~300-400 words).
+   * We split text at sentence boundaries into chunks that stay
+   * under the limit, then generate and play them sequentially.
    */
-  function renderSimpleMarkdown(text) {
-    if (!text) return "";
-    // Escape HTML entities first
-    let s = text
+  const _TTS_CHUNK_WORD_LIMIT = 250; /* stay well under 511 tokens */
+
+  function _ttsChunkLongText(text) {
+    /* Split a single segment into word-limited chunks at sentence boundaries */
+    const sentences = text.replace(/\n+/g, " ").match(/[^.!?]+[.!?]+[\s]*/g);
+    if (!sentences) return [text.trim()].filter(Boolean);
+    const chunks = [];
+    let buf = "";
+    for (const s of sentences) {
+      if (buf && (buf + s).split(/\s+/).length > _TTS_CHUNK_WORD_LIMIT) {
+        chunks.push(buf.trim());
+        buf = s;
+      } else {
+        buf += s;
+      }
+    }
+    if (buf.trim()) chunks.push(buf.trim());
+    return chunks.length ? chunks : [text.trim()].filter(Boolean);
+  }
+
+  /**
+   * Split beat text into voiced segments: narration vs dialogue.
+   * Returns [{text, isDialogue}] in order.
+   * Quoted text ("..." or \u201c...\u201d) → dialogue.
+   * Everything else → narration.
+   */
+  function _ttsSplitDialogue(text) {
+    const segments = [];
+    /* Match straight or curly double quotes */
+    const re = /["\u201c]((?:[^"\u201d]|\\.)*)["\u201d]/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      /* Narration before this quote */
+      if (m.index > last) {
+        const narr = text.slice(last, m.index).trim();
+        if (narr) segments.push({ text: narr, isDialogue: false });
+      }
+      /* The quoted dialogue (without the quotes) */
+      const dialogue = m[1].trim();
+      if (dialogue) segments.push({ text: dialogue, isDialogue: true });
+      last = m.index + m[0].length;
+    }
+    /* Trailing narration */
+    if (last < text.length) {
+      const narr = text.slice(last).trim();
+      if (narr) segments.push({ text: narr, isDialogue: false });
+    }
+    return segments.length ? segments : [{ text: text.trim(), isDialogue: false }];
+  }
+
+  /**
+   * Split text into sentences. Each sentence keeps its trailing punctuation.
+   * Returns array of trimmed sentence strings.
+   */
+  /* Configurable TTS globals (overridden from Alpine settings) */
+  window._ttsSplitOnPeriod = false;
+  window._ttsPauseSentence = 350;
+  window._ttsPauseVoiceSwitch = 450;
+  window._ttsPauseBeat = 500;
+
+  function _ttsSplitSentences(text) {
+    /* Split on ? and ! always; optionally also on . if configured */
+    const puncPattern = window._ttsSplitOnPeriod ? /[^.!?]*[.!?]+[\s]*/g : /[^!?]*[!?]+[\s]*/g;
+    const parts = [];
+    let m, last = 0;
+    while ((m = puncPattern.exec(text)) !== null) {
+      parts.push(text.slice(last, m.index + m[0].length).trim());
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) {
+      const tail = text.slice(last).trim();
+      if (tail) parts.push(tail);
+    }
+    return parts.length ? parts : [text.trim()].filter(Boolean);
+  }
+
+  /**
+   * Build the full chunk queue for a turn's beats.
+   * - Narrator beats: everything in narrator voice.
+   * - Actor beats: split on quotes — dialogue in actor voice, narration in narrator voice.
+   * - Within each segment, split on sentence boundaries and insert silence pauses.
+   * - Long sentence groups still get chunked at the word limit.
+   * Queue items are either {text, voice} or {silence: ms}.
+   */
+  function _ttsBuildChunks(beats) {
+    const narratorVoice = window._ttsDefaultVoice; /* empty string = narrator disabled */
+    const narratorEnabled = !!narratorVoice;
+    const isChatterbox = window._ttsEngine === "chatterbox";
+    const items = [];
+
+    for (let bi = 0; bi < beats.length; bi++) {
+      const b = beats[bi];
+      const actorVoice = _ttsVoiceForSpeaker(b.speaker);
+      const isNarrator = !b.speaker || b.speaker === "narrator";
+      /* Engine-specific extras for Chatterbox */
+      const extra = isChatterbox ? {
+        referenceAudioUrl: _ttsRefAudioForSpeaker(b.speaker),
+        exaggeration: Number(b.vocalIntensity) || 0.5,
+      } : null;
+
+      if (isNarrator) {
+        /* Skip entire narrator beats if narrator voice is disabled */
+        if (!narratorEnabled) continue;
+        if (items.length && window._ttsPauseBeat > 0) items.push({ silence: window._ttsPauseBeat });
+        _ttsAddSentenceChunks(items, b.text, narratorVoice, extra);
+      } else {
+        if (items.length && window._ttsPauseBeat > 0) items.push({ silence: window._ttsPauseBeat });
+        const segments = _ttsSplitDialogue(b.text);
+        let lastVoice = null;
+        for (const seg of segments) {
+          /* Skip narration segments within actor beats if narrator disabled */
+          if (!seg.isDialogue && !narratorEnabled) continue;
+          const voice = seg.isDialogue ? actorVoice : narratorVoice;
+          /* Pause on voice switch within a beat */
+          if (lastVoice && lastVoice !== voice && window._ttsPauseVoiceSwitch > 0) {
+            items.push({ silence: window._ttsPauseVoiceSwitch });
+          }
+          _ttsAddSentenceChunks(items, seg.text, voice, extra);
+          lastVoice = voice;
+        }
+      }
+    }
+    return items;
+  }
+
+  /**
+   * Split text into sentences, emit one chunk per sentence
+   * with a pause between each (but not after the last).
+   */
+  function _ttsAddSentenceChunks(items, text, voice, extra) {
+    /* Strip markdown bold/italic asterisks — Kokoro reads them literally */
+    text = text.replace(/\*+/g, "");
+    /* Split on <silence> tags — insert a beat-length pause for each */
+    const silenceParts = text.split(/<silence>/gi);
+    for (let si = 0; si < silenceParts.length; si++) {
+      if (si > 0 && window._ttsPauseBeat > 0) {
+        items.push({ silence: window._ttsPauseBeat });
+      }
+      let part = silenceParts[si];
+      if (!part.trim()) continue;
+      /* For non-Chatterbox engines, strip emotive tags from TTS input too */
+      if (window._ttsEngine !== "chatterbox") {
+        part = _ttsStripEmotives(part);
+      }
+      if (!part.trim()) continue;
+      const sentences = _ttsSplitSentences(part);
+      for (let i = 0; i < sentences.length; i++) {
+        const chunk = { text: sentences[i], voice: voice };
+        if (extra) Object.assign(chunk, extra);
+        items.push(chunk);
+        if (i < sentences.length - 1 && window._ttsPauseSentence > 0) {
+          items.push({ silence: window._ttsPauseSentence });
+        }
+      }
+    }
+  }
+
+  /* Playback state for the chunk pipeline */
+  window._ttsChunks = [];     /* [{text, voice}] remaining to generate */
+  window._ttsAudioQueue = []; /* blob URLs ready to play, in order */
+  window._ttsCurrentAudio = null;
+  window._ttsGenerating = false; /* true while worker is processing a chunk */
+  window._ttsCancelled = false;
+
+  function _ttsAttachWorkerListeners(w, engineLabel, engineKey) {
+    w.addEventListener("message", function (e) {
+      const d = e.data;
+      if (d.status === "device") {
+        _ttsSetBanner("Loading " + engineLabel + " (" + d.device + ")\u2026");
+      } else if (d.status === "loading") {
+        _ttsSetBanner(d.message || ("Loading " + engineLabel + "\u2026"));
+      } else if (d.status === "ready") {
+        /* Set the correct per-engine flag directly (the callback may fire
+           after the user has switched to a different engine). */
+        if (engineKey === "chatterbox") window._ttsChatterboxReady = true;
+        else window._ttsKokoroReady = true;
+        if (d.voices) window._ttsVoices = d.voices;
+        console.log("[TTS] " + engineLabel + " ready, device=" + d.device);
+        _ttsHideLoading();
+        /* Flush pending request */
+        const q = window._ttsQueue.splice(0);
+        if (q.length) _ttsSpeakNow(q[0].text, q[0].btnEl, q[0].speaker);
+      } else if (d.status === "complete") {
+        if (window._ttsCancelled) return;
+        _ttsOnChunkGenerated(d.audio);
+      } else if (d.status === "error") {
+        console.error("[TTS] worker error:", d.error || d.message);
+        _ttsFinishAll();
+      }
+    });
+  }
+
+  function _ttsGetWorker() {
+    if (window._ttsEngine === "chatterbox") {
+      if (window._ttsChatterboxWorker) return window._ttsChatterboxWorker;
+      const w = new Worker("/static/js/chatterbox-worker.js", { type: "module" });
+      window._ttsChatterboxWorker = w;
+      _ttsAttachWorkerListeners(w, "Chatterbox TTS", "chatterbox");
+      return w;
+    }
+    /* Default: Kokoro */
+    if (window._ttsWorker) return window._ttsWorker;
+    const w = new Worker("/static/js/kokoro-worker.js", { type: "module" });
+    window._ttsWorker = w;
+    _ttsAttachWorkerListeners(w, "Kokoro TTS", "kokoro");
+    return w;
+  }
+
+  function _ttsOnChunkGenerated(blobUrl) {
+    if (!blobUrl || window._ttsCancelled) { _ttsFinishAll(); return; }
+    window._ttsAudioQueue.push({ audio: blobUrl });
+    window._ttsGenerating = false;
+    /* Pre-generate next chunk while this one plays */
+    _ttsPumpGenerator();
+    /* If nothing is currently playing, start playback */
+    if (!window._ttsCurrentAudio) {
+      _ttsPlayNext();
+    }
+  }
+
+  function _ttsPlayNext() {
+    if (window._ttsCancelled) { _ttsFinishAll(); return; }
+
+    /* Drain silence items and generated-audio items from the queue.
+       Also check if the next chunk-to-generate is a silence (no worker needed). */
+    _ttsDrainSilenceToQueue();
+
+    const item = window._ttsAudioQueue.shift();
+    if (!item) {
+      /* Nothing ready — if still generating, wait (worker callback will resume); otherwise done */
+      if (!window._ttsGenerating && !window._ttsChunks.length) {
+        _ttsFinishAll();
+      }
+      return;
+    }
+
+    if (item.silence) {
+      /* Play silence via setTimeout */
+      window._ttsCurrentAudio = "silence";
+      setTimeout(function () {
+        if (window._ttsCancelled) { _ttsFinishAll(); return; }
+        window._ttsCurrentAudio = null;
+        _ttsPlayNext();
+      }, item.silence);
+      return;
+    }
+
+    const audio = new Audio(item.audio);
+    window._ttsCurrentAudio = audio;
+    audio.onended = function () {
+      URL.revokeObjectURL(item.audio);
+      window._ttsCurrentAudio = null;
+      _ttsPlayNext();
+    };
+    audio.onerror = function () {
+      URL.revokeObjectURL(item.audio);
+      window._ttsCurrentAudio = null;
+      _ttsFinishAll();
+    };
+    audio.play().catch(function (err) {
+      console.error("[TTS] play error:", err);
+      window._ttsCurrentAudio = null;
+      _ttsFinishAll();
+    });
+  }
+
+  /**
+   * Move silence items from _ttsChunks to _ttsAudioQueue
+   * (they don't need the worker) and kick off the next text chunk.
+   */
+  function _ttsDrainSilenceToQueue() {
+    while (window._ttsChunks.length && window._ttsChunks[0].silence) {
+      window._ttsAudioQueue.push(window._ttsChunks.shift());
+    }
+    _ttsPumpGenerator();
+  }
+
+  /**
+   * If the worker is idle and the next chunk is a text item, send it.
+   * Silences get drained directly to the audio queue.
+   */
+  function _ttsPumpGenerator() {
+    if (window._ttsCancelled || window._ttsGenerating) return;
+    /* Drain any leading silences first */
+    while (window._ttsChunks.length && window._ttsChunks[0].silence) {
+      window._ttsAudioQueue.push(window._ttsChunks.shift());
+    }
+    const next = window._ttsChunks.shift();
+    if (!next) return;
+    window._ttsGenerating = true;
+    const remaining = window._ttsChunks.length;
+    if (remaining > 0) {
+      _ttsSetBanner("Generating speech\u2026 (" + (remaining + 1) + " left)");
+    }
+    const w = _ttsGetWorker();
+    const msg = { text: next.text, voice: next.voice };
+    if (next.referenceAudioUrl) msg.referenceAudioUrl = next.referenceAudioUrl;
+    if (next.exaggeration != null) msg.exaggeration = next.exaggeration;
+    w.postMessage(msg);
+  }
+
+  function _ttsFinishAll() {
+    _ttsHideLoading();
+    window._ttsChunks = [];
+    window._ttsAudioQueue.forEach(function (i) { if (i.audio) URL.revokeObjectURL(i.audio); });
+    window._ttsAudioQueue = [];
+    window._ttsGenerating = false;
+    window._ttsCancelled = false;
+  }
+
+  function _ttsSetBanner(msg) {
+    let banner = document.getElementById("tts-loading-banner");
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "tts-loading-banner";
+      document.body.appendChild(banner);
+    }
+    banner.textContent = msg;
+    banner.classList.add("visible");
+  }
+
+  function _ttsShowLoading(btnEl) {
+    if (btnEl) {
+      btnEl.dataset.origText = btnEl.innerHTML;
+      btnEl.innerHTML = "&#x23F3;";
+      btnEl.classList.add("tts-loading");
+      window._ttsActiveBtnEl = btnEl;
+    }
+    const label = window._ttsEngine === "chatterbox" ? "Chatterbox" : "Kokoro";
+    _ttsSetBanner(window._ttsReady ? "Generating speech\u2026" : ("Loading " + label + " TTS model\u2026"));
+  }
+
+  function _ttsHideLoading() {
+    const btnEl = window._ttsActiveBtnEl;
+    if (btnEl) {
+      if (btnEl.dataset.origText) btnEl.innerHTML = btnEl.dataset.origText;
+      btnEl.classList.remove("tts-loading");
+      window._ttsActiveBtnEl = null;
+    }
+    const banner = document.getElementById("tts-loading-banner");
+    if (banner) banner.classList.remove("visible");
+  }
+
+  function _ttsSpeakNow(text, btnEl, speaker) {
+    if (!text) return;
+    _ttsStopNow();
+    _ttsShowLoading(btnEl || null);
+
+    /* Build chunks with dialogue/narration voice splitting */
+    const beats = [{ text: text, speaker: speaker || "" }];
+    const chunks = _ttsBuildChunks(beats);
+    console.log("[TTS] speaking:", chunks.length, "chunk(s),", chunks.map(c => c.silence ? "silence:" + c.silence + "ms" : c.voice + ": " + c.text.substring(0, 30)));
+
+    window._ttsCancelled = false;
+    window._ttsChunks = chunks;
+
+    const w = _ttsGetWorker();
+    if (!window._ttsReady) {
+      window._ttsQueue = [{ text: text, btnEl: btnEl, speaker: speaker }];
+      return;
+    }
+
+    /* Kick off the first chunk */
+    _ttsPumpGenerator();
+  }
+
+  function _ttsStopNow() {
+    window._ttsCancelled = true;
+    window._ttsChunks = [];
+    window._ttsGenerating = false;
+    _ttsHideLoading();
+    if (window._ttsCurrentAudio) {
+      try { window._ttsCurrentAudio.pause(); } catch (_) {}
+      window._ttsCurrentAudio = null;
+    }
+    window._ttsAudioQueue.forEach(u => URL.revokeObjectURL(u));
+    window._ttsAudioQueue = [];
+  }
+
+  window._ttsSpeakBeat = function (idx, btnEl) {
+    const beat = window._ttsBeats[idx];
+    if (!beat) return;
+    _ttsSpeakNow(beat.text, btnEl, beat.speaker);
+  };
+
+  function escapeHtml(text) {
+    return String(text || "")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
-    // **bold**
-    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    // *italic* and _italic_
-    s = s.replace(/\*(.+?)\*/g, "<em>$1</em>");
-    s = s.replace(/(^|[\s>])_(.+?)_([\s<.,!?]|$)/gm, "$1<em>$2</em>$3");
-    // newlines
-    s = s.replace(/\n/g, "<br>");
-    return s;
+  }
+
+  function escapeAttribute(text) {
+    return escapeHtml(text).replace(/"/g, "&quot;");
+  }
+
+  function autolinkUrls(html) {
+    return html.replace(
+      /(^|[\s>(])((?:https?:\/\/|www\.)[^\s<]+)(?=$|[\s)<])/g,
+      (_match, prefix, rawUrl) => {
+        const href = rawUrl.startsWith("www.") ? `https://${rawUrl}` : rawUrl;
+        return `${prefix}<a href="${escapeAttribute(href)}" target="_blank" rel="noopener noreferrer">${rawUrl}</a>`;
+      }
+    );
+  }
+
+  function renderInlineDiscordMarkdown(text) {
+    if (!text) return "";
+    let html = escapeHtml(text);
+    const codeTokens = [];
+    html = html.replace(/`([^`\n]+)`/g, (_match, code) => {
+      const token = `@@CODE${codeTokens.length}@@`;
+      codeTokens.push(`<code class="discord-inline-code">${code}</code>`);
+      return token;
+    });
+    html = autolinkUrls(html);
+    html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/~~(.+?)~~/g, "<s>$1</s>");
+    html = html.replace(/\*(?!\s)([^*\n]+?)\*(?!\*)/g, "<em>$1</em>");
+    html = html.replace(/(^|[\s(])_([^_\n]+?)_(?=[\s).,!?:;]|$)/g, "$1<em>$2</em>");
+    html = html.replace(/@@CODE(\d+)@@/g, (_match, idx) => codeTokens[Number(idx)] || "");
+    return html;
+  }
+
+  function renderTextBlock(text) {
+    const block = String(text || "").replace(/\r\n?/g, "\n").trim();
+    if (!block) return "";
+    const lines = block.split("\n");
+
+    if (lines.every((line) => /^\s*>\s?/.test(line))) {
+      const inner = lines.map((line) => line.replace(/^\s*>\s?/, "")).join("\n");
+      return `<blockquote>${renderInlineDiscordMarkdown(inner).replace(/\n/g, "<br>")}</blockquote>`;
+    }
+    if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
+      return `<ul>${lines.map((line) => `<li>${renderInlineDiscordMarkdown(line.replace(/^\s*[-*]\s+/, ""))}</li>`).join("")}</ul>`;
+    }
+    if (lines.every((line) => /^\s*\d+\.\s+/.test(line))) {
+      return `<ol>${lines.map((line) => `<li>${renderInlineDiscordMarkdown(line.replace(/^\s*\d+\.\s+/, ""))}</li>`).join("")}</ol>`;
+    }
+    if (/^\s*#{1,6}\s+/.test(lines[0])) {
+      const level = Math.min(6, (lines[0].match(/^\s*(#{1,6})\s+/) || ["", "#"])[1].length);
+      const headingText = lines[0].replace(/^\s*#{1,6}\s+/, "");
+      const rest = lines.slice(1).join("\n").trim();
+      const heading = `<div class="discord-heading discord-heading-${level}">${renderInlineDiscordMarkdown(headingText)}</div>`;
+      return rest
+        ? `${heading}<p>${renderInlineDiscordMarkdown(rest).replace(/\n/g, "<br>")}</p>`
+        : heading;
+    }
+    return `<p>${renderInlineDiscordMarkdown(block).replace(/\n/g, "<br>")}</p>`;
+  }
+
+  function renderSimpleMarkdown(text) {
+    if (!text) return "";
+    const source = String(text || "").replace(/\r\n?/g, "\n");
+    const parts = [];
+    let cursor = 0;
+    const fenceRe = /```([^\n`]*)\n?([\s\S]*?)```/g;
+    let match;
+    while ((match = fenceRe.exec(source)) !== null) {
+      if (match.index > cursor) {
+        parts.push({ type: "text", text: source.slice(cursor, match.index) });
+      }
+      parts.push({
+        type: "code",
+        lang: String(match[1] || "").trim(),
+        text: String(match[2] || "").replace(/\n$/, ""),
+      });
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < source.length) {
+      parts.push({ type: "text", text: source.slice(cursor) });
+    }
+    if (!parts.length) {
+      parts.push({ type: "text", text: source });
+    }
+    const rendered = parts.map((part) => {
+      if (part.type === "code") {
+        const label = part.lang
+          ? `<span class="discord-code-label">${escapeHtml(part.lang)}</span>`
+          : "";
+        return (
+          `<div class="discord-code-block">`
+          + `<div class="discord-code-toolbar">${label}<button type="button" class="code-copy-btn">Copy</button></div>`
+          + `<pre><code>${escapeHtml(part.text)}</code></pre>`
+          + `</div>`
+        );
+      }
+      return String(part.text || "")
+        .split(/\n{2,}/)
+        .map((chunk) => renderTextBlock(chunk))
+        .filter(Boolean)
+        .join("");
+    }).join("");
+    return `<div class="discord-md">${rendered}</div>`;
   }
 
   /**
@@ -81,19 +649,32 @@
     const parts = [];
     for (const beat of sceneOutput.beats) {
       if (!beat || typeof beat !== "object") continue;
-      const text = String(beat.text || "").trim();
-      if (!text) continue;
+      const rawText = String(beat.text || "").trim();
+      if (!rawText) continue;
+      /* Strip emotive tags for display; keep raw text for TTS */
+      const displayText = _ttsStripEmotives(rawText);
       const speaker = formatSceneSpeakerName(beat.speaker);
-      const escapedText = renderSimpleMarkdown(text);
-      parts.push(`<span class="speaker-label">${renderSimpleMarkdown(speaker)}</span>${escapedText}`);
+      const escapedText = renderSimpleMarkdown(displayText);
+      const reasoning = String(beat.reasoning || "").trim();
+      let reasoningBtn = "";
+      let reasoningBlock = "";
+      if (reasoning) {
+        reasoningBtn = ` <button class="beat-reasoning-btn" title="${escapeAttribute(reasoning)}" onclick="this.closest('.beat-wrap').querySelector('.beat-reasoning-popover').classList.toggle('open')">&#x2139;&#xFE0F;</button>`;
+        reasoningBlock = `<div class="beat-reasoning-popover">${escapeHtml(reasoning)}</div>`;
+      }
+      const beatIdx = window._ttsBeats.length;
+      const speakerSlug = String(beat.speaker || "").trim();
+      window._ttsBeats.push({ text: rawText, speaker: speakerSlug, vocalIntensity: beat.vocal_intensity });
+      const ttsBtn = ` <button class="beat-tts-btn" title="Read aloud" onclick="window._ttsSpeakBeat(${beatIdx}, this)">&#x1F50A;</button>`;
+      parts.push(`<div class="beat-wrap"><span class="speaker-label">${escapeHtml(speaker)}${reasoningBtn}${ttsBtn}</span>${reasoningBlock}${escapedText}</div>`);
     }
-    if (parts.length) return parts.join("<br><br>");
+    if (parts.length) return parts.join("");
     return renderSimpleMarkdown(fallbackText || "");
   }
 
   function normalizeTurnNarration(payload) {
     if (payload.narration && payload.narration.trim().length > 0) {
-      return renderDiscordTimestamps(stripTrailingInventory(payload.narration));
+      return _ttsStripEmotives(renderDiscordTimestamps(stripTrailingInventory(payload.narration)));
     }
     if (Object.keys(payload.state_update || {}).length > 0 || Object.keys(payload.player_state_update || {}).length > 0) {
       return "[No narration returned. State updates were applied.]";
@@ -118,12 +699,49 @@
       .replace(/^-+|-+$/g, "");
   }
 
+  function browserLocalOllamaOriginHint(baseUrl) {
+    const origin = window.location && window.location.origin ? window.location.origin : "<webui-origin>";
+    const target = String(baseUrl || "").trim() || "http://127.0.0.1:11434";
+    return `Local Ollama at ${target} must allow this browser origin (${origin}). Set OLLAMA_ORIGINS to include it, then restart Ollama.`;
+  }
+
+  function formatBrowserLocalOllamaError(error, baseUrl) {
+    const raw = String(error || "").trim();
+    const lower = raw.toLowerCase();
+    if (
+      raw === "TypeError: Failed to fetch"
+      || lower.includes("failed to fetch")
+      || lower.includes("cors")
+      || lower.includes("access-control-allow-origin")
+      || lower.includes("http 403")
+    ) {
+      return `${raw || "Browser request failed."} ${browserLocalOllamaOriginHint(baseUrl)}`;
+    }
+    return raw || "Unknown browser-local Ollama error.";
+  }
+
+  function isFetchTransportError(error) {
+    const raw = String(error || "").trim();
+    const lower = raw.toLowerCase();
+    if (!raw) return false;
+    return (
+      raw === "TypeError: Failed to fetch"
+      || lower.includes("failed to fetch")
+      || lower.includes("networkerror")
+      || lower.includes("network error")
+      || lower.includes("load failed")
+      || lower.includes("network request failed")
+    );
+  }
+
   /* ---- Alpine Global Store ---- */
   document.addEventListener("alpine:init", () => {
     Alpine.store("app", {
       debugMode: localStorage.getItem("debugMode") === "true",
       settingsOpen: false,
+      pinsOpen: false,
       settingsTab: "llm",
+      sidebarOpen: false,
       modal: null,
       theme: document.documentElement.getAttribute("data-theme") || localStorage.getItem("theme") || "light",
       themes: [],
@@ -182,15 +800,24 @@
       statusMessage: "Ready.",
       errorMessage: "",
       turnCounter: 0,
+      _queuedTurnSerial: 0,
       socket: null,
+      _campaignViewCache: {},
+      _activeProgressCampaignId: "",
+      _activeProgressSessionId: "",
+      _activeProgressLabel: "",
       socketReconnectTimer: null,
       turnStream: [],
       sessionsList: [],
       submitting: false,
       _submittingTurn: false,
+      _activeTurnAbortController: null,
+      _cancelTurnRequested: false,
+      _activeSubmitMeta: null,
       _streamingNarration: "",
       _phaseTyper: null,
       imageGenerating: 0,
+      _realtimeRefreshTimer: null,
 
       /* Unseen activity tracking */
       sessionLastSeen: {},
@@ -208,8 +835,19 @@
         keep_alive: "30m",
         ollama_options_json: "{}",
       },
+      settingsLocked: false,
+      settingsLockMessage: "",
       settingsSaving: false,
       settingsStatus: { ok: null, message: "" },
+      browserLocalOllama: {
+        enabled: false,
+        base_url: "http://127.0.0.1:11434",
+        model: "",
+        keep_alive: "30m",
+        timeout_seconds: 600,
+        ollama_options_json: "{}",
+      },
+      browserLocalOllamaStatus: { ok: null, message: "" },
 
       /* Image settings panel state */
       imageSettingsForm: {
@@ -285,6 +923,27 @@
         action: "",
         session_id: "",
       },
+      rosterCharacters: [],
+      mentionState: {
+        open: false,
+        query: "",
+        start: -1,
+        end: -1,
+        selectedIndex: 0,
+      },
+      _turnQueues: {},
+      _turnQueueDraining: false,
+      dtmLink: {
+        enabled: false,
+        linked: false,
+        actor_id: "",
+        display_name: "",
+        link_code: "",
+        command: "",
+        error: "",
+      },
+      _dtmLinkPollId: null,
+      _initializedAfterLink: false,
       memory: {
         search: "",
         category: "",
@@ -330,7 +989,12 @@
       },
 
       mapText: "",
+      mapGraphJson: "",
+      mapGraphVisible: false,
       timersText: "",
+      _activeTimerCount: 0,
+      _activeTimerLabel: "",
+      _timedEventInProgress: false,
       calendarText: "",
       rosterText: "",
       playerStateText: "",
@@ -340,7 +1004,22 @@
       sessionsText: "",
       memoryText: "",
       smsText: "",
+      smsInboxThreads: [],
+      smsInboxThread: "",
+      smsInboxMessages: [],
+      smsInboxLoading: false,
+      smsInboxCompose: "",
       debugText: "",
+
+      /* TTS */
+      ttsEnabled: false,
+      _ttsSpeaking: false,
+      ttsEngine: "kokoro",
+      ttsNarratorVoice: "af_heart",
+      ttsSplitOnPeriod: false,
+      ttsPauseSentence: 350,
+      ttsPauseVoiceSwitch: 450,
+      ttsPauseBeat: 500,
       diagnosticsBundleStatus: "",
       campaignExportStatus: "",
       campaignExport: {
@@ -427,6 +1106,11 @@
       chaptersPanelOpen: true,
       rewindTargetTurn: "",
       rewindStatus: "",
+      collapsedTurnIds: {},
+      editingTurnKey: "",
+      editingTurnDraft: "",
+      turnMutationBusy: false,
+      pinnedTurnsByCampaign: {},
 
       /* Player attributes */
       playerAttributes: null,
@@ -437,9 +1121,25 @@
 
       /* Turn history */
       recentTurns: [],
+      _submittedPlayerTurnTimes: {},
       _turnStreamOffset: 0,
       _turnStreamHasMore: false,
       _turnStreamLoadingOlder: false,
+      _turnJumpInProgress: false,
+      _scrollAnchorEntryId: 0,
+      turnSearch: {
+        open: false,
+        query: "",
+        loading: false,
+        status: "",
+        results: [],
+        has_more: false,
+        highlightTurnId: 0,
+      },
+      composerHistoryByScope: {},
+      composerHistoryIndex: -1,
+      composerHistoryDraft: "",
+      composerHistorySeededScopes: {},
 
       /* Campaign persona */
       campaignPersona: "",
@@ -468,12 +1168,40 @@
 
       /* Game time (extracted from turn state_update) */
       gameTime: {},
+      calendarEvents: [],
+      calendarPanelOpen: true,
+      calendarVisibilityUpdating: {},
       campaignSummary: "",
 
+      _mobileViewportBound: false,
+
       async init() {
+        const ready = await this.refreshDtmLinkStatus();
+        if (!ready) return;
+        if (this._initializedAfterLink) return;
+        this._initializedAfterLink = true;
+        try {
+          this.ttsEnabled = localStorage.getItem("ttsEnabled") === "true";
+          const lsEng = localStorage.getItem("ttsEngine");
+          if (lsEng === "kokoro" || lsEng === "chatterbox") this.ttsEngine = lsEng;
+          const lsNV = localStorage.getItem("ttsNarratorVoice");
+          if (lsNV !== null) this.ttsNarratorVoice = lsNV;
+          if (localStorage.getItem("ttsSplitOnPeriod") !== null) this.ttsSplitOnPeriod = localStorage.getItem("ttsSplitOnPeriod") === "true";
+          const lsPS = localStorage.getItem("ttsPauseSentence");
+          if (lsPS !== null && !isNaN(parseInt(lsPS, 10))) this.ttsPauseSentence = parseInt(lsPS, 10);
+          const lsVS = localStorage.getItem("ttsPauseVoiceSwitch");
+          if (lsVS !== null && !isNaN(parseInt(lsVS, 10))) this.ttsPauseVoiceSwitch = parseInt(lsVS, 10);
+          const lsPB = localStorage.getItem("ttsPauseBeat");
+          if (lsPB !== null && !isNaN(parseInt(lsPB, 10))) this.ttsPauseBeat = parseInt(lsPB, 10);
+        } catch (_) {}
+        this.ttsApplySettings();
+        this.$watch("ttsEnabled", (v) => { try { localStorage.setItem("ttsEnabled", v ? "true" : "false"); } catch (_) {} });
+        this.loadPinnedTurns();
+        this.loadComposerHistory();
         await this.loadRuntime();
         await this.refreshCampaigns();
         await this.loadSettingsForm();
+        this.loadBrowserLocalOllamaSettings();
         await this.loadImageSettingsForm();
         await this.loadOllamaModels();
         /* watch debug toggle to guard inspector tab */
@@ -528,6 +1256,102 @@
         if (!this.statusMessage.startsWith("Runtime backend:")) {
           this.statusMessage = "Initialized.";
         }
+        this._bindMobileViewportTracking();
+      },
+
+      _updateMobileViewportInset() {
+        const root = document.documentElement;
+        if (!root) return;
+        const vv = window.visualViewport;
+        if (!vv) {
+          root.style.setProperty("--visual-viewport-bottom-gap", "0px");
+          return;
+        }
+        const gap = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)));
+        root.style.setProperty("--visual-viewport-bottom-gap", `${gap}px`);
+      },
+
+      _bindMobileViewportTracking() {
+        if (this._mobileViewportBound) return;
+        this._mobileViewportBound = true;
+        this._updateMobileViewportInset();
+        const handler = () => this._updateMobileViewportInset();
+        window.addEventListener("resize", handler, { passive: true });
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener("resize", handler, { passive: true });
+          window.visualViewport.addEventListener("scroll", handler, { passive: true });
+        }
+      },
+
+      ensureComposerVisible() {
+        this.$nextTick(() => {
+          requestAnimationFrame(() => {
+            const wrapper = document.querySelector(".action-bar-wrapper");
+            if (wrapper && typeof wrapper.scrollIntoView === "function") {
+              wrapper.scrollIntoView({ block: "end", inline: "nearest" });
+            }
+            const stream = document.getElementById("turn-stream");
+            if (stream) stream.scrollTop = stream.scrollHeight;
+          });
+        });
+      },
+
+      async refreshDtmLinkStatus() {
+        try {
+          const body = await this.api("/api/dtm-link/status");
+          this.dtmLink.enabled = !!body.enabled;
+          this.dtmLink.linked = !!body.linked;
+          this.dtmLink.actor_id = body.actor_id || "";
+          this.dtmLink.display_name = body.display_name || "";
+          this.dtmLink.link_code = body.link_code || "";
+          this.dtmLink.command = body.command || "";
+          this.dtmLink.error = "";
+          if (this.dtmLink.enabled && !this.dtmLink.linked) {
+            this.startDtmLinkPolling();
+            return false;
+          }
+          this.stopDtmLinkPolling();
+          if (this.dtmLink.linked && this.dtmLink.actor_id) {
+            this.applyLinkedActor(this.dtmLink.actor_id);
+          }
+          return true;
+        } catch (error) {
+          this.dtmLink.error = String(error);
+          return !this.dtmLink.enabled;
+        }
+      },
+
+      startDtmLinkPolling() {
+        if (this._dtmLinkPollId) return;
+        this._dtmLinkPollId = setInterval(async () => {
+          const ready = await this.refreshDtmLinkStatus();
+          if (ready) {
+            this.stopDtmLinkPolling();
+            await this.init();
+          }
+        }, 3000);
+      },
+
+      stopDtmLinkPolling() {
+        if (!this._dtmLinkPollId) return;
+        clearInterval(this._dtmLinkPollId);
+        this._dtmLinkPollId = null;
+      },
+
+      applyLinkedActor(actorId) {
+        const actor = (actorId || "").trim();
+        if (!actor) return;
+        this.campaignForm.actor_id = actor;
+        this.turnForm.actor_id = actor;
+        this.mediaActions.actor_id = actor;
+        this.newCampaignWizard.actor_id = actor;
+      },
+
+      effectiveLinkedActorId() {
+        if (!this.dtmLink || !this.dtmLink.enabled || !this.dtmLink.linked) {
+          return "";
+        }
+        return String(this.dtmLink.actor_id || "").trim();
       },
 
       /* ---- Turn stream hydration from history ---- */
@@ -535,18 +1359,27 @@
         const entries = [];
         let counter = 0;
         let lastGameTime = null;
+        const selectedSession = this.currentSessionRecord();
         for (const turn of turns) {
-          if (sessionFilter && turn.session_id && turn.session_id !== sessionFilter) continue;
+          if (!this.turnBelongsInSelectedSession(turn, selectedSession, sessionFilter)) continue;
           if (turn.kind === "narrator" || turn.kind === "player") {
             counter++;
             const meta = turn.meta || {};
+            const rememberedSubmitAt = turn.kind === "player"
+              ? this._submittedPlayerTurnTimes[String(turn.id || "").trim()] || ""
+              : "";
             const entry = {
               id: counter,
               type: turn.kind === "player" ? "player" : "narrator",
-              at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
-              text: renderDiscordTimestamps(stripTrailingInventory(turn.content || "[No content]")),
-              meta: {},
+              at: rememberedSubmitAt || (turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : ""),
+              text: _ttsStripEmotives(renderDiscordTimestamps(stripTrailingInventory(turn.content || "[No content]"))),
+              meta: {
+                actor_id: turn.actor_id || "",
+                actor_name: turn.actor_name || "",
+              },
               _backendTurnId: turn.id || null,
+              _createdAt: turn.created_at || "",
+              _sessionId: turn.session_id || "",
             };
             if (meta.game_time) {
               entry.meta._game_time = meta.game_time;
@@ -561,15 +1394,84 @@
         return { entries, counter, lastGameTime };
       },
 
-      populateTurnStreamFromHistory(scrollToBottom) {
-        if (!this.recentTurns || this.recentTurns.length === 0) return;
-        const sessionId = this.selectedSessionId;
-        let result = this._buildTurnEntries(this.recentTurns, sessionId);
-        /* If session filter produced zero entries but we have turns, show
-           all turns rather than a blank stream. */
-        if (result.entries.length === 0 && sessionId) {
-          result = this._buildTurnEntries(this.recentTurns, null);
+      turnVisibilityForRow(turn) {
+        const meta = turn && turn.meta && typeof turn.meta === "object" ? turn.meta : {};
+        if (meta.visibility && typeof meta.visibility === "object") {
+          return meta.visibility;
         }
+        if (meta.turn_visibility && typeof meta.turn_visibility === "object") {
+          return meta.turn_visibility;
+        }
+        if (turn && turn.turn_visibility && typeof turn.turn_visibility === "object") {
+          return turn.turn_visibility;
+        }
+        return {};
+      },
+
+      turnBelongsInSelectedSession(turn, selectedSession, sessionFilter) {
+        if (!sessionFilter) {
+          return true;
+        }
+        const turnSessionId = String(turn && turn.session_id || "").trim();
+        if (turnSessionId && turnSessionId === sessionFilter) {
+          return true;
+        }
+        if (!selectedSession || !turn || typeof turn !== "object") {
+          return false;
+        }
+        const selectedSurface = String(selectedSession.surface || "").trim().toLowerCase();
+        const visibility = this.turnVisibilityForRow(turn);
+        const scope = String(visibility.scope || "").trim().toLowerCase();
+        const actorId = (this.turnForm.actor_id || "").trim();
+        const visibleActorIds = Array.isArray(visibility.visible_actor_ids)
+          ? visibility.visible_actor_ids.map((value) => String(value || "").trim()).filter(Boolean)
+          : [];
+        const actorCanSeeTurn = !!(
+          actorId && (
+            String(turn.actor_id || "").trim() === actorId
+            || visibleActorIds.includes(actorId)
+            || scope === "public"
+          )
+        );
+        if (selectedSurface === "web_shared") {
+          return actorCanSeeTurn && (scope === "public" || scope === "local");
+        }
+        const metadata = selectedSession.metadata && typeof selectedSession.metadata === "object"
+          ? selectedSession.metadata
+          : {};
+        const ownerActorId = String(metadata.owner_actor_id || "").trim();
+        if (
+          actorCanSeeTurn
+          && (
+            selectedSurface === "discord"
+            || (selectedSurface === "web_private" && ownerActorId && ownerActorId === actorId)
+            || (selectedSurface === "web_direct" && actorId)
+          )
+        ) {
+          return scope === "public" || scope === "local" || visibleActorIds.includes(actorId);
+        }
+        return false;
+      },
+
+      populateTurnStreamFromHistory(scrollToBottom) {
+        if (!this.recentTurns || this.recentTurns.length === 0) {
+          this.turnStream = [];
+          this._rebuildQueuedTurnStreamEntries();
+          if (
+            this._activeProgressLabel
+            && String(this.selectedCampaignId || "").trim() === String(this._activeProgressCampaignId || "").trim()
+          ) {
+            this.upsertRemoteProgress(this._activeProgressLabel, {
+              phase: "inflight",
+              actor_id: String(this.turnForm.actor_id || "").trim(),
+              session_id: this._activeProgressSessionId || "",
+            });
+          }
+          if (scrollToBottom !== false) this._scrollStream();
+          return;
+        }
+        const sessionId = this.selectedSessionId;
+        const result = this._buildTurnEntries(this.recentTurns, sessionId);
         this.turnCounter = result.counter;
         this.turnStream = result.entries;
         /* Apply turn-derived game time only when we don't already have
@@ -579,7 +1481,135 @@
             this.gameTime = result.lastGameTime;
           }
         }
+        this._rebuildQueuedTurnStreamEntries();
+        if (
+          this._activeProgressLabel
+          && String(this.selectedCampaignId || "").trim() === String(this._activeProgressCampaignId || "").trim()
+        ) {
+          this.upsertRemoteProgress(this._activeProgressLabel, {
+            phase: "inflight",
+            actor_id: String(this.turnForm.actor_id || "").trim(),
+            session_id: this._activeProgressSessionId || "",
+          });
+        }
         if (scrollToBottom !== false) this._scrollStream();
+      },
+
+      _recentTurnsContainTurnId(turnId) {
+        const wanted = Number(turnId) || 0;
+        if (wanted <= 0 || !Array.isArray(this.recentTurns)) {
+          return false;
+        }
+        return this.recentTurns.some((turn) => Number(turn && turn.id) === wanted);
+      },
+
+      _latestRecentTurnId() {
+        if (!Array.isArray(this.recentTurns) || this.recentTurns.length === 0) {
+          return 0;
+        }
+        return this.recentTurns.reduce((maxId, turn) => {
+          const turnId = Number(turn && turn.id) || 0;
+          return turnId > maxId ? turnId : maxId;
+        }, 0);
+      },
+
+      _matchingRecentPlayerTurnId(payload, baselineTurnId) {
+        const baseline = Number(baselineTurnId) || 0;
+        const actorId = String(payload && payload.actor_id || "").trim();
+        const action = String(payload && payload.action || "").trim();
+        const sessionId = String(payload && payload.session_id || "").trim();
+        if (!Array.isArray(this.recentTurns) || !actorId || !action) {
+          return 0;
+        }
+        for (const turn of this.recentTurns) {
+          const turnId = Number(turn && turn.id) || 0;
+          if (turnId <= baseline) continue;
+          if (String(turn && turn.kind || "").trim() !== "player") continue;
+          if (String(turn && turn.actor_id || "").trim() !== actorId) continue;
+          if (sessionId && String(turn && turn.session_id || "").trim() !== sessionId) continue;
+          if (String(turn && turn.content || "").trim() !== action) continue;
+          return turnId;
+        }
+        return 0;
+      },
+
+      _matchingRecentNarratorTurnId(payload, afterTurnId) {
+        const afterId = Number(afterTurnId) || 0;
+        const actorId = String(payload && payload.actor_id || "").trim();
+        const sessionId = String(payload && payload.session_id || "").trim();
+        if (!Array.isArray(this.recentTurns)) {
+          return 0;
+        }
+        for (const turn of this.recentTurns) {
+          const turnId = Number(turn && turn.id) || 0;
+          if (turnId <= afterId) continue;
+          if (String(turn && turn.kind || "").trim() !== "narrator") continue;
+          if (actorId && String(turn && turn.actor_id || "").trim() !== actorId) continue;
+          if (sessionId && String(turn && turn.session_id || "").trim() !== sessionId) continue;
+          return turnId;
+        }
+        return 0;
+      },
+
+      async _recoverTurnAfterTransportFailure(campaignId, payload, baselineTurnId) {
+        const targetCampaignId = String(campaignId || "").trim();
+        const targetSessionId = String(payload && payload.session_id || "").trim();
+        const attemptDelaysMs = [800, 1400, 2200, 3200, 4500];
+        for (const delayMs of attemptDelaysMs) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          try {
+            if (String(this.selectedCampaignId || "").trim() === targetCampaignId) {
+              await this.loadRecentTurns(30, { force: true });
+              const playerTurnId = this._matchingRecentPlayerTurnId(payload, baselineTurnId);
+              const narratorTurnId = playerTurnId
+                ? this._matchingRecentNarratorTurnId(payload, playerTurnId)
+                : 0;
+              if (playerTurnId > 0 && narratorTurnId > 0) {
+                await Promise.all([
+                  this.loadSessions({ skipConnect: false }),
+                  this.loadTimers(),
+                  this.loadCalendar(),
+                  this.loadStoryState(),
+                  this.loadChapterList(),
+                ]);
+                this.populateTurnStreamFromHistory();
+                this.statusMessage = "Recovered turn after connection issue.";
+                this.errorMessage = "";
+                return true;
+              }
+            } else {
+              await this._refreshBackgroundCampaignView(targetCampaignId, targetSessionId);
+            }
+          } catch (_error) {
+          }
+        }
+        return false;
+      },
+
+      _rememberSubmittedPlayerTurnTime(turnId, atLabel) {
+        const wanted = Number(turnId) || 0;
+        const label = String(atLabel || "").trim();
+        if (wanted <= 0 || !label) return;
+        this._submittedPlayerTurnTimes = {
+          ...(this._submittedPlayerTurnTimes || {}),
+          [String(wanted)]: label,
+        };
+      },
+
+      _scheduleRecentTurnRecovery(turnId) {
+        const wanted = Number(turnId) || 0;
+        if (wanted <= 0 || !this.selectedCampaignId) {
+          return;
+        }
+        setTimeout(async () => {
+          try {
+            await this.loadRecentTurns(30);
+            if (this._recentTurnsContainTurnId(wanted)) {
+              this.populateTurnStreamFromHistory();
+            }
+          } catch (_error) {
+          }
+        }, 1000);
       },
 
       /* ---- Turn stream filtering ---- */
@@ -590,6 +1620,618 @@
         return this.turnStream.filter(
           (entry) => entry.type === "narrator" || entry.type === "player" || entry.type === "notice" || entry.type === "image_prompt" || entry.type === "dice"
         );
+      },
+
+      turnIsQueued(entry) {
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        return meta.queued_local === true;
+      },
+
+      turnIsOtherPlayer(entry) {
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        const actorId = String(meta.actor_id || "").trim();
+        const currentActorId = String(this.turnForm.actor_id || "").trim();
+        return !!(actorId && currentActorId && actorId !== currentActorId);
+      },
+
+      _nextQueuedTurnId() {
+        this._queuedTurnSerial += 1;
+        return `queued:${Date.now()}:${this._queuedTurnSerial}`;
+      },
+
+      entryTurnKey(entry) {
+        if (!entry || typeof entry !== "object") return "";
+        const backend = Number(entry._backendTurnId) || 0;
+        if (backend > 0) return `turn:${backend}`;
+        const meta = entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        const queuedId = String(meta.queue_entry_id || "").trim();
+        if (queuedId) return queuedId;
+        return `entry:${entry.id || ""}`;
+      },
+
+      _pinsStorageKey() {
+        const linkedActorId = this.effectiveLinkedActorId();
+        return linkedActorId
+          ? `text-game-webui:pins:${linkedActorId}`
+          : "text-game-webui:pins";
+      },
+
+      _composerHistoryStorageKey() {
+        const linkedActorId = this.effectiveLinkedActorId();
+        return linkedActorId
+          ? `text-game-webui:composer-history:${linkedActorId}`
+          : "text-game-webui:composer-history";
+      },
+
+      loadPinnedTurns() {
+        try {
+          const raw = localStorage.getItem(this._pinsStorageKey());
+          const parsed = raw ? JSON.parse(raw) : {};
+          this.pinnedTurnsByCampaign = parsed && typeof parsed === "object" ? parsed : {};
+        } catch (_error) {
+          this.pinnedTurnsByCampaign = {};
+        }
+      },
+
+      persistPinnedTurns() {
+        try {
+          localStorage.setItem(this._pinsStorageKey(), JSON.stringify(this.pinnedTurnsByCampaign || {}));
+        } catch (_error) {}
+      },
+
+      loadComposerHistory() {
+        try {
+          const raw = localStorage.getItem(this._composerHistoryStorageKey());
+          const parsed = raw ? JSON.parse(raw) : {};
+          this.composerHistoryByScope = parsed && typeof parsed === "object" ? parsed : {};
+        } catch (_error) {
+          this.composerHistoryByScope = {};
+        }
+      },
+
+      persistComposerHistory() {
+        try {
+          localStorage.setItem(this._composerHistoryStorageKey(), JSON.stringify(this.composerHistoryByScope || {}));
+        } catch (_error) {}
+      },
+
+      currentComposerHistoryScopeKey() {
+        const campaignId = String(this.selectedCampaignId || "").trim();
+        const actorId = String(this.turnForm.actor_id || "").trim();
+        if (!campaignId || !actorId) return "";
+        return `${campaignId}::${actorId}`;
+      },
+
+      composerHistoryForCurrentScope() {
+        const scopeKey = this.currentComposerHistoryScopeKey();
+        if (!scopeKey) return [];
+        const rows = this.composerHistoryByScope[scopeKey];
+        return Array.isArray(rows) ? rows : [];
+      },
+
+      resetComposerHistoryNavigation() {
+        this.composerHistoryIndex = -1;
+        this.composerHistoryDraft = "";
+      },
+
+      _mergeComposerHistoryEntries(entries) {
+        const scopeKey = this.currentComposerHistoryScopeKey();
+        if (!scopeKey || !Array.isArray(entries) || !entries.length) return;
+        const cleaned = entries
+          .map((value) => String(value || "").trim())
+          .filter(Boolean);
+        if (!cleaned.length) return;
+        const merged = [];
+        const seen = new Set();
+        for (const value of [...cleaned, ...this.composerHistoryForCurrentScope()]) {
+          const key = value.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(value);
+          if (merged.length >= 200) break;
+        }
+        this.composerHistoryByScope = {
+          ...this.composerHistoryByScope,
+          [scopeKey]: merged,
+        };
+        this.persistComposerHistory();
+      },
+
+      recordComposerHistoryEntry(text) {
+        const value = String(text || "").trim();
+        if (!value) return;
+        this._mergeComposerHistoryEntries([value]);
+        this.resetComposerHistoryNavigation();
+      },
+
+      _composerCursorAtFirstLine(input) {
+        if (!input) return false;
+        if (typeof input.selectionStart !== "number" || typeof input.selectionEnd !== "number") return false;
+        if (input.selectionStart !== input.selectionEnd) return false;
+        return !String(input.value || "").slice(0, input.selectionStart).includes("\n");
+      },
+
+      _composerCursorAtLastLine(input) {
+        if (!input) return false;
+        if (typeof input.selectionStart !== "number" || typeof input.selectionEnd !== "number") return false;
+        if (input.selectionStart !== input.selectionEnd) return false;
+        return !String(input.value || "").slice(input.selectionEnd).includes("\n");
+      },
+
+      _applyComposerHistoryValue(input, value) {
+        this.turnForm.action = String(value || "");
+        this.closeMentionAutocomplete();
+        this.$nextTick(() => {
+          const target = input || document.getElementById("action-input");
+          if (!target) return;
+          target.focus();
+          const caret = this.turnForm.action.length;
+          target.setSelectionRange(caret, caret);
+          target.style.height = "auto";
+          target.style.height = `${target.scrollHeight}px`;
+        });
+      },
+
+      navigateComposerHistory(direction, input) {
+        const history = this.composerHistoryForCurrentScope();
+        if (!history.length) return false;
+        const delta = Number(direction) || 0;
+        if (delta === 0) return false;
+        if (delta < 0) {
+          if (this.composerHistoryIndex === -1) {
+            this.composerHistoryDraft = String(this.turnForm.action || "");
+            this.composerHistoryIndex = 0;
+          } else if (this.composerHistoryIndex < history.length - 1) {
+            this.composerHistoryIndex += 1;
+          } else {
+            return false;
+          }
+          this._applyComposerHistoryValue(input, history[this.composerHistoryIndex] || "");
+          return true;
+        }
+        if (this.composerHistoryIndex === -1) {
+          return false;
+        }
+        if (this.composerHistoryIndex === 0) {
+          this.composerHistoryIndex = -1;
+          this._applyComposerHistoryValue(input, this.composerHistoryDraft);
+          this.composerHistoryDraft = "";
+          return true;
+        }
+        this.composerHistoryIndex -= 1;
+        this._applyComposerHistoryValue(input, history[this.composerHistoryIndex] || "");
+        return true;
+      },
+
+      async ensureComposerHistorySeeded() {
+        const scopeKey = this.currentComposerHistoryScopeKey();
+        if (!scopeKey || this.composerHistorySeededScopes[scopeKey]) return;
+        this.composerHistorySeededScopes = {
+          ...this.composerHistorySeededScopes,
+          [scopeKey]: true,
+        };
+        const actorId = String(this.turnForm.actor_id || "").trim();
+        const collected = [];
+        const seen = new Set();
+        const collectFromTurns = (turns) => {
+          if (!Array.isArray(turns)) return;
+          for (let i = turns.length - 1; i >= 0; i -= 1) {
+            const turn = turns[i];
+            if (!turn || String(turn.kind || "").trim() !== "player") continue;
+            if (String(turn.actor_id || "").trim() !== actorId) continue;
+            const text = String(turn.content || "").trim();
+            if (!text) continue;
+            const key = text.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            collected.push(text);
+            if (collected.length >= 40) break;
+          }
+        };
+        collectFromTurns(this.recentTurns);
+        if (collected.length < 20 && this.selectedCampaignId) {
+          let offset = Array.isArray(this.recentTurns) ? this.recentTurns.length : 0;
+          for (let round = 0; round < 8 && collected.length < 40; round += 1) {
+            try {
+              const params = new URLSearchParams();
+              params.set("limit", "100");
+              params.set("offset", String(offset));
+              const data = await this.api(
+                `/api/campaigns/${this.selectedCampaignId}/recent-turns?${params.toString()}`,
+              );
+              const turns = Array.isArray(data.turns) ? data.turns : [];
+              if (!turns.length) break;
+              collectFromTurns(turns);
+              offset += turns.length;
+              if (!data.has_more) break;
+            } catch (_error) {
+              break;
+            }
+          }
+        }
+        this._mergeComposerHistoryEntries(collected);
+      },
+
+      pinnedTurnsForSelectedCampaign() {
+        const campaignId = String(this.selectedCampaignId || "").trim();
+        if (!campaignId) return [];
+        const rows = Array.isArray(this.pinnedTurnsByCampaign[campaignId])
+          ? this.pinnedTurnsByCampaign[campaignId]
+          : [];
+        return rows.slice().sort((a, b) => {
+          const aId = Number(a && a.turn_id) || 0;
+          const bId = Number(b && b.turn_id) || 0;
+          return bId - aId;
+        });
+      },
+
+      _pinRecordForEntry(entry) {
+        const turnId = Number(entry && entry._backendTurnId) || 0;
+        if (turnId <= 0) return null;
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        const text = String(entry && entry.text || "").trim();
+        return {
+          turn_id: turnId,
+          type: String(entry && entry.type || "").trim(),
+          actor_id: String(meta.actor_id || "").trim(),
+          actor_name: this.turnEntryActorLabel(entry),
+          session_id: String(entry && entry._sessionId || entry && meta.session_id || "").trim(),
+          created_at: String(entry && entry._createdAt || "").trim(),
+          preview: text.slice(0, 280),
+          text,
+        };
+      },
+
+      turnIsPinned(entry) {
+        const turnId = Number(entry && entry._backendTurnId) || 0;
+        if (turnId <= 0) return false;
+        return this.pinnedTurnsForSelectedCampaign().some((row) => Number(row && row.turn_id) === turnId);
+      },
+
+      toggleTurnPinned(entry) {
+        const campaignId = String(this.selectedCampaignId || "").trim();
+        const record = this._pinRecordForEntry(entry);
+        if (!campaignId || !record) return;
+        const rows = Array.isArray(this.pinnedTurnsByCampaign[campaignId])
+          ? this.pinnedTurnsByCampaign[campaignId].slice()
+          : [];
+        const existingIndex = rows.findIndex((row) => Number(row && row.turn_id) === Number(record.turn_id));
+        if (existingIndex >= 0) {
+          rows.splice(existingIndex, 1);
+          this.statusMessage = `Unpinned turn ${record.turn_id}.`;
+        } else {
+          rows.unshift(record);
+          this.statusMessage = `Pinned turn ${record.turn_id}.`;
+        }
+        this.pinnedTurnsByCampaign = {
+          ...this.pinnedTurnsByCampaign,
+          [campaignId]: rows,
+        };
+        this.persistPinnedTurns();
+      },
+
+      removePinnedTurn(turnId, campaignId) {
+        const campaignKey = String(campaignId || this.selectedCampaignId || "").trim();
+        const wanted = Number(turnId) || 0;
+        if (!campaignKey || wanted <= 0) return;
+        const rows = Array.isArray(this.pinnedTurnsByCampaign[campaignKey])
+          ? this.pinnedTurnsByCampaign[campaignKey].filter((row) => Number(row && row.turn_id) !== wanted)
+          : [];
+        this.pinnedTurnsByCampaign = {
+          ...this.pinnedTurnsByCampaign,
+          [campaignKey]: rows,
+        };
+        this.persistPinnedTurns();
+      },
+
+      async jumpToPinnedTurn(pin) {
+        if (!pin || Number(pin.turn_id || 0) <= 0) return;
+        await this.jumpToSearchTurn({ id: Number(pin.turn_id || 0) });
+        this.$store.app.pinsOpen = false;
+      },
+
+      turnIsCollapsed(entry) {
+        const key = this.entryTurnKey(entry);
+        return !!(key && this.collapsedTurnIds[key]);
+      },
+
+      toggleTurnCollapsed(entry) {
+        const key = this.entryTurnKey(entry);
+        if (!key) return;
+        this.collapsedTurnIds = {
+          ...this.collapsedTurnIds,
+          [key]: !this.collapsedTurnIds[key],
+        };
+      },
+
+      turnIsEditing(entry) {
+        return this.editingTurnKey && this.editingTurnKey === this.entryTurnKey(entry);
+      },
+
+      startTurnEdit(entry) {
+        if (!entry || (!entry._backendTurnId && !this.turnIsQueued(entry))) return;
+        this.editingTurnKey = this.entryTurnKey(entry);
+        this.editingTurnDraft = String(entry.text || "");
+      },
+
+      cancelTurnEdit() {
+        this.editingTurnKey = "";
+        this.editingTurnDraft = "";
+      },
+
+      async copyToClipboard(text, successMessage) {
+        const value = String(text || "");
+        if (!value) return;
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(value);
+        } else {
+          const area = document.createElement("textarea");
+          area.value = value;
+          area.setAttribute("readonly", "readonly");
+          area.style.position = "absolute";
+          area.style.left = "-9999px";
+          document.body.appendChild(area);
+          area.select();
+          document.execCommand("copy");
+          document.body.removeChild(area);
+        }
+        this.statusMessage = successMessage || "Copied.";
+      },
+
+      async copyTurnText(entry) {
+        try {
+          await this.copyToClipboard(entry && entry.text ? entry.text : "", "Turn text copied.");
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      /* ---- TTS ---- */
+
+      _ttsExtractText(entry) {
+        const scene = entry && entry.meta && entry.meta.scene_output;
+        if (scene && Array.isArray(scene.beats) && scene.beats.length) {
+          return scene.beats
+            .map(b => String(b && b.text || "").trim())
+            .filter(Boolean)
+            .join("\n\n");
+        }
+        return String(entry && entry.text || "").trim();
+      },
+
+      ttsSpeak(text) {
+        if (!text) return;
+        this.ttsStop();
+        this._ttsSpeaking = true;
+        _ttsSpeakNow(text);
+      },
+
+      ttsStop() {
+        _ttsStopNow();
+        this._ttsSpeaking = false;
+      },
+
+      ttsApplySettings() {
+        try {
+          localStorage.setItem("ttsEngine", this.ttsEngine);
+          localStorage.setItem("ttsNarratorVoice", this.ttsNarratorVoice);
+          localStorage.setItem("ttsSplitOnPeriod", this.ttsSplitOnPeriod ? "true" : "false");
+          localStorage.setItem("ttsPauseSentence", String(this.ttsPauseSentence));
+          localStorage.setItem("ttsPauseVoiceSwitch", String(this.ttsPauseVoiceSwitch));
+          localStorage.setItem("ttsPauseBeat", String(this.ttsPauseBeat));
+        } catch (_) {}
+        /* Push to global TTS config */
+        window._ttsEngine = this.ttsEngine || "kokoro";
+        window._ttsDefaultVoice = this.ttsNarratorVoice === "off" ? "" : (this.ttsNarratorVoice || "af_heart");
+        window._ttsSplitOnPeriod = this.ttsSplitOnPeriod;
+        window._ttsPauseSentence = this.ttsPauseSentence;
+        window._ttsPauseVoiceSwitch = this.ttsPauseVoiceSwitch;
+        window._ttsPauseBeat = this.ttsPauseBeat;
+        /* Per-engine readiness is tracked via _ttsKokoroReady / _ttsChatterboxReady,
+           so switching engines naturally reflects the correct readiness state. */
+      },
+
+      ttsSpeakEntry(entry) {
+        const text = this._ttsExtractText(entry);
+        if (text) this.ttsSpeak(text);
+      },
+
+      ttsAutoSpeak(data) {
+        if (!this.ttsEnabled) return;
+        const scene = data && data.scene_output;
+        if (scene && Array.isArray(scene.beats) && scene.beats.length) {
+          const beats = scene.beats
+            .map(b => ({ text: String(b && b.text || "").trim(), speaker: String(b && b.speaker || "").trim(), vocalIntensity: b && b.vocal_intensity }))
+            .filter(b => b.text);
+          if (!beats.length) return;
+
+          _ttsStopNow();
+          this._ttsSpeaking = true;
+          const chunks = _ttsBuildChunks(beats);
+
+          window._ttsCancelled = false;
+          window._ttsChunks = chunks;
+          _ttsShowLoading(null);
+
+          const w = _ttsGetWorker();
+          if (!window._ttsReady) {
+            const fullText = beats.map(b => b.text).join("\n\n");
+            window._ttsQueue = [{ text: fullText, btnEl: null, speaker: beats[0].speaker }];
+            return;
+          }
+          console.log("[TTS] auto-speak:", chunks.length, "chunk(s) across", beats.length, "beats",
+            chunks.map(c => c.silence ? "silence:" + c.silence + "ms" : c.voice + ": " + c.text.substring(0, 30)));
+          _ttsPumpGenerator();
+        }
+      },
+
+      /**
+       * Build the global voice map from roster data.
+       * Auto-assigns voices to characters that don't have one yet.
+       */
+      _buildTtsVoiceMap() {
+        const chars = Array.isArray(this.rosterCharacters) ? this.rosterCharacters : [];
+        const map = {};
+        const assigned = new Set();
+        const needAssignment = [];
+
+        /* First pass: collect existing assignments */
+        for (const ch of chars) {
+          const slug = String(ch.slug || "").trim();
+          const va = String(ch.voice_assignment || "").trim();
+          if (slug && va && window.KOKORO_VOICES[va]) {
+            map[slug] = va;
+            assigned.add(va);
+          } else if (slug) {
+            needAssignment.push(ch);
+          }
+        }
+
+        /* Second pass: auto-assign from unassigned pool, gender-matched */
+        if (needAssignment.length) {
+          const allVoiceIds = Object.keys(window.KOKORO_VOICES);
+          const available = { f: [], m: [], nb: [] };
+          for (const vid of allVoiceIds) {
+            if (!assigned.has(vid)) {
+              available[window.KOKORO_VOICES[vid].gender].push(vid);
+            }
+          }
+          /* Shuffle pools for variety */
+          for (const k of Object.keys(available)) {
+            for (let i = available[k].length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [available[k][i], available[k][j]] = [available[k][j], available[k][i]];
+            }
+          }
+
+          const toSave = [];
+          for (const ch of needAssignment) {
+            const slug = String(ch.slug || "").trim();
+            const gender = String(ch.gender || "").toLowerCase();
+            let pool;
+            if (gender.includes("female") || gender === "f") pool = available.f;
+            else if (gender.includes("male") || gender === "m") pool = available.m;
+            else pool = available.nb.length ? available.nb : (available.f.length >= available.m.length ? available.f : available.m);
+
+            /* Fall back to any available if preferred pool empty */
+            if (!pool.length) pool = available.f.length ? available.f : available.m;
+            if (!pool.length) {
+              /* All voices assigned — reuse default */
+              map[slug] = window._ttsDefaultVoice;
+              continue;
+            }
+
+            const voice = pool.shift();
+            assigned.add(voice);
+            map[slug] = voice;
+            toSave.push({ slug: slug, voice: voice, player: ch.player === true });
+          }
+
+          /* Persist auto-assignments to server */
+          if (toSave.length && this.selectedCampaignId) {
+            for (const item of toSave) {
+              this.api(`/api/campaigns/${this.selectedCampaignId}/roster/upsert`, {
+                method: "POST",
+                body: JSON.stringify({
+                  slug: item.slug,
+                  player: item.player,
+                  fields: { voice_assignment: item.voice },
+                }),
+              }).catch(e => console.warn("[TTS] failed to save voice for", item.slug, e));
+            }
+          }
+        }
+
+        window._ttsVoiceMap = map;
+        console.log("[TTS] voice map:", map);
+      },
+
+      async handleBrowserLlmRequest(payload) {
+        const data = payload && typeof payload === "object" ? payload : {};
+        const requestId = String(data.request_id || "").trim();
+        if (!requestId || !this.socket) return;
+        const reply = {
+          type: "browser_llm_result",
+          payload: {
+            request_id: requestId,
+            ok: false,
+            text: "",
+            detail: "",
+          },
+        };
+        const baseUrl = String(data.base_url || this.browserLocalOllama.base_url || "").trim().replace(/\/$/, "");
+        try {
+          if (this.browserLocalOllama.enabled !== true) {
+            throw new Error("Browser-local Ollama is not enabled in this browser.");
+          }
+          const model = String(data.model || this.browserLocalOllama.model || "").trim();
+          if (!baseUrl || !model) {
+            throw new Error("Browser-local Ollama request is missing base URL or model.");
+          }
+          const options = data.ollama_options && typeof data.ollama_options === "object"
+            ? { ...data.ollama_options }
+            : {};
+          if (options.temperature == null && typeof data.temperature === "number") {
+            options.temperature = data.temperature;
+          }
+          if (options.num_predict == null && typeof data.max_tokens === "number") {
+            options.num_predict = data.max_tokens;
+          }
+          const body = {
+            model,
+            stream: false,
+            keep_alive: String(data.keep_alive || this.browserLocalOllama.keep_alive || "30m"),
+            messages: [
+              { role: "system", content: String(data.system_prompt || "") },
+              { role: "user", content: String(data.prompt || "") },
+            ],
+            options,
+          };
+          const response = await fetch(`${baseUrl}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const raw = await response.text();
+          let parsed = {};
+          if (raw) {
+            try {
+              parsed = JSON.parse(raw);
+            } catch (_err) {
+              parsed = { detail: raw };
+            }
+          }
+          if (!response.ok) {
+            throw new Error(parsed.error || parsed.detail || `HTTP ${response.status}`);
+          }
+          const text = String(parsed?.message?.content || parsed?.response || "").trim();
+          if (!text) {
+            throw new Error("Local Ollama returned empty content.");
+          }
+          reply.payload.ok = true;
+          reply.payload.text = text;
+          reply.payload.detail = "";
+        } catch (error) {
+          reply.payload.ok = false;
+          reply.payload.detail = formatBrowserLocalOllamaError(error, baseUrl);
+        }
+        try {
+          this.socket.send(JSON.stringify(reply));
+        } catch (_err) {
+        }
+      },
+
+      handleTurnStreamClick(event) {
+        const button = event && event.target && typeof event.target.closest === "function"
+          ? event.target.closest(".code-copy-btn")
+          : null;
+        if (!button) return;
+        const code = button.closest(".discord-code-block")?.querySelector("code");
+        if (!code) return;
+        event.preventDefault();
+        this.copyToClipboard(code.textContent || "", "Code block copied.").catch((error) => {
+          this.errorMessage = String(error);
+        });
       },
 
       /* Deduplicated actor list for the current campaign */
@@ -616,8 +2258,16 @@
       /* ---- Settings methods ---- */
       async loadSettingsForm() {
         try {
-          const data = await this.api("/api/settings");
-          this.settingsForm.completion_mode = data.completion_mode || "ollama";
+          const query = this.selectedCampaignId
+            ? `?campaign_id=${encodeURIComponent(this.selectedCampaignId)}`
+            : "";
+          const data = await this.api(`/api/settings${query}`);
+          this.settingsLocked = data.locked === true;
+          this.settingsLockMessage = data.lock_message || "";
+          this.settingsForm.completion_mode =
+            data.completion_mode ||
+            this.runtimeInfo.tge_completion_mode ||
+            "ollama";
           this.settingsForm.base_url = data.base_url || "";
           this.settingsForm.model = data.model || "";
           this.settingsForm.temperature = typeof data.temperature === "number" ? data.temperature : 0.8;
@@ -627,6 +2277,114 @@
           this.settingsForm.ollama_options_json = JSON.stringify(data.ollama_options || {}, null, 2);
         } catch (_err) {
           /* settings endpoint may not exist for inmemory backend */
+        }
+      },
+
+      loadBrowserLocalOllamaSettings() {
+        try {
+          const raw = localStorage.getItem("browserLocalOllamaSettings");
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== "object") return;
+          this.browserLocalOllama.enabled = parsed.enabled === true;
+          this.browserLocalOllama.base_url = String(parsed.base_url || "").trim() || "http://127.0.0.1:11434";
+          this.browserLocalOllama.model = String(parsed.model || "").trim();
+          this.browserLocalOllama.keep_alive = String(parsed.keep_alive || "").trim() || "30m";
+          this.browserLocalOllama.timeout_seconds = Number(parsed.timeout_seconds) > 0 ? Number(parsed.timeout_seconds) : 600;
+          this.browserLocalOllama.ollama_options_json = typeof parsed.ollama_options_json === "string"
+            ? parsed.ollama_options_json
+            : "{}";
+        } catch (_err) {
+        }
+      },
+
+      saveBrowserLocalOllamaSettings() {
+        const payload = {
+          enabled: this.browserLocalOllama.enabled === true,
+          base_url: String(this.browserLocalOllama.base_url || "").trim() || "http://127.0.0.1:11434",
+          model: String(this.browserLocalOllama.model || "").trim(),
+          keep_alive: String(this.browserLocalOllama.keep_alive || "").trim() || "30m",
+          timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 600,
+          ollama_options_json: String(this.browserLocalOllama.ollama_options_json || "{}"),
+        };
+        localStorage.setItem("browserLocalOllamaSettings", JSON.stringify(payload));
+        this.browserLocalOllamaStatus = { ok: true, message: "Saved browser-local Ollama settings." };
+      },
+
+      browserLocalOllamaPayload() {
+        if (this.browserLocalOllama.enabled !== true) return null;
+        let ollamaOptions = {};
+        const optionsRaw = String(this.browserLocalOllama.ollama_options_json || "").trim();
+        if (optionsRaw && optionsRaw !== "{}") {
+          try {
+            ollamaOptions = JSON.parse(optionsRaw);
+          } catch (_err) {
+            throw new Error("Invalid browser-local Ollama options JSON.");
+          }
+        }
+        const model = String(this.browserLocalOllama.model || "").trim();
+        if (!model) {
+          throw new Error("Browser-local Ollama requires a model name.");
+        }
+        return {
+          enabled: true,
+          base_url: String(this.browserLocalOllama.base_url || "").trim() || "http://127.0.0.1:11434",
+          model,
+          keep_alive: String(this.browserLocalOllama.keep_alive || "").trim() || "30m",
+          timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 600,
+          ollama_options: ollamaOptions && typeof ollamaOptions === "object" ? ollamaOptions : {},
+        };
+      },
+
+      async testBrowserLocalOllama() {
+        this.browserLocalOllamaStatus = { ok: null, message: "Testing browser-local Ollama..." };
+        try {
+          const cfg = this.browserLocalOllamaPayload();
+          const baseUrl = String(cfg.base_url || "").replace(/\/$/, "");
+          const response = await fetch(`${baseUrl}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: cfg.model,
+              stream: false,
+              keep_alive: cfg.keep_alive || "30m",
+              messages: [
+                { role: "user", content: "Reply with exactly: OK" },
+              ],
+              options: {
+                num_predict: 8,
+                temperature: 0,
+              },
+            }),
+          });
+          if (!response.ok) {
+            const raw = await response.text();
+            let parsed = {};
+            if (raw) {
+              try {
+                parsed = JSON.parse(raw);
+              } catch (_err) {
+                parsed = { detail: raw };
+              }
+            }
+            throw new Error(parsed.error || parsed.detail || `HTTP ${response.status}`);
+          }
+          const data = await response.json();
+          const content = String(data?.message?.content || data?.response || "").trim();
+          this.browserLocalOllamaStatus = {
+            ok: content.length > 0,
+            message: content.length > 0
+              ? "Browser-local Ollama is reachable via /api/chat and the model responded."
+              : "Browser-local Ollama reached /api/chat but returned empty content.",
+          };
+        } catch (err) {
+          this.browserLocalOllamaStatus = {
+            ok: false,
+            message: "Browser-local Ollama test failed: " + formatBrowserLocalOllamaError(
+              err,
+              String(this.browserLocalOllama.base_url || "").trim()
+            ),
+          };
         }
       },
 
@@ -658,6 +2416,10 @@
       },
 
       async testConnection() {
+        if (this.settingsLocked) {
+          this.settingsStatus = { ok: false, message: this.settingsLockMessage || "LLM settings are managed by DTM." };
+          return;
+        }
         this.settingsSaving = true;
         this.settingsStatus = { ok: null, message: "Testing connection..." };
         try {
@@ -675,6 +2437,10 @@
       },
 
       async applySettings() {
+        if (this.settingsLocked) {
+          this.settingsStatus = { ok: false, message: this.settingsLockMessage || "LLM settings are managed by DTM." };
+          return;
+        }
         this.settingsSaving = true;
         this.settingsStatus = { ok: null, message: "Applying..." };
         try {
@@ -945,11 +2711,389 @@
           text,
           meta: meta && typeof meta === "object" ? meta : {},
         });
-        this.$nextTick(() => {
-          const stream = document.getElementById("turn-stream");
-          if (stream) {
-            stream.scrollTop = stream.scrollHeight;
+        this._scrollStream();
+      },
+
+      _cloneStateValue(value) {
+        if (value == null) return value;
+        if (typeof structuredClone === "function") {
+          try {
+            return structuredClone(value);
+          } catch (_err) {
           }
+        }
+        return JSON.parse(JSON.stringify(value));
+      },
+
+      _captureCampaignViewState(campaignId) {
+        const id = String(campaignId || "").trim();
+        if (!id) return;
+        this._campaignViewCache[id] = {
+          selectedSessionId: String(this.selectedSessionId || "").trim(),
+          turnStream: this._cloneStateValue(this.turnStream || []),
+          turnCounter: Number(this.turnCounter) || 0,
+          recentTurns: this._cloneStateValue(this.recentTurns || []),
+          gameTime: this._cloneStateValue(this.gameTime || {}),
+          campaignSummary: String(this.campaignSummary || ""),
+          statusMessage: String(this.statusMessage || ""),
+          errorMessage: String(this.errorMessage || ""),
+          _turnStreamOffset: Number(this._turnStreamOffset) || 0,
+          _turnStreamHasMore: this._turnStreamHasMore === true,
+        };
+      },
+
+      _restoreCampaignViewState(campaignId) {
+        const id = String(campaignId || "").trim();
+        const cached = id ? this._campaignViewCache[id] : null;
+        if (!cached || typeof cached !== "object") return false;
+        this.selectedSessionId = String(cached.selectedSessionId || "").trim();
+        this.turnStream = this._cloneStateValue(cached.turnStream || []);
+        this.turnCounter = Number(cached.turnCounter) || 0;
+        this.recentTurns = this._cloneStateValue(cached.recentTurns || []);
+        this.gameTime = this._cloneStateValue(cached.gameTime || {});
+        this.campaignSummary = String(cached.campaignSummary || "");
+        this.statusMessage = String(cached.statusMessage || "");
+        this.errorMessage = String(cached.errorMessage || "");
+        this._turnStreamOffset = Number(cached._turnStreamOffset) || 0;
+        this._turnStreamHasMore = cached._turnStreamHasMore === true;
+        return true;
+      },
+
+      async _refreshBackgroundCampaignView(campaignId, preferredSessionId) {
+        const id = String(campaignId || "").trim();
+        if (!id) return;
+        try {
+          const data = await this.api(`/api/campaigns/${id}/recent-turns?limit=30`);
+          const cached = this._campaignViewCache[id] && typeof this._campaignViewCache[id] === "object"
+            ? this._campaignViewCache[id]
+            : {};
+          this._campaignViewCache[id] = {
+            ...cached,
+            recentTurns: Array.isArray(data.turns) ? this._cloneStateValue(data.turns) : [],
+            _turnStreamOffset: Array.isArray(data.turns) ? data.turns.length : 0,
+            _turnStreamHasMore: !!data.has_more,
+            selectedSessionId: String(preferredSessionId || cached.selectedSessionId || "").trim(),
+            statusMessage: "Turn submitted.",
+          };
+        } catch (_err) {
+        }
+      },
+
+      closeMentionAutocomplete() {
+        this.mentionState = {
+          open: false,
+          query: "",
+          start: -1,
+          end: -1,
+          selectedIndex: 0,
+        };
+      },
+
+      mentionablePlayers() {
+        const selfActorId = String(this.turnForm.actor_id || "").trim();
+        return (Array.isArray(this.rosterCharacters) ? this.rosterCharacters : [])
+          .filter((row) => row && row.player === true)
+          .map((row) => ({
+            actor_id: String(row.slug || "").trim(),
+            name: String(row.name || row.slug || "").trim(),
+            aliases: [
+              String(row.name || row.slug || "").trim(),
+              String(row.slug || "").trim(),
+            ].filter(Boolean),
+          }))
+          .filter((row) => row.actor_id && row.actor_id !== selfActorId);
+      },
+
+      filteredMentionCandidates() {
+        if (!this.mentionState.open) return [];
+        const query = String(this.mentionState.query || "").trim().toLowerCase();
+        return this.mentionablePlayers()
+          .filter((row) => {
+            if (!query) return true;
+            return row.name.toLowerCase().includes(query) || row.actor_id.toLowerCase().includes(query);
+          })
+          .slice(0, 8);
+      },
+
+      composerMentionActive() {
+        return this.mentionState.open && this.filteredMentionCandidates().length > 0;
+      },
+
+      _isMentionPrefixBoundaryChar(ch) {
+        return !ch || /[\s([{'"`]/.test(ch);
+      },
+
+      _isMentionSuffixBoundaryChar(ch) {
+        return !ch || !/[A-Za-z0-9_]/.test(ch);
+      },
+
+      _activeMentionMatch(value, caret) {
+        const text = String(value || "");
+        const cursor = Math.max(0, Number(caret) || 0);
+        const prefix = text.slice(0, cursor);
+        const atIndex = prefix.lastIndexOf("@");
+        if (atIndex < 0) return null;
+        const before = atIndex > 0 ? prefix.charAt(atIndex - 1) : "";
+        if (!this._isMentionPrefixBoundaryChar(before)) return null;
+        const query = prefix.slice(atIndex + 1);
+        if (query.includes("\n") || query.includes("\r")) return null;
+        if (query.length > 80) return null;
+        return {
+          query,
+          start: atIndex,
+          end: cursor,
+        };
+      },
+
+      updateMentionAutocomplete(event) {
+        const input = event && event.target ? event.target : document.getElementById("action-input");
+        if (!input) {
+          this.closeMentionAutocomplete();
+          return;
+        }
+        const match = this._activeMentionMatch(this.turnForm.action, input.selectionStart);
+        if (!match) {
+          this.closeMentionAutocomplete();
+          return;
+        }
+        this.mentionState = {
+          open: true,
+          query: match.query,
+          start: match.start,
+          end: match.end,
+          selectedIndex: this.mentionState.open ? this.mentionState.selectedIndex : 0,
+        };
+        if (!this.filteredMentionCandidates().length) {
+          this.closeMentionAutocomplete();
+        }
+      },
+
+      applyMentionCandidate(candidate) {
+        if (!candidate || !candidate.actor_id) return;
+        const input = document.getElementById("action-input");
+        const start = Number(this.mentionState.start);
+        const end = Number(this.mentionState.end);
+        if (!input || start < 0 || end < start) {
+          this.closeMentionAutocomplete();
+          return;
+        }
+        const before = this.turnForm.action.slice(0, start);
+        const after = this.turnForm.action.slice(end);
+        const insertion = `@${candidate.name} `;
+        this.turnForm.action = `${before}${insertion}${after}`;
+        this.closeMentionAutocomplete();
+        this.$nextTick(() => {
+          const caret = before.length + insertion.length;
+          input.focus();
+          input.setSelectionRange(caret, caret);
+          input.style.height = "auto";
+          input.style.height = `${input.scrollHeight}px`;
+        });
+      },
+
+      handleComposerKeydown(event) {
+        if (this.composerMentionActive()) {
+          const candidates = this.filteredMentionCandidates();
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            this.mentionState.selectedIndex = (this.mentionState.selectedIndex + 1) % candidates.length;
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            event.preventDefault();
+            this.mentionState.selectedIndex = (this.mentionState.selectedIndex - 1 + candidates.length) % candidates.length;
+            return;
+          }
+          if (event.key === "Enter" || event.key === "Tab") {
+            event.preventDefault();
+            this.applyMentionCandidate(candidates[this.mentionState.selectedIndex] || candidates[0]);
+            return;
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            this.closeMentionAutocomplete();
+            return;
+          }
+        }
+        if (event.key === "ArrowUp" && !event.shiftKey && this._composerCursorAtFirstLine(event.target)) {
+          if (this.navigateComposerHistory(-1, event.target)) {
+            event.preventDefault();
+            return;
+          }
+        }
+        if (event.key === "ArrowDown" && !event.shiftKey && this._composerCursorAtLastLine(event.target)) {
+          if (this.navigateComposerHistory(1, event.target)) {
+            event.preventDefault();
+            return;
+          }
+        }
+        if (event.key === "Escape" && this.submitting) {
+          event.preventDefault();
+          void this.cancelActiveTurn();
+          return;
+        }
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          if (this.turnForm.action.trim()) {
+            event.target.closest("form").requestSubmit();
+          }
+        }
+      },
+
+      _escapeRegExp(text) {
+        return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      },
+
+      mentionedActorIdsFromAction(text) {
+        const actionText = String(text || "");
+        if (!actionText) return [];
+        const seen = new Set();
+        const rows = this.mentionablePlayers()
+          .map((row) => ({
+            ...row,
+            aliases: Array.isArray(row.aliases) ? row.aliases.filter(Boolean) : [row.name, row.actor_id].filter(Boolean),
+          }))
+          .sort((a, b) => {
+            const aLen = Math.max(...a.aliases.map((alias) => String(alias || "").length), 0);
+            const bLen = Math.max(...b.aliases.map((alias) => String(alias || "").length), 0);
+            return bLen - aLen;
+          });
+        const results = [];
+        for (let index = 0; index < actionText.length; index += 1) {
+          if (actionText.charAt(index) !== "@") continue;
+          const before = index > 0 ? actionText.charAt(index - 1) : "";
+          if (!this._isMentionPrefixBoundaryChar(before)) continue;
+          const remaining = actionText.slice(index + 1);
+          for (const row of rows) {
+            let matchedAlias = null;
+            for (const alias of row.aliases) {
+              const aliasText = String(alias || "");
+              if (!aliasText) continue;
+              if (remaining.length < aliasText.length) continue;
+              if (remaining.slice(0, aliasText.length).toLowerCase() !== aliasText.toLowerCase()) continue;
+              const nextChar = remaining.charAt(aliasText.length);
+              if (!this._isMentionSuffixBoundaryChar(nextChar)) continue;
+              matchedAlias = aliasText;
+              break;
+            }
+            if (!matchedAlias) continue;
+            if (!seen.has(row.actor_id)) {
+              seen.add(row.actor_id);
+              results.push(row.actor_id);
+            }
+            index += matchedAlias.length;
+            break;
+          }
+        }
+        return results;
+      },
+
+      upsertPendingMention(payload) {
+        const data = payload && typeof payload === "object" ? payload : {};
+        const pendingId = String(data.pending_id || "").trim();
+        const actionText = String(data.action_text || "").trim();
+        if (!pendingId || !actionText) return;
+        const meta = {
+          actor_id: String(data.source_actor_id || "").trim(),
+          actor_name: "",
+          pending_mention: true,
+          pending_mention_id: pendingId,
+          pending_mention_note: "Pending cross-player action. Your turns may not be aware of this until the result resolves.",
+          source_session_id: String(data.source_session_id || "").trim() || null,
+        };
+        const existing = this.turnStream.find((entry) => entry && entry.meta && entry.meta.pending_mention_id === pendingId);
+        if (existing) {
+          existing.text = actionText;
+          existing.meta = { ...(existing.meta || {}), ...meta };
+          existing.at = nowLabel();
+          return;
+        }
+        this.pushStream("player", actionText, meta);
+      },
+
+      upsertPendingSharedTurn(payload) {
+        const data = payload && typeof payload === "object" ? payload : {};
+        const pendingId = String(data.pending_id || "").trim();
+        const actionText = String(data.action_text || "").trim();
+        const sourceActorId = String(data.source_actor_id || "").trim();
+        const currentActorId = String(this.turnForm.actor_id || "").trim();
+        if (!pendingId || !actionText) return;
+        if (sourceActorId && currentActorId && sourceActorId === currentActorId) return;
+        const meta = {
+          actor_id: sourceActorId,
+          actor_name: String(data.source_actor_name || "").trim(),
+          pending_shared_turn: true,
+          pending_shared_turn_id: pendingId,
+          pending_mention_note: "Pending cross-player action. Your turns may not be aware of this until the result resolves.",
+          source_session_id: String(data.source_session_id || "").trim() || null,
+        };
+        const existing = this.turnStream.find((entry) => entry && entry.meta && entry.meta.pending_shared_turn_id === pendingId);
+        if (existing) {
+          existing.text = actionText;
+          existing.meta = { ...(existing.meta || {}), ...meta };
+          existing.at = nowLabel();
+          return;
+        }
+        this.pushStream("player", actionText, meta);
+      },
+
+      clearPendingMention(pendingId) {
+        const pendingText = String(pendingId || "").trim();
+        if (!pendingText) return;
+        this.turnStream = this.turnStream.filter((entry) => {
+          const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+          return meta.pending_mention_id !== pendingText;
+        });
+      },
+
+      clearPendingSharedTurn(pendingId) {
+        const pendingText = String(pendingId || "").trim();
+        if (!pendingText) return;
+        this.turnStream = this.turnStream.filter((entry) => {
+          const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+          return meta.pending_shared_turn_id !== pendingText;
+        });
+      },
+
+      upsertRemoteProgress(text, meta) {
+        const label = String(text || "").trim();
+        if (!label) return;
+        const existing = this.turnStream.find((entry) => entry && entry.meta && entry.meta.remote_progress);
+        if (existing) {
+          existing.text = label;
+          existing.at = nowLabel();
+          existing.meta = {
+            ...(existing.meta || {}),
+            ...(meta && typeof meta === "object" ? meta : {}),
+            remote_progress: true,
+          };
+          this.$nextTick(() => {
+            const stream = document.getElementById("turn-stream");
+            if (stream) stream.scrollTop = stream.scrollHeight;
+          });
+          return;
+        }
+        this.pushStream("notice", label, {
+          ...(meta && typeof meta === "object" ? meta : {}),
+          remote_progress: true,
+        });
+      },
+
+      clearRemoteProgress() {
+        this.turnStream = this.turnStream.filter(
+          (entry) => !(entry && entry.meta && entry.meta.remote_progress),
+        );
+      },
+
+      clearPendingSubmitUi() {
+        this._clearPhaseTyper();
+        this.clearRemoteProgress();
+        this.turnStream = this.turnStream.filter((entry) => {
+          if (!entry || typeof entry !== "object") return true;
+          if (entry._streaming) return false;
+          const meta = entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+          if (meta.pending_submit) return false;
+          return true;
         });
       },
 
@@ -966,9 +3110,390 @@
           return "No window selected";
         }
         const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-        const label = metadata.label || row.surface_key || row.id;
+        const label = this.sessionDisplayLabel(row);
         const scope = metadata.scope || metadata.turn_visibility_default || row.surface;
         return `${label} (${scope})`;
+      },
+
+      sessionDisplayLabel(row) {
+        if (!row || typeof row !== "object") {
+          return "";
+        }
+        const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
+        const label = String(metadata.label || "").trim();
+        if (label) {
+          return label;
+        }
+        const surface = String(row.surface || "").trim().toLowerCase();
+        const surfaceKey = String(row.surface_key || "").trim();
+        if (surface === "discord" || surfaceKey.startsWith("discord:")) {
+          return "Discord room";
+        }
+        return surfaceKey || String(row.id || "").trim();
+      },
+
+      turnQueueKey(campaignId, actorId) {
+        const campaign = String(campaignId || "").trim();
+        const actor = String(actorId || "").trim();
+        if (!campaign || !actor) return "";
+        return `${campaign}::${actor}`;
+      },
+
+      currentTurnQueueKey() {
+        return this.turnQueueKey(this.selectedCampaignId, this.turnForm.actor_id);
+      },
+
+      currentQueuedTurnCount() {
+        const key = this.currentTurnQueueKey();
+        if (!key) return 0;
+        return Array.isArray(this._turnQueues[key]) ? this._turnQueues[key].length : 0;
+      },
+
+      _queuedTurnStreamEntry(queueItem) {
+        if (!queueItem || typeof queueItem !== "object") return null;
+        const actorId = String(queueItem.actor_id || "").trim();
+        const queueEntryId = String(queueItem.queue_entry_id || "").trim();
+        if (!actorId || !queueEntryId) return null;
+        return {
+          id: queueEntryId,
+          type: "player",
+          at: nowLabel(),
+          text: String(queueItem.action || "").trim(),
+          meta: {
+            actor_id: actorId,
+            actor_name: this.resolveActorDisplayName(actorId, "", actorId),
+            queued_local: true,
+            queue_entry_id: queueEntryId,
+            pending_mention_note: "Queued locally. Edit or remove it before it submits.",
+          },
+        };
+      },
+
+      _appendQueuedTurnStreamEntry(queueItem) {
+        const entry = this._queuedTurnStreamEntry(queueItem);
+        if (!entry) return;
+        const existing = this.turnStream.find((row) => this.entryTurnKey(row) === entry.meta.queue_entry_id);
+        if (existing) {
+          existing.text = entry.text;
+          existing.at = entry.at;
+          existing.meta = { ...(existing.meta || {}), ...(entry.meta || {}) };
+          return;
+        }
+        this.turnStream.push(entry);
+        this.$nextTick(() => {
+          const stream = document.getElementById("turn-stream");
+          if (stream) stream.scrollTop = stream.scrollHeight;
+        });
+      },
+
+      _syncQueuedTurnStreamEntry(queueItem, extraMeta) {
+        const queueEntryId = String(queueItem && queueItem.queue_entry_id || "").trim();
+        if (!queueEntryId) return null;
+        const entry = this.turnStream.find((row) => this.entryTurnKey(row) === queueEntryId);
+        if (!entry) return null;
+        entry.text = String(queueItem.action || entry.text || "").trim();
+        entry.at = nowLabel();
+        entry.meta = {
+          ...(entry.meta || {}),
+          ...(extraMeta && typeof extraMeta === "object" ? extraMeta : {}),
+          queue_entry_id: queueEntryId,
+          actor_id: String(queueItem.actor_id || entry.meta?.actor_id || "").trim(),
+          actor_name: this.resolveActorDisplayName(
+            String(queueItem.actor_id || entry.meta?.actor_id || "").trim(),
+            String(entry.meta?.actor_name || "").trim(),
+            String(queueItem.actor_id || "").trim(),
+          ),
+        };
+        return entry;
+      },
+
+      _removeQueuedTurnStreamEntry(queueEntryId) {
+        const wanted = String(queueEntryId || "").trim();
+        if (!wanted) return;
+        this.turnStream = this.turnStream.filter((entry) => this.entryTurnKey(entry) !== wanted);
+      },
+
+      _queuedTurnItemById(queueEntryId) {
+        const wanted = String(queueEntryId || "").trim();
+        if (!wanted) return null;
+        for (const [key, rows] of Object.entries(this._turnQueues || {})) {
+          if (!Array.isArray(rows)) continue;
+          const index = rows.findIndex((row) => String(row && row.queue_entry_id || "").trim() === wanted);
+          if (index >= 0) {
+            return { key, rows, index, item: rows[index] };
+          }
+        }
+        return null;
+      },
+
+      _rebuildQueuedTurnStreamEntries() {
+        const key = this.currentTurnQueueKey();
+        if (!key) return;
+        const rows = Array.isArray(this._turnQueues[key]) ? this._turnQueues[key] : [];
+        for (const row of rows) {
+          this._appendQueuedTurnStreamEntry(row);
+        }
+      },
+
+      submitButtonLabel() {
+        if (this.imageGenerating > 0) return "Generating...";
+        if (this.submitting || this._timedEventInProgress) {
+          const queued = this.currentQueuedTurnCount();
+          return queued > 0 ? `Queue (${queued})` : "Queue";
+        }
+        return "Submit";
+      },
+
+      _enqueueTurnPayload(campaignId, payload) {
+        const key = this.turnQueueKey(campaignId, payload.actor_id);
+        if (!key) return;
+        if (!Array.isArray(this._turnQueues[key])) {
+          this._turnQueues[key] = [];
+        }
+        const queueItem = {
+          actor_id: String(payload.actor_id || "").trim(),
+          action: String(payload.action || "").trim(),
+          session_id: payload.session_id || null,
+          mentioned_actor_ids: Array.isArray(payload.mentioned_actor_ids) ? payload.mentioned_actor_ids.slice() : [],
+          browser_local_ollama: payload.browser_local_ollama && typeof payload.browser_local_ollama === "object"
+            ? { ...payload.browser_local_ollama }
+            : null,
+          queue_entry_id: this._nextQueuedTurnId(),
+        };
+        this._turnQueues[key].push(queueItem);
+        this._appendQueuedTurnStreamEntry(queueItem);
+        this.turnForm.action = "";
+        this.closeMentionAutocomplete();
+        const count = this._turnQueues[key].length;
+        this.statusMessage = count === 1 ? "Queued 1 action." : `Queued ${count} actions.`;
+      },
+
+      _isQueueRetryableTurnError(error) {
+        const text = String(error || "").toLowerCase();
+        return (
+          text.includes("already resolving")
+          || text.includes("timed event in progress")
+          || text.includes("waiting for it to finish")
+        );
+      },
+
+      _surfaceTurnSubmitError(error, { queued = false } = {}) {
+        const text = String(error || "").trim() || "Turn submission failed.";
+        if (this._isQueueRetryableTurnError(text)) {
+          this._timedEventInProgress = true;
+          this.statusMessage = queued
+            ? "Queued action is waiting for the current turn to clear."
+            : "Timed event in progress — actions will queue.";
+          this.pushStream("notice", text, {
+            turn_submit_error: true,
+            retryable: true,
+          });
+          return;
+        }
+        this.errorMessage = text;
+      },
+
+      async cancelActiveTurn() {
+        if (!this.submitting) {
+          return false;
+        }
+        const meta = this._activeSubmitMeta && typeof this._activeSubmitMeta === "object"
+          ? this._activeSubmitMeta
+          : null;
+        const campaignId = String(meta?.campaign_id || this.selectedCampaignId || "").trim();
+        const actorId = String(meta?.actor_id || this.turnForm.actor_id || "").trim();
+        if (!campaignId || !actorId) {
+          this.statusMessage = "No active turn to cancel.";
+          return false;
+        }
+        this.statusMessage = "Cancelling turn...";
+        try {
+          const result = await this.api(`/api/campaigns/${campaignId}/turns/cancel`, {
+            method: "POST",
+            body: JSON.stringify({ actor_id: actorId }),
+          });
+          if (!result || result.cancelled !== true) {
+            this.statusMessage = String(result?.note || "Turn is too far along to cancel.");
+            return false;
+          }
+          this._cancelTurnRequested = true;
+          if (this._activeTurnAbortController) {
+            try {
+              this._activeTurnAbortController.abort();
+            } catch (_error) {
+              /* best-effort */
+            }
+          }
+          this.clearPendingSubmitUi();
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
+          this._submittingTurn = false;
+          this.submitting = false;
+          this.statusMessage = String(result.note || "Turn cancelled.");
+          this.errorMessage = "";
+          await this._drainQueuedTurns();
+          return true;
+        } catch (error) {
+          this.statusMessage = String(error || "Failed to cancel the active turn.");
+          return false;
+        }
+      },
+
+      async _drainQueuedTurns() {
+        if (this._turnQueueDraining || this.submitting) return;
+        const key = this.currentTurnQueueKey();
+        if (!key) return;
+        this._turnQueueDraining = true;
+        try {
+          while (!this.submitting) {
+            const queue = this._turnQueues[key];
+            if (!Array.isArray(queue) || queue.length === 0) {
+              delete this._turnQueues[key];
+              break;
+            }
+            const next = queue.shift();
+            if (!queue.length) {
+              delete this._turnQueues[key];
+            }
+            if (!next || !String(next.action || "").trim()) {
+              continue;
+            }
+            this._syncQueuedTurnStreamEntry(next, {
+              queued_local: false,
+              pending_submit: true,
+              pending_mention_note: "Submitting queued action...",
+            });
+            const result = await this._submitTurnPayload(this.selectedCampaignId, next, {
+              queued: true,
+              existingQueueEntryId: next.queue_entry_id,
+            });
+            if (!result.ok) {
+              if (result.cancelled) {
+                this._removeQueuedTurnStreamEntry(next.queue_entry_id);
+                continue;
+              }
+              if (this._isQueueRetryableTurnError(result.error)) {
+                if (!Array.isArray(this._turnQueues[key])) {
+                  this._turnQueues[key] = [];
+                }
+                this._turnQueues[key].unshift(next);
+                this._syncQueuedTurnStreamEntry(next, {
+                  queued_local: true,
+                  pending_submit: false,
+                  pending_mention_note: "Queued locally. Edit or remove it before it submits.",
+                });
+                this.statusMessage = "Queued action is waiting for the current turn to clear.";
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                continue;
+              }
+              this._removeQueuedTurnStreamEntry(next.queue_entry_id);
+              this._surfaceTurnSubmitError(result.error, { queued: true });
+            }
+          }
+        } finally {
+          this._turnQueueDraining = false;
+        }
+      },
+
+      sidebarCalendarEvents() {
+        const actorId = String(this.turnForm.actor_id || "").trim();
+        const rows = (Array.isArray(this.calendarEvents) ? [...this.calendarEvents] : []).filter((event) => {
+          if (!event || typeof event !== "object") return true;
+          const targets = Array.isArray(event.target_players) ? event.target_players : [];
+          const hasTargets = targets.some((item) => String(item || "").trim());
+          if (!hasTargets) return true;
+          if (event.targeted_to_active_player === true) return true;
+          if (!actorId) return false;
+          return targets.some((item) => String(item || "").trim() === actorId);
+        });
+        rows.sort((a, b) => {
+          const dayA = Number(a && a.fire_day) || 0;
+          const dayB = Number(b && b.fire_day) || 0;
+          if (dayA !== dayB) return dayA - dayB;
+          const hourA = Number(a && a.fire_hour) || 0;
+          const hourB = Number(b && b.fire_hour) || 0;
+          return hourA - hourB;
+        });
+        return rows.slice(0, 8);
+      },
+
+      calendarSidebarTimeLabel(event) {
+        if (!event || typeof event !== "object") return "";
+        const hour = String(Number(event.fire_hour) || 0).padStart(2, "0");
+        const minute = String(Number(event.fire_minute) || 0).padStart(2, "0");
+        const day = Number(event.fire_day) || 0;
+        const status = String(event.status || "").trim().toLowerCase();
+        if (status === "today") return `Today ${hour}:${minute}`;
+        if (status === "imminent") return `Soon ${hour}:${minute}`;
+        if (status === "missed") return `Missed Day ${day} ${hour}:${minute}`;
+        if (day > 0) return `Day ${day} ${hour}:${minute}`;
+        return `${hour}:${minute}`;
+      },
+
+      async setCalendarEventVisibility(event, visibility) {
+        this.resetError();
+        if (!this.selectedCampaignId || !event || typeof event !== "object") {
+          return;
+        }
+        const eventKey = String(event.event_key || "").trim();
+        if (!eventKey) {
+          this.errorMessage = "Calendar event key missing.";
+          return;
+        }
+        const targetVisibility = String(visibility || "").trim().toLowerCase();
+        if (!["public", "private"].includes(targetVisibility)) {
+          return;
+        }
+        this.calendarVisibilityUpdating = {
+          ...this.calendarVisibilityUpdating,
+          [eventKey]: true,
+        };
+        try {
+          const body = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/calendar/${encodeURIComponent(eventKey)}/visibility`,
+            {
+              method: "POST",
+              body: JSON.stringify({ visibility: targetVisibility }),
+            },
+          );
+          this.calendarText = formatJson(body);
+          this.calendarEvents = Array.isArray(body.events) ? body.events : [];
+          this.statusMessage = `Marked calendar event ${targetVisibility}.`;
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          const next = { ...this.calendarVisibilityUpdating };
+          delete next[eventKey];
+          this.calendarVisibilityUpdating = next;
+        }
+      },
+
+      async deleteCalendarEvent(event) {
+        this.resetError();
+        if (!this.selectedCampaignId || !event || typeof event !== "object") {
+          return;
+        }
+        const eventKey = String(event.event_key || "").trim();
+        if (!eventKey) {
+          this.errorMessage = "Calendar event key missing.";
+          return;
+        }
+        const title = event.title || event.name || event.event_key || "this event";
+        if (!confirm(`Delete calendar event "${title}"?`)) {
+          return;
+        }
+        try {
+          const body = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/calendar/${encodeURIComponent(eventKey)}`,
+            { method: "DELETE" },
+          );
+          this.calendarText = formatJson(body);
+          this.calendarEvents = Array.isArray(body.events) ? body.events : [];
+          this.statusMessage = "Calendar event deleted.";
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
       },
 
       syncTurnSessionSelection() {
@@ -976,7 +3501,10 @@
       },
 
       selectSession(sessionId) {
+        this.$store.app.sidebarOpen = false;
         this.selectedSessionId = sessionId || "";
+        this.turnSearch.highlightTurnId = 0;
+        this.turnSearch.status = "";
         if (this.selectedSessionId) {
           localStorage.setItem("selectedSessionId", this.selectedSessionId);
           this.sessionLastSeen[this.selectedSessionId] = isoNow();
@@ -985,15 +3513,23 @@
           localStorage.removeItem("selectedSessionId");
         }
         this.syncTurnSessionSelection();
+        this._resetPagination();
+        this.recentTurns = [];
         this.turnStream = [];
         this.connectSocket();
-        this.populateTurnStreamFromHistory();
+        this.loadRecentTurns(30, { force: true }).then(() => {
+          this.populateTurnStreamFromHistory();
+        }).catch(() => {
+          this.populateTurnStreamFromHistory();
+        });
+        if (this.turnSearch.open && this.turnSearch.query.trim()) {
+          this.runTurnSearch();
+        }
         /* Refresh authoritative game time — turn metadata may be incomplete */
         this.loadCalendar();
         const row = this.currentSessionRecord();
         if (row) {
-          const metadata = row.metadata && typeof row.metadata === "object" ? row.metadata : {};
-          this.statusMessage = `Selected window ${metadata.label || row.surface_key || row.id}.`;
+          this.statusMessage = `Selected window ${this.sessionDisplayLabel(row)}.`;
         }
       },
 
@@ -1006,8 +3542,17 @@
         if (!sessionId || sessionId === this.selectedSessionId) return false;
         const lastSeen = this.sessionLastSeen[sessionId];
         const lastSeenMs = lastSeen ? Date.parse(lastSeen) : undefined;
+        const selectedSessionId = String(this.selectedSessionId || "").trim();
         for (const turn of this.recentTurns) {
           if (turn.session_id !== sessionId || !turn.created_at) continue;
+          const meta = turn && turn.meta && typeof turn.meta === "object" ? turn.meta : {};
+          const visibility = meta.visibility && typeof meta.visibility === "object"
+            ? meta.visibility
+            : (meta.turn_visibility && typeof meta.turn_visibility === "object" ? meta.turn_visibility : {});
+          const scope = String(visibility.scope || "").trim().toLowerCase();
+          if (selectedSessionId && (scope === "public" || scope === "local")) {
+            continue;
+          }
           // Never visited — any turn means unseen
           if (lastSeenMs === undefined) return true;
           if (Date.parse(turn.created_at) > lastSeenMs) return true;
@@ -1032,6 +3577,8 @@
 
       handleActorIdentityChange() {
         this.syncTurnSessionSelection();
+        this.resetComposerHistoryNavigation();
+        this.ensureComposerHistorySeeded();
         this.connectSocket();
       },
 
@@ -1798,7 +4345,17 @@
       },
 
       /* ---- Rewind ---- */
-      async rewindToTurnId(turnId) {
+      async rewindEntry(entry) {
+        const backendTurnId = Number(entry && entry._backendTurnId) || 0;
+        if (backendTurnId <= 0) return;
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        const entrySessionId = String(entry && entry._sessionId || meta.session_id || "").trim();
+        await this.rewindToTurnId(backendTurnId, {
+          sessionId: entrySessionId || this.selectedSessionId || "",
+        });
+      },
+
+      async rewindToTurnId(turnId, options) {
         this.resetError();
         this.rewindStatus = "";
         if (!this.selectedCampaignId) {
@@ -1811,20 +4368,31 @@
         }
         if (!confirm(`Rewind to turn ${turnId}? This is destructive and cannot be undone.`)) return;
         try {
-          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/rewind?target_turn_id=${turnId}`, {
+          const params = new URLSearchParams();
+          params.set("target_turn_id", String(turnId));
+          const rewindSessionId = String(
+            options && typeof options === "object" && options.sessionId
+              ? options.sessionId
+              : (this.selectedSessionId || ""),
+          ).trim();
+          if (rewindSessionId) {
+            params.set("session_id", rewindSessionId);
+          }
+          const result = await this.api(`/api/campaigns/${this.selectedCampaignId}/rewind?${params.toString()}`, {
             method: "POST",
           });
           if (result.ok === false) {
             this.rewindStatus = result.note || "Rewind not supported.";
             return;
           }
-          this.rewindStatus = `Rewound to turn ${turnId} at ${nowLabel()}.`;
+          const deletedTurns = Number(result.deleted_turns);
+          this.rewindStatus = Number.isFinite(deletedTurns) && deletedTurns >= 0
+            ? `Rewound to turn ${turnId} at ${nowLabel()} (${deletedTurns} turn${deletedTurns === 1 ? "" : "s"} removed).`
+            : `Rewound to turn ${turnId} at ${nowLabel()}.`;
           this.rewindTargetTurn = "";
           this._resetPagination();
-          this.pushStream("notice", `Rewound to turn ${turnId}`, { rewind: true });
           /* Reload all state after rewind */
           await Promise.all([
-            this.loadMap(),
             this.loadTimers(),
             this.loadCalendar(),
             this.loadRoster(),
@@ -1839,6 +4407,12 @@
             this.loadChapterList(),
             this.loadSceneImages(),
           ]);
+          /* Rebuild visible turn stream from the now-shorter history.
+             Clear first so rewind-to-zero doesn't leave stale entries. */
+          this.turnStream = [];
+          this.turnCounter = 0;
+          this.populateTurnStreamFromHistory();
+          this.pushStream("notice", `Rewound to turn ${turnId}`, { rewind: true });
         } catch (error) {
           this.errorMessage = String(error);
         }
@@ -1847,6 +4421,105 @@
       async rewindToTurn() {
         const turnId = parseInt(this.rewindTargetTurn, 10);
         await this.rewindToTurnId(turnId);
+      },
+
+      async saveTurnEdit(entry) {
+        if (this.turnIsQueued(entry)) {
+          const queueEntryId = entry && entry.meta && entry.meta.queue_entry_id;
+          const queued = this._queuedTurnItemById(queueEntryId);
+          const text = String(this.editingTurnDraft || "").trim();
+          if (!queued || !text) {
+            this.errorMessage = "Queued turn text cannot be empty.";
+            return;
+          }
+          queued.item.action = text;
+          queued.item.mentioned_actor_ids = this.mentionedActorIdsFromAction(text);
+          this._syncQueuedTurnStreamEntry(queued.item, {
+            queued_local: true,
+            pending_submit: false,
+            pending_mention_note: "Queued locally. Edit or remove it before it submits.",
+          });
+          this.cancelTurnEdit();
+          this.statusMessage = "Queued action updated.";
+          return;
+        }
+        this.resetError();
+        const turnId = Number(entry && entry._backendTurnId) || 0;
+        const text = String(this.editingTurnDraft || "").trim();
+        if (!this.selectedCampaignId || turnId <= 0) return;
+        if (!text) {
+          this.errorMessage = "Turn text cannot be empty.";
+          return;
+        }
+        this.turnMutationBusy = true;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/turns/${turnId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ content: text }),
+          });
+          if (this.turnIsPinned(entry)) {
+            const campaignId = String(this.selectedCampaignId || "").trim();
+            const rows = Array.isArray(this.pinnedTurnsByCampaign[campaignId])
+              ? this.pinnedTurnsByCampaign[campaignId].slice()
+              : [];
+            const idx = rows.findIndex((row) => Number(row && row.turn_id) === turnId);
+            if (idx >= 0) {
+              rows[idx] = {
+                ...rows[idx],
+                preview: text.slice(0, 280),
+                text,
+              };
+              this.pinnedTurnsByCampaign = { ...this.pinnedTurnsByCampaign, [campaignId]: rows };
+              this.persistPinnedTurns();
+            }
+          }
+          this.cancelTurnEdit();
+          this._resetPagination();
+          await this.loadRecentTurns(30);
+          this.populateTurnStreamFromHistory();
+          this.statusMessage = `Updated turn ${turnId}.`;
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          this.turnMutationBusy = false;
+        }
+      },
+
+      async deleteTurnEntry(entry) {
+        if (this.turnIsQueued(entry)) {
+          const queueEntryId = entry && entry.meta && entry.meta.queue_entry_id;
+          const queued = this._queuedTurnItemById(queueEntryId);
+          if (!queued) return;
+          queued.rows.splice(queued.index, 1);
+          if (!queued.rows.length) {
+            delete this._turnQueues[queued.key];
+          }
+          this.cancelTurnEdit();
+          this._removeQueuedTurnStreamEntry(queueEntryId);
+          const count = this.currentQueuedTurnCount();
+          this.statusMessage = count > 0 ? `Queued ${count} actions.` : "Queued action removed.";
+          return;
+        }
+        this.resetError();
+        const turnId = Number(entry && entry._backendTurnId) || 0;
+        if (!this.selectedCampaignId || turnId <= 0) return;
+        if (!confirm(`Delete turn ${turnId} from the database? This removes only this turn.`)) return;
+        this.turnMutationBusy = true;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/turns/${turnId}`, {
+            method: "DELETE",
+          });
+          this.removePinnedTurn(turnId, this.selectedCampaignId);
+          this.cancelTurnEdit();
+          this._resetPagination();
+          await this.loadRecentTurns(30);
+          this.populateTurnStreamFromHistory();
+          this.statusMessage = `Deleted turn ${turnId}.`;
+        } catch (error) {
+          this.errorMessage = String(error);
+        } finally {
+          this.turnMutationBusy = false;
+        }
       },
 
       async refreshCampaigns() {
@@ -1915,7 +4588,6 @@
           const campaign = body.campaign;
           await this.refreshCampaigns();
           await this.selectCampaign(campaign.id);
-          await this.ensureSharedWindow();
 
           // 2. Wait for all file reads to complete
           if (this.campaignForm.files.length > 0) {
@@ -1990,26 +4662,34 @@
       },
 
       async selectCampaign(campaignId, restoreSessionId) {
+        this.$store.app.sidebarOpen = false;
         this.resetError();
+        const previousCampaignId = String(this.selectedCampaignId || "").trim();
+        if (previousCampaignId) {
+          this._captureCampaignViewState(previousCampaignId);
+        }
+        const restoredFromCache = !restoreSessionId && this._restoreCampaignViewState(campaignId);
         this.selectedCampaignId = campaignId;
         localStorage.setItem("selectedCampaignId", campaignId);
-        this.selectedSessionId = restoreSessionId || "";
+        this.selectedSessionId = restoreSessionId || this.selectedSessionId || "";
         if (!restoreSessionId) localStorage.removeItem("selectedSessionId");
-        this.turnStream = [];
-        this._resetPagination();
+        if (!restoredFromCache) {
+          this.turnStream = [];
+          this._resetPagination();
+        }
         /* Reset unseen-activity tracking for previous campaign */
         this.sessionLastSeen = {};
         this._persistSessionLastSeen();
         this._stopUnseenPoll();
         /* Reset per-campaign derived state to prevent stale values */
-        this.gameTime = {};
-        this.campaignSummary = "";
+        this.gameTime = restoredFromCache ? this.gameTime : {};
+        this.campaignSummary = restoredFromCache ? this.campaignSummary : "";
         this.storyState = null;
         this.chapterList = null;
         this.playerData = null;
         this.playerStats = null;
         this.playerAttributes = null;
-        this.recentTurns = [];
+        this.recentTurns = restoredFromCache ? this.recentTurns : [];
         this.songQueue = [];
         this.songIndex = -1;
         this.campaignPersona = "";
@@ -2021,12 +4701,18 @@
         this.mapText = "";
         this.timersText = "";
         this.calendarText = "";
+        this.calendarEvents = [];
         this.rosterText = "";
+        this.rosterCharacters = [];
         this.playerStateText = "";
         this.mediaText = "";
         this.sessionsText = "";
         this.memoryText = "";
         this.smsText = "";
+        this.smsInboxThreads = [];
+        this.smsInboxThread = "";
+        this.smsInboxMessages = [];
+        this.smsInboxCompose = "";
         this.debugText = "";
         this.sourceMaterials = [];
         this.campaignRules = [];
@@ -2034,6 +4720,7 @@
         this.setupMode = false;
         this.setupPhase = null;
         this.setupResponse = "";
+        this.closeMentionAutocomplete();
         this.sceneImages = {};
         this.literaryStyles = {};
         this.sourceSearchResults = [];
@@ -2041,8 +4728,15 @@
         this.digestUploadStatus = "";
         this.portraitStatus = "";
         this.scheduledSmsStatus = "";
+        this.turnSearch.results = [];
+        this.turnSearch.status = "";
+        this.turnSearch.highlightTurnId = 0;
+        this.turnSearch.has_more = false;
         const selected = this.campaigns.find((row) => row.id === campaignId);
-        if (selected) {
+        const linkedActorId = this.effectiveLinkedActorId();
+        if (linkedActorId) {
+          this.turnForm.actor_id = linkedActorId;
+        } else if (selected) {
           this.turnForm.actor_id = selected.actor_id;
         }
         if (this.turnForm.actor_id) {
@@ -2058,10 +4752,17 @@
           this.loadSessions(restoreSessionId ? { skipConnect: true } : undefined),
           this.loadRecentTurns(),
         ]);
+        await this.ensureComposerHistorySeeded();
+        await this.loadSettingsForm();
+        if (!this.sessionsList.some((row) => row && row.surface === "web_shared")) {
+          await this.ensureSharedWindow({
+            select: !this.selectedSessionId,
+            silent: true,
+          });
+        }
         this.populateTurnStreamFromHistory();
         /* Remaining data loads — fire-and-forget so the UI stays responsive. */
         Promise.all([
-          this.loadMap(),
           this.loadTimers(),
           this.loadCalendar(),
           this.loadRoster(),
@@ -2112,6 +4813,8 @@
         const suffix = params.toString() ? `?${params.toString()}` : "";
         const socketUrl = `${protocol}://${window.location.host}/ws/campaigns/${campaignId}${suffix}`;
         this.socket = new WebSocket(socketUrl);
+        this.socket._campaignId = campaignId;
+        this.socket._sessionId = String(this.selectedSessionId || "").trim();
         this.socket.onopen = () => {
           this.diagnostics.ws_state = "connected";
           this.diagnostics.ws_last_event_at = isoNow();
@@ -2128,10 +4831,30 @@
             return;
           }
           if (payload.type === "turn" && payload.payload) {
+            const selectedSession = this.currentSessionRecord();
+            const turnForSession = {
+              session_id: payload.session_id || "",
+              actor_id: payload.actor_id || "",
+              turn_visibility: payload.payload.turn_visibility || {},
+            };
+            const shouldRenderInCurrentSession = this.turnBelongsInSelectedSession(
+              turnForSession,
+              selectedSession,
+              this.selectedSessionId,
+            );
             /* Suppress echo: if we just submitted a turn, skip the WS echo to avoid duplicates */
             const isOwnEcho = this._submittingTurn
               && payload.actor_id === (this.turnForm.actor_id || "").trim();
-            if (!isOwnEcho) {
+            if (!isOwnEcho && shouldRenderInCurrentSession) {
+              const remoteActionText = String(payload.payload.action_text || "").trim();
+              if (remoteActionText) {
+                this.pushStream("player", remoteActionText, {
+                  actor_id: payload.actor_id || "",
+                  actor_name: payload.payload.actor_name || "",
+                  turn_visibility: payload.payload.turn_visibility || {},
+                  session_id: payload.session_id || "",
+                });
+              }
               normalizeTurnNotices(payload.payload).forEach((notice) => {
                 this.pushStream("notice", notice, { notice });
               });
@@ -2168,6 +4891,9 @@
             this.loadStoryState();
             this.loadChapterList();
           }
+          if (payload.type === "browser_llm_request" && payload.payload) {
+            this.handleBrowserLlmRequest(payload.payload);
+          }
           if (payload.type === "sms" && payload.payload) {
             this.pushStream("sms", formatJson(payload.payload));
           }
@@ -2183,17 +4909,40 @@
             this.pushStream("timers", formatJson(payload.payload), payload.payload);
             this.timersText = formatJson(payload.payload);
           }
+          if (payload.type === "pending_mention" && payload.payload) {
+            this.upsertPendingMention(payload.payload);
+          }
+          if (payload.type === "pending_mention_clear" && payload.payload) {
+            this.clearPendingMention(payload.payload.pending_id);
+          }
+          if (payload.type === "pending_shared_turn" && payload.payload) {
+            this.upsertPendingSharedTurn(payload.payload);
+          }
+          if (payload.type === "pending_shared_turn_clear" && payload.payload) {
+            this.clearPendingSharedTurn(payload.payload.pending_id);
+          }
+          if (payload.type === "turn_refresh") {
+            this.clearRemoteProgress();
+            if (this._timedEventInProgress) {
+              this._timedEventInProgress = false;
+              this._drainQueuedTurns();
+            }
+            this._scheduleRealtimeTurnRefresh();
+          }
           if (payload.type === "roster" && payload.payload) {
             this.pushStream("roster", formatJson(payload.payload));
             this.rosterText = formatJson(payload.payload);
           }
           if (payload.type === "timed_event" && payload.payload) {
+            this._timedEventInProgress = false;
+            this.clearRemoteProgress();
             const narration = payload.payload.narration || "";
             if (narration) {
               this.pushStream("narrator", renderDiscordTimestamps(stripTrailingInventory(narration)), { timed_event: true });
             }
             this.loadTimers();
             this.loadRecentTurns();
+            this._drainQueuedTurns();
           }
           if (payload.type === "dm_notification" && payload.payload) {
             const msg = payload.payload.message || "";
@@ -2215,20 +4964,54 @@
           }
           if (payload.type === "turn_progress" && payload.payload && this.submitting) {
             const label = this._turnProgressLabel(payload.payload.phase, payload.payload);
+            this._activeProgressCampaignId = String(campaignId || "").trim();
+            this._activeProgressSessionId = String(this.selectedSessionId || "").trim();
+            this._activeProgressLabel = label;
             this.statusMessage = label;
             const streamEntry = this.turnStream.find((e) => e._streaming);
             if (streamEntry) {
               this._typePhase(streamEntry.id, label);
             }
+          } else if (payload.type === "turn_progress" && payload.payload) {
+            const label = this._turnProgressLabel(payload.payload.phase, payload.payload);
+            this._activeProgressCampaignId = String(campaignId || "").trim();
+            this._activeProgressSessionId = String(payload.session_id || this.selectedSessionId || "").trim();
+            this._activeProgressLabel = label;
+            this.statusMessage = label;
+            this._timedEventInProgress = true;
+            this.upsertRemoteProgress(label, {
+              phase: payload.payload.phase || "",
+              actor_id: payload.actor_id || "",
+              session_id: payload.session_id || "",
+            });
           }
         };
         this.socket.onerror = () => {
           this.diagnostics.ws_state = "error";
           this.diagnostics.ws_last_error = "WebSocket transport error.";
-          this.errorMessage = "WebSocket error.";
+          if (this.submitting) {
+            this.clearPendingSubmitUi();
+            this._submittingTurn = false;
+            this.submitting = false;
+            this._activeProgressCampaignId = "";
+            this._activeProgressSessionId = "";
+            this._activeProgressLabel = "";
+            this.statusMessage = "Turn connection dropped. You can retry.";
+          } else {
+            this.errorMessage = "WebSocket error.";
+          }
         };
         this.socket.onclose = (event) => {
           this.diagnostics.ws_state = "disconnected";
+          if (this.submitting && !event.target._deliberateClose) {
+            this.clearPendingSubmitUi();
+            this._submittingTurn = false;
+            this.submitting = false;
+            this._activeProgressCampaignId = "";
+            this._activeProgressSessionId = "";
+            this._activeProgressLabel = "";
+            this.statusMessage = "Turn connection dropped. You can retry.";
+          }
           if (event.target._deliberateClose) {
             return;
           }
@@ -2249,7 +5032,19 @@
       _scrollStream() {
         this.$nextTick(() => {
           const stream = document.getElementById("turn-stream");
-          if (stream) stream.scrollTop = stream.scrollHeight;
+          if (!stream) return;
+          if (this._scrollAnchorEntryId > 0) {
+            const anchorEl = document.getElementById("turn-entry-" + this._scrollAnchorEntryId);
+            if (anchorEl) {
+              const scrollTo = () => {
+                stream.scrollTop = anchorEl.offsetTop - stream.offsetTop;
+              };
+              requestAnimationFrame(() => { scrollTo(); requestAnimationFrame(scrollTo); });
+              return;
+            }
+          }
+          const scrollToBottom = () => { stream.scrollTop = stream.scrollHeight; };
+          requestAnimationFrame(() => { scrollToBottom(); requestAnimationFrame(scrollToBottom); });
         });
       },
 
@@ -2282,6 +5077,26 @@
         this._phaseTyper = null;
       },
 
+      _scheduleRealtimeTurnRefresh() {
+        if (this._realtimeRefreshTimer) {
+          clearTimeout(this._realtimeRefreshTimer);
+        }
+        this._realtimeRefreshTimer = setTimeout(async () => {
+          this._realtimeRefreshTimer = null;
+          try {
+            await Promise.all([
+              this.loadRecentTurns(),
+              this.loadTimers(),
+              this.loadStoryState(),
+              this.loadChapterList(),
+              this.loadCalendar(),
+            ]);
+            this.populateTurnStreamFromHistory();
+          } catch (_err) {
+          }
+        }, 150);
+      },
+
       _turnProgressLabel(phase, detail) {
         const labels = {
           starting: "Starting turn...",
@@ -2311,6 +5126,7 @@
             autobiography_update: "Updating character bio...",
             autobiography_compress: "Compressing character bio...",
             name_generate: "Generating names...",
+            song_search: "Searching for a song...",
             communication_rules: "Checking communication rules...",
           };
           return toolLabels[detail.tool] || `Using ${detail.tool.replace(/_/g, " ")}...`;
@@ -2318,9 +5134,24 @@
         return labels[phase] || (phase.charAt(0).toUpperCase() + phase.slice(1).replace(/_/g, " ") + "...");
       },
 
-      _handleStreamEvent(eventType, data, streamEntryId) {
+      _handleStreamEvent(eventType, data, streamEntryId, campaignId) {
+        const activeCampaignId = String(this.selectedCampaignId || "").trim();
+        const targetCampaignId = String(campaignId || activeCampaignId).trim();
+        if (targetCampaignId && activeCampaignId && targetCampaignId !== activeCampaignId) {
+          if (eventType === "complete") {
+            this._refreshBackgroundCampaignView(
+              targetCampaignId,
+              this._campaignViewCache[targetCampaignId]?.selectedSessionId || "",
+            );
+          }
+          return;
+        }
         if (eventType === "phase") {
+          this.clearRemoteProgress();
           const label = this._turnProgressLabel(data.phase, data);
+          this._activeProgressCampaignId = String(campaignId || this.selectedCampaignId || "").trim();
+          this._activeProgressSessionId = String(this.selectedSessionId || "").trim();
+          this._activeProgressLabel = label;
           this.statusMessage = label;
           if (streamEntryId && data.phase !== "narrating") {
             this._typePhase(streamEntryId, label);
@@ -2340,17 +5171,28 @@
           if (entry) entry.text = this._streamingNarration;
           this._scrollStream();
         } else if (eventType === "complete") {
+          this.clearRemoteProgress();
           this._clearPhaseTyper();
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
           const entry = this.turnStream.find((e) => e.id === streamEntryId);
           if (entry) {
             entry._phaseText = false;
             entry.text = normalizeTurnNarration(data);
             entry._streaming = false;
+            entry._backendTurnId = Number(data.turn_id) || null;
             entry.meta = { ...data };
             if (data.state_update && data.state_update.game_time) {
               entry.meta._game_time = data.state_update.game_time;
             }
+            if (data.scene_output && Array.isArray(data.scene_output.beats)) {
+              entry.meta.scene_output = data.scene_output;
+            }
+            /* Force Alpine to re-evaluate x-for / x-html bindings */
+            this.turnStream = [...this.turnStream];
           }
+          this.ttsAutoSpeak(data);
           /* Supplementary entries — same as non-streaming path */
           normalizeTurnNotices(data).forEach((notice) => {
             this.pushStream("notice", notice, { notice });
@@ -2388,6 +5230,10 @@
             this.gameTime = data.state_update.game_time;
           }
         } else if (eventType === "error") {
+          this.clearRemoteProgress();
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
           this.errorMessage = data.message || "Streaming error";
         }
       },
@@ -2402,32 +5248,122 @@
           this.errorMessage = "Select an actor first.";
           return;
         }
-        if (this.submitting) return;
         if (this.imageGenerating) {
           this.errorMessage = "Wait for image generation to finish before submitting a turn.";
           return;
         }
+        const actionText = this.turnForm.action.trim();
+        if (!actionText) {
+          return;
+        }
+        const payload = {
+          actor_id: this.turnForm.actor_id.trim(),
+          action: actionText,
+          session_id: this.selectedSessionId || null,
+          mentioned_actor_ids: this.mentionedActorIdsFromAction(this.turnForm.action),
+        };
+        this.recordComposerHistoryEntry(actionText);
+        if (this.browserLocalOllama.enabled === true) {
+          if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            this.errorMessage = "Browser-local Ollama requires an active realtime connection.";
+            return;
+          }
+          try {
+            payload.browser_local_ollama = this.browserLocalOllamaPayload();
+          } catch (error) {
+            this.errorMessage = String(error);
+            return;
+          }
+        }
+        if (!payload.action) return;
+        if (this.submitting || this._timedEventInProgress) {
+          this._enqueueTurnPayload(this.selectedCampaignId, payload);
+          this.turnForm.action = "";
+          this.resetComposerHistoryNavigation();
+          this.closeMentionAutocomplete();
+          this.$nextTick(() => {
+            const input = document.getElementById("action-input");
+            if (!input) return;
+            input.style.height = "auto";
+            input.style.height = `${input.scrollHeight}px`;
+          });
+          return;
+        }
+        this.turnForm.action = "";
+        this.resetComposerHistoryNavigation();
+        this.closeMentionAutocomplete();
+        this.$nextTick(() => {
+          const input = document.getElementById("action-input");
+          if (!input) return;
+          input.style.height = "auto";
+          input.style.height = `${input.scrollHeight}px`;
+        });
+        const result = await this._submitTurnPayload(this.selectedCampaignId, payload, { queued: false });
+        if (!result.ok && !result.cancelled) {
+          this._surfaceTurnSubmitError(result.error, { queued: false });
+        }
+        await this._drainQueuedTurns();
+      },
+
+      async _submitTurnPayload(campaignId, payload, { queued = false, existingQueueEntryId = null } = {}) {
         this.submitting = true;
         this._submittingTurn = true;
-        this.statusMessage = "Submitting turn...";
+        this._cancelTurnRequested = false;
+        const baselineRecentTurnId = this._latestRecentTurnId();
+        this._activeProgressCampaignId = String(campaignId || "").trim();
+        this._activeProgressSessionId = String(payload && payload.session_id || this.selectedSessionId || "").trim();
+        this._activeProgressLabel = queued ? "Processing queued action..." : "Submitting turn...";
+        this.statusMessage = queued ? "Processing queued action..." : "Submitting turn...";
+        this._activeSubmitMeta = {
+          campaign_id: String(campaignId || "").trim(),
+          actor_id: String(payload && payload.actor_id || "").trim(),
+          session_id: String(payload && payload.session_id || "").trim(),
+        };
+        const abortController = new AbortController();
+        this._activeTurnAbortController = abortController;
+        let backendTurnId = 0;
+        let optimisticPlayerEntryId = 0;
+        let optimisticPlayerSubmittedAt = "";
         try {
-          const payload = {
-            actor_id: this.turnForm.actor_id.trim(),
-            action: this.turnForm.action.trim(),
-            session_id: this.selectedSessionId || null,
-          };
-
-          /* Record the player's action in the stream */
           if (payload.action) {
-            this.pushStream("player", payload.action, { actor_id: payload.actor_id });
+            const existingQueueId = String(existingQueueEntryId || "").trim();
+            if (existingQueueId) {
+              const existing = this.turnStream.find((entry) => this.entryTurnKey(entry) === existingQueueId);
+              if (existing) {
+                existing.text = payload.action;
+                existing.at = nowLabel();
+                optimisticPlayerSubmittedAt = existing.at;
+                existing.meta = {
+                  ...(existing.meta || {}),
+                  actor_id: payload.actor_id,
+                  actor_name: this.resolveActorDisplayName(payload.actor_id, "", payload.actor_id),
+                  pending_submit: true,
+                  queued_local: false,
+                  queue_entry_id: existingQueueId,
+                };
+                this._scrollAnchorEntryId = existing.id;
+              }
+            } else {
+              this.pushStream("player", payload.action, {
+                actor_id: payload.actor_id,
+                actor_name: this.resolveActorDisplayName(payload.actor_id, "", payload.actor_id),
+                pending_submit: true,
+              });
+              optimisticPlayerEntryId = this.turnCounter;
+              optimisticPlayerSubmittedAt = String(
+                (this.turnStream.find((entry) => entry.id === optimisticPlayerEntryId) || {}).at || "",
+              ).trim();
+              this._scrollAnchorEntryId = this.turnCounter;
+            }
           }
 
           if (!this.runtimeInfo.streaming_supported) {
-            /* Non-streaming fallback (original path) */
-            const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/turns`, {
+            const body = await this.api(`/api/campaigns/${campaignId}/turns`, {
               method: "POST",
               body: JSON.stringify(payload),
+              signal: abortController.signal,
             });
+            backendTurnId = Number(body.turn_id) || 0;
             normalizeTurnNotices(body).forEach((notice) => {
               this.pushStream("notice", notice, { notice });
             });
@@ -2440,6 +5376,7 @@
               narratorMeta._game_time = body.state_update.game_time;
             }
             this.pushStream("narrator", narration, narratorMeta);
+            this.ttsAutoSpeak(body);
             if (body.reasoning) {
               this.pushStream("reasoning", body.reasoning, body);
             }
@@ -2466,12 +5403,10 @@
                 this.campaignSummary = body.summary_update;
               }
             }
-            this.turnForm.action = "";
             if (body.state_update && body.state_update.game_time) {
               this.gameTime = body.state_update.game_time;
             }
           } else {
-            /* SSE streaming path */
             this._streamingNarration = "";
             this.turnCounter += 1;
             const streamEntryId = this.turnCounter;
@@ -2485,10 +5420,11 @@
             });
             this._scrollStream();
 
-            const resp = await fetch(`/api/campaigns/${this.selectedCampaignId}/turns/stream`, {
+            const resp = await fetch(`/api/campaigns/${campaignId}/turns/stream`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(payload),
+              signal: abortController.signal,
             });
             if (!resp.ok) {
               const errBody = await resp.text();
@@ -2506,20 +5442,21 @@
               if (done) break;
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split("\n");
-              buffer = lines.pop();  /* keep incomplete line in buffer */
+              buffer = lines.pop();
               for (const line of lines) {
                 if (line.startsWith("event: ")) {
                   currentEvent = line.slice(7).trim();
                 } else if (line.startsWith("data: ")) {
                   currentData = line.slice(6);
                 } else if (line === "") {
-                  /* End of SSE event block */
                   if (currentEvent && currentData) {
                     try {
                       const parsed = JSON.parse(currentData);
-                      this._handleStreamEvent(currentEvent, parsed, streamEntryId);
+                      if (currentEvent === "complete") {
+                        backendTurnId = Number(parsed.turn_id) || 0;
+                      }
+                      this._handleStreamEvent(currentEvent, parsed, streamEntryId, campaignId);
                     } catch (_e) {
-                      /* ignore malformed JSON */
                     }
                   }
                   currentEvent = "";
@@ -2527,43 +5464,106 @@
                 }
               }
             }
-            /* Flush any remaining event in buffer */
             if (currentEvent && currentData) {
               try {
                 const parsed = JSON.parse(currentData);
-                this._handleStreamEvent(currentEvent, parsed, streamEntryId);
-              } catch (_e) { /* ignore */ }
+                if (currentEvent === "complete") {
+                  backendTurnId = Number(parsed.turn_id) || 0;
+                }
+                this._handleStreamEvent(currentEvent, parsed, streamEntryId, campaignId);
+              } catch (_e) {
+              }
             }
 
-            this.turnForm.action = "";
           }
 
-          await Promise.all([
-            this.loadSessions(),
-            this.loadMap(),
-            this.loadTimers(),
-            this.loadCalendar(),
-            this.loadRoster(),
-            this.loadPlayerState(),
-            this.loadPlayerStatistics(),
-            this.loadPlayerAttributes(),
-            this.loadMedia(),
-            this.loadDebugSnapshot(),
-            this.loadRecentTurns(),
-            this.loadStoryState(),
-            this.loadChapterList(),
-            this.loadSceneImages(),
-          ]);
-          /* Rebuild the turn stream from server history to recover any
-             entries lost during async side-effects while in-flight. */
-          this.populateTurnStreamFromHistory();
-          this.statusMessage = "Turn submitted.";
+          if (backendTurnId > 0 && optimisticPlayerEntryId > 0) {
+            const optimisticEntry = this.turnStream.find((entry) => entry.id === optimisticPlayerEntryId);
+            if (optimisticEntry && optimisticEntry.type === "player") {
+              this._rememberSubmittedPlayerTurnTime(backendTurnId, optimisticEntry.at);
+            }
+          } else if (backendTurnId > 0 && optimisticPlayerSubmittedAt) {
+            this._rememberSubmittedPlayerTurnTime(backendTurnId, optimisticPlayerSubmittedAt);
+          }
+
+          if (String(this.selectedCampaignId || "").trim() === String(campaignId || "").trim()) {
+            await Promise.all([
+              this.loadSessions(),
+              this.loadTimers(),
+              this.loadCalendar(),
+              this.loadRoster(),
+              this.loadPlayerState(),
+              this.loadPlayerStatistics(),
+              this.loadPlayerAttributes(),
+              this.loadMedia(),
+              this.loadDebugSnapshot(),
+              this.loadRecentTurns(),
+              this.loadStoryState(),
+              this.loadChapterList(),
+              this.loadSceneImages(),
+            ]);
+            if (backendTurnId > 0 && !this._recentTurnsContainTurnId(backendTurnId)) {
+              console.warn("recent-turns refresh missing completed turn", {
+                campaignId,
+                actorId: payload.actor_id,
+                sessionId: payload.session_id || null,
+                turnId: backendTurnId,
+              });
+              this.statusMessage = "Turn completed. History refresh has not caught up yet; keeping the live result.";
+              this._scheduleRecentTurnRecovery(backendTurnId);
+              this._activeProgressCampaignId = "";
+              this._activeProgressSessionId = "";
+              this._activeProgressLabel = "";
+              return { ok: true };
+            }
+            this._scrollAnchorEntryId = 0;
+            this.populateTurnStreamFromHistory();
+            this.statusMessage = queued ? "Queued action submitted." : "Turn submitted.";
+          } else {
+            await this._refreshBackgroundCampaignView(campaignId, payload.session_id || "");
+          }
+          this._scrollAnchorEntryId = 0;
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
+          return { ok: true };
         } catch (error) {
-          this.errorMessage = String(error);
+          const isAbort = !!(error && (error.name === "AbortError" || String(error).includes("AbortError")));
+          this._scrollAnchorEntryId = 0;
+          this._activeProgressCampaignId = "";
+          this._activeProgressSessionId = "";
+          this._activeProgressLabel = "";
+          if (isAbort && this._cancelTurnRequested) {
+            if (optimisticPlayerEntryId > 0) {
+              this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
+            }
+            return { ok: false, cancelled: true, error: "Turn cancelled." };
+          }
+          if (isFetchTransportError(error)) {
+            this.statusMessage = "Connection hiccup. Checking whether the turn completed...";
+            this.errorMessage = "";
+            const recovered = await this._recoverTurnAfterTransportFailure(
+              campaignId,
+              payload,
+              baselineRecentTurnId,
+            );
+            if (recovered) {
+              return { ok: true, recovered: true };
+            }
+          }
+          if (optimisticPlayerEntryId > 0) {
+            this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
+          }
+          return { ok: false, error };
         } finally {
+          if (this._activeTurnAbortController === abortController) {
+            this._activeTurnAbortController = null;
+          }
+          this._activeSubmitMeta = null;
           this._clearPhaseTyper();
           this._submittingTurn = false;
           this.submitting = false;
+          this._cancelTurnRequested = false;
         }
       },
 
@@ -2583,6 +5583,17 @@
         }
       },
 
+      async loadMapGraph() {
+        if (!this.selectedCampaignId) return;
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/map-graph`);
+          this.mapGraphJson = JSON.stringify(body, null, 2);
+          this.mapGraphVisible = true;
+        } catch (_err) {
+          this.mapGraphJson = "Error loading map graph";
+        }
+      },
+
       async loadTimers() {
         if (!this.selectedCampaignId) {
           return;
@@ -2590,6 +5601,17 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/timers`);
           this.timersText = formatJson(body);
+          const timers = Array.isArray(body.timers) ? body.timers : [];
+          const active = timers.filter((t) => t.status === "scheduled_unbound" || t.status === "scheduled_bound");
+          this._activeTimerCount = active.length;
+          if (active.length > 0) {
+            const next = active[0];
+            const due = next.due_at ? new Date(next.due_at) : null;
+            const label = due ? `Timer: ${next.event_text || "event"} (${due.toLocaleTimeString()})` : `Timer: ${next.event_text || "pending"}`;
+            this._activeTimerLabel = label;
+          } else {
+            this._activeTimerLabel = "";
+          }
         } catch (_err) {
           /* background refresh */
         }
@@ -2620,10 +5642,12 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/calendar`);
           this.calendarText = formatJson(body);
+          this.calendarEvents = Array.isArray(body.events) ? body.events : [];
           if (body.game_time && typeof body.game_time === "object") {
             this.gameTime = body.game_time;
           }
         } catch (_err) {
+          this.calendarEvents = [];
           /* background refresh */
         }
       },
@@ -2634,7 +5658,9 @@
         }
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/roster`);
+          this.rosterCharacters = Array.isArray(body.characters) ? body.characters.slice() : [];
           this.rosterText = formatJson(body);
+          this._buildTtsVoiceMap();
         } catch (_err) {
           /* background refresh */
         }
@@ -2720,7 +5746,13 @@
         } catch (_err) {
           return;
         }
-        const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+        const sessions = Array.isArray(body.sessions) ? body.sessions.slice() : [];
+        sessions.sort((a, b) => {
+          const aShared = a && a.surface === "web_shared" ? 1 : 0;
+          const bShared = b && b.surface === "web_shared" ? 1 : 0;
+          if (aShared !== bShared) return bShared - aShared;
+          return String(a && a.created_at || "").localeCompare(String(b && b.created_at || ""));
+        });
         this.sessionsList = sessions;
         this.sessionsText = formatJson(body);
         if (this.selectedSessionId) {
@@ -2745,11 +5777,21 @@
           if (preferred && preferred.id) {
             this.selectedSessionId = preferred.id;
             localStorage.setItem("selectedSessionId", preferred.id);
+            this.sessionLastSeen[preferred.id] = isoNow();
+            this._persistSessionLastSeen();
             this.syncTurnSessionSelection();
           }
         }
         if (skipConnect) return;
-        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        const currentSocketCampaignId = this.socket ? String(this.socket._campaignId || "").trim() : "";
+        const currentSocketSessionId = this.socket ? String(this.socket._sessionId || "").trim() : "";
+        const selectedSessionId = String(this.selectedSessionId || "").trim();
+        if (
+          this.socket
+          && this.socket.readyState === WebSocket.OPEN
+          && currentSocketCampaignId === String(this.selectedCampaignId || "").trim()
+          && currentSocketSessionId === selectedSessionId
+        ) {
           return;
         }
         this.connectSocket();
@@ -2786,8 +5828,10 @@
         }
       },
 
-      async ensureSharedWindow() {
-        this.resetError();
+      async ensureSharedWindow({ select = true, silent = false } = {}) {
+        if (!silent) {
+          this.resetError();
+        }
         if (!this.selectedCampaignId) {
           return;
         }
@@ -2798,11 +5842,13 @@
           });
           this.sessions.update_session_id = body.session && body.session.id ? body.session.id : "";
           await this.loadSessions();
-          if (body.session && body.session.id) {
+          if (select && body.session && body.session.id) {
             this.selectSession(body.session.id);
           }
         } catch (error) {
-          this.errorMessage = String(error);
+          if (!silent) {
+            this.errorMessage = String(error);
+          }
         }
       },
 
@@ -3000,12 +6046,19 @@
       },
 
       /* ---- Recent turns (history) ---- */
-      async loadRecentTurns(limit) {
+      async loadRecentTurns(limit, options) {
         if (!this.selectedCampaignId) return;
+        const force = !!(options && typeof options === "object" && options.force === true);
+        if (this._turnJumpInProgress && !force) return;
         try {
           const lim = limit || 30;
+          const params = new URLSearchParams();
+          params.set("limit", String(lim));
+          if (this.selectedSessionId) {
+            params.set("session_id", this.selectedSessionId);
+          }
           const data = await this.api(
-            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=${lim}`,
+            `/api/campaigns/${this.selectedCampaignId}/recent-turns?${params.toString()}`,
           );
           this.recentTurns = Array.isArray(data.turns) ? data.turns : [];
           // Offset represents the number of newest turns already loaded
@@ -3015,11 +6068,17 @@
       },
 
       async loadOlderTurns() {
-        if (this._turnStreamLoadingOlder || !this._turnStreamHasMore || !this.selectedCampaignId) return;
+        if (this._turnJumpInProgress || this._turnStreamLoadingOlder || !this._turnStreamHasMore || !this.selectedCampaignId) return;
         this._turnStreamLoadingOlder = true;
         try {
+          const params = new URLSearchParams();
+          params.set("limit", "30");
+          params.set("offset", String(this._turnStreamOffset));
+          if (this.selectedSessionId) {
+            params.set("session_id", this.selectedSessionId);
+          }
           const data = await this.api(
-            `/api/campaigns/${this.selectedCampaignId}/recent-turns?limit=30&offset=${this._turnStreamOffset}`,
+            `/api/campaigns/${this.selectedCampaignId}/recent-turns?${params.toString()}`,
           );
           const older = Array.isArray(data.turns) ? data.turns : [];
           if (older.length === 0) {
@@ -3028,7 +6087,19 @@
           }
           const stream = document.getElementById("turn-stream");
           const prevHeight = stream ? stream.scrollHeight : 0;
-          this.recentTurns = [...older, ...this.recentTurns];
+          const seenTurnIds = new Set(
+            (Array.isArray(this.recentTurns) ? this.recentTurns : [])
+              .map((row) => Number(row && row.id) || 0)
+              .filter((value) => value > 0),
+          );
+          const dedupedOlder = older.filter((row) => {
+            const turnId = Number(row && row.id) || 0;
+            if (turnId <= 0) return true;
+            if (seenTurnIds.has(turnId)) return false;
+            seenTurnIds.add(turnId);
+            return true;
+          });
+          this.recentTurns = [...dedupedOlder, ...this.recentTurns];
           this._turnStreamOffset += older.length;
           this._turnStreamHasMore = !!data.has_more;
           this.populateTurnStreamFromHistory(false);
@@ -3046,6 +6117,151 @@
         this._turnStreamOffset = 0;
         this._turnStreamHasMore = false;
         this._turnStreamLoadingOlder = false;
+        this._timedEventInProgress = false;
+        this._activeTimerCount = 0;
+        this._activeTimerLabel = "";
+      },
+
+      toggleTurnSearch() {
+        this.turnSearch.open = !this.turnSearch.open;
+        this.turnSearch.highlightTurnId = 0;
+        if (!this.turnSearch.open) {
+          this.turnSearch.status = "";
+          return;
+        }
+        if (this.turnSearch.query.trim()) {
+          this.runTurnSearch();
+        }
+      },
+
+      async runTurnSearch() {
+        const query = String(this.turnSearch.query || "").trim();
+        if (!this.selectedCampaignId) return;
+        if (!query) {
+          this.turnSearch.results = [];
+          this.turnSearch.status = "";
+          this.turnSearch.has_more = false;
+          return;
+        }
+        this.turnSearch.loading = true;
+        this.turnSearch.status = "";
+        try {
+          const params = new URLSearchParams();
+          params.set("q", query);
+          params.set("limit", "10000");
+          if (this.selectedSessionId) {
+            params.set("session_id", this.selectedSessionId);
+          }
+          const data = await this.api(
+            `/api/campaigns/${this.selectedCampaignId}/turn-search?${params.toString()}`,
+          );
+          this.turnSearch.results = Array.isArray(data.results) ? data.results : [];
+          this.turnSearch.has_more = !!data.has_more;
+          this.turnSearch.status = this.turnSearch.results.length
+            ? ""
+            : "No matching visible turns in this room.";
+        } catch (error) {
+          this.turnSearch.results = [];
+          this.turnSearch.has_more = false;
+          this.turnSearch.status = String(error);
+        } finally {
+          this.turnSearch.loading = false;
+        }
+      },
+
+      _findTurnStreamEntryByBackendId(turnId) {
+        const wanted = Number(turnId) || 0;
+        if (wanted <= 0) return null;
+        return this.turnStream.find((entry) => Number(entry && entry._backendTurnId) === wanted) || null;
+      },
+
+      async ensureTurnLoaded(turnId) {
+        const wanted = Number(turnId) || 0;
+        if (wanted <= 0) return false;
+        if (this._recentTurnsContainTurnId(wanted)) {
+          return true;
+        }
+        if (!this.selectedCampaignId || this._turnJumpInProgress) {
+          return false;
+        }
+        this._turnJumpInProgress = true;
+        try {
+          let offset = Math.max(
+            Number(this._turnStreamOffset) || 0,
+            Array.isArray(this.recentTurns) ? this.recentTurns.length : 0,
+          );
+          let hasMore = this._turnStreamHasMore === true;
+          let changed = false;
+          const seenOffsets = new Set();
+          while (!this._recentTurnsContainTurnId(wanted) && hasMore) {
+            if (seenOffsets.has(offset)) {
+              break;
+            }
+            seenOffsets.add(offset);
+            const params = new URLSearchParams();
+            params.set("limit", "30");
+            params.set("offset", String(offset));
+            if (this.selectedSessionId) {
+              params.set("session_id", this.selectedSessionId);
+            }
+            const data = await this.api(
+              `/api/campaigns/${this.selectedCampaignId}/recent-turns?${params.toString()}`,
+            );
+            const older = Array.isArray(data.turns) ? data.turns : [];
+            if (older.length === 0) {
+              hasMore = false;
+              this._turnStreamHasMore = false;
+              break;
+            }
+            const seenTurnIds = new Set(
+              (Array.isArray(this.recentTurns) ? this.recentTurns : [])
+                .map((row) => Number(row && row.id) || 0)
+                .filter((value) => value > 0),
+            );
+            const dedupedOlder = older.filter((row) => {
+              const turnIdValue = Number(row && row.id) || 0;
+              if (turnIdValue <= 0) return true;
+              if (seenTurnIds.has(turnIdValue)) return false;
+              seenTurnIds.add(turnIdValue);
+              return true;
+            });
+            if (dedupedOlder.length) {
+              this.recentTurns = [...dedupedOlder, ...this.recentTurns];
+              changed = true;
+            }
+            offset += older.length;
+            hasMore = !!data.has_more;
+            this._turnStreamOffset = Math.max(Number(this._turnStreamOffset) || 0, offset);
+            this._turnStreamHasMore = hasMore;
+          }
+          if (changed) {
+            this.populateTurnStreamFromHistory(false);
+          }
+          return this._recentTurnsContainTurnId(wanted);
+        } finally {
+          this._turnJumpInProgress = false;
+        }
+      },
+
+      async jumpToSearchTurn(result) {
+        const turnId = Number(result && result.id) || 0;
+        if (turnId <= 0) return;
+        this.turnSearch.highlightTurnId = turnId;
+        this.turnSearch.status = "Loading turn history\u2026";
+        const loaded = await this.ensureTurnLoaded(turnId);
+        if (!loaded) {
+          this.turnSearch.status = "Could not find that turn in the visible history for this session.";
+          return;
+        }
+        this.turnSearch.status = "";
+        this.populateTurnStreamFromHistory(false);
+        this.$nextTick(() => {
+          const entry = this._findTurnStreamEntryByBackendId(turnId);
+          if (!entry) return;
+          const el = document.getElementById(`turn-entry-${entry.id}`);
+          if (!el) return;
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
       },
 
       /* ---- Campaign persona ---- */
@@ -3086,7 +6302,6 @@
       /* ---- Extracted helper to reload all campaign data ---- */
       async _reloadCampaignData() {
         await Promise.all([
-          this.loadMap(),
           this.loadPlayerState(),
           this.loadPlayerStatistics(),
           this.loadPlayerAttributes(),
@@ -3200,7 +6415,6 @@
           w.campaignId = campaign.id;
           await this.refreshCampaigns();
           await this.selectCampaign(campaign.id);
-          await this.ensureSharedWindow();
 
           // Ingest files
           const allTexts = [];
@@ -3345,11 +6559,43 @@
         return renderSceneOutputHtml(scene, entry.text);
       },
 
+      resolveActorDisplayName(actorId, actorName, fallback) {
+        const explicit = String(actorName || "").trim();
+        if (explicit) return explicit;
+        const actor = String(actorId || "").trim();
+        if (actor && actor === String(this.turnForm.actor_id || "").trim()) {
+          return this.resolveCharacterName(actor);
+        }
+        const rosterMatch = (Array.isArray(this.rosterCharacters) ? this.rosterCharacters : []).find((row) => {
+          return row && String(row.slug || "").trim() === actor;
+        });
+        if (rosterMatch && String(rosterMatch.name || "").trim()) {
+          return String(rosterMatch.name || "").trim();
+        }
+        return actor || fallback || "Unknown";
+      },
+
+      turnEntryActorLabel(entry) {
+        const meta = entry && entry.meta && typeof entry.meta === "object" ? entry.meta : {};
+        return this.resolveActorDisplayName(meta.actor_id, meta.actor_name, "");
+      },
+
       _scrollWizardConversation() {
         this.$nextTick(() => {
           const el = document.getElementById("wizard-conversation");
           if (el) el.scrollTop = el.scrollHeight;
         });
+      },
+
+      showComposerHud() {
+        try {
+          if (typeof window === "undefined") {
+            return true;
+          }
+          return Number(window.innerWidth || 0) > 768;
+        } catch (_err) {
+          return true;
+        }
       },
 
       resolveCharacterName(fallback) {
@@ -3537,6 +6783,159 @@
           });
           this.smsText = formatJson(body);
           this.sms.message = "";
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async loadSmsInbox() {
+        if (!this.selectedCampaignId) return;
+        this.smsInboxLoading = true;
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/list`, {
+            method: "POST",
+            body: JSON.stringify({
+              wildcard: "*",
+              viewer_actor_id: (this.turnForm.actor_id || "").trim() || null,
+            }),
+          });
+          this.smsInboxThreads = Array.isArray(body.threads) ? body.threads : [];
+          if (this.smsInboxThreads.length && !this.smsInboxThread) {
+            const first = this.smsInboxThreads[0];
+            this.smsInboxThread = (first && typeof first === "object") ? (first.thread || "") : String(first || "");
+            await this.loadSmsInboxThread();
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+        this.smsInboxLoading = false;
+      },
+
+      async loadSmsInboxThread() {
+        if (!this.selectedCampaignId || !this.smsInboxThread) return;
+        try {
+          const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/read`, {
+            method: "POST",
+            body: JSON.stringify({
+              thread: this.smsInboxThread,
+              limit: 50,
+              viewer_actor_id: (this.turnForm.actor_id || "").trim() || null,
+            }),
+          });
+          this.smsInboxMessages = Array.isArray(body.messages) ? body.messages : [];
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async sendSmsInboxMessage() {
+        if (!this.selectedCampaignId || !this.smsInboxThread || !this.smsInboxCompose.trim()) return;
+        const actor = (this.turnForm.actor_id || "").trim();
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/write`, {
+            method: "POST",
+            body: JSON.stringify({
+              thread: this.smsInboxThread,
+              sender: actor || "player",
+              recipient: this.smsInboxThread,
+              message: this.smsInboxCompose.trim(),
+            }),
+          });
+          this.smsInboxCompose = "";
+          await this.loadSmsInboxThread();
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async deleteSmsThread(threadKey) {
+        if (!this.selectedCampaignId || !threadKey) return;
+        if (!confirm(`Delete entire thread "${threadKey}"?`)) return;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/delete-thread`, {
+            method: "POST",
+            body: JSON.stringify({ thread: threadKey }),
+          });
+          this.smsInboxThreads = this.smsInboxThreads.filter(
+            (t) => (t && typeof t === "object" ? t.thread : t) !== threadKey,
+          );
+          if (this.smsInboxThread === threadKey) {
+            const first = this.smsInboxThreads[0];
+            this.smsInboxThread = first
+              ? (typeof first === "object" ? first.thread || "" : String(first || ""))
+              : "";
+            this.smsInboxMessages = [];
+            if (this.smsInboxThread) {
+              await this.loadSmsInboxThread();
+            }
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      async deleteSmsMessage(index) {
+        if (!this.selectedCampaignId || !this.smsInboxThread) return;
+        const msg = this.smsInboxMessages[index];
+        if (!msg) return;
+        const seq = Number(msg.seq || 0);
+        if (!seq) {
+          this.errorMessage = "Cannot delete: message has no seq identifier.";
+          return;
+        }
+        if (!confirm("Delete this message?")) return;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/delete-message`, {
+            method: "POST",
+            body: JSON.stringify({ thread: msg.thread || this.smsInboxThread, message_seq: seq }),
+          });
+          await this.loadSmsInboxThread();
+          if (this.smsInboxMessages.length === 0) {
+            await this.loadSmsInbox();
+          }
+        } catch (error) {
+          this.errorMessage = String(error);
+        }
+      },
+
+      _smsEditingIndex: -1,
+      _smsEditingSeq: 0,
+      _smsEditingThread: "",
+      _smsEditingText: "",
+
+      startSmsEdit(index) {
+        const msg = this.smsInboxMessages[index];
+        if (!msg) return;
+        this._smsEditingIndex = index;
+        this._smsEditingSeq = Number(msg.seq || 0);
+        this._smsEditingThread = msg.thread || this.smsInboxThread;
+        this._smsEditingText = msg.message || msg.body || "";
+      },
+
+      cancelSmsEdit() {
+        this._smsEditingIndex = -1;
+        this._smsEditingSeq = 0;
+        this._smsEditingThread = "";
+        this._smsEditingText = "";
+      },
+
+      async saveSmsEdit() {
+        if (!this.selectedCampaignId || !this._smsEditingSeq) return;
+        const newText = this._smsEditingText.trim();
+        if (!newText) return;
+        try {
+          await this.api(`/api/campaigns/${this.selectedCampaignId}/sms/edit-message`, {
+            method: "POST",
+            body: JSON.stringify({
+              thread: this._smsEditingThread || this.smsInboxThread,
+              message_seq: this._smsEditingSeq,
+              new_text: newText,
+            }),
+          });
+          this._smsEditingIndex = -1;
+          this._smsEditingSeq = 0;
+          this._smsEditingThread = "";
+          await this.loadSmsInboxThread();
         } catch (error) {
           this.errorMessage = String(error);
         }

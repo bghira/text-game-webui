@@ -13,16 +13,28 @@ import time
 from datetime import UTC, datetime
 from typing import NoReturn
 from urllib import request as urllib_request
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.services.engine_gateway import FEATURES, EngineGateway
+from app.services.dtm_link_auth import (
+    LINK_CONFIRM_HEADER,
+    LINK_PENDING_COOKIE,
+    LINK_SESSION_COOKIE,
+    confirm_pending_link,
+    dtm_link_enabled,
+    get_linked_actor_from_request,
+    get_or_create_pending_link,
+    issue_session_cookie_value,
+)
+from app.services.engine_gateway import FEATURES, EngineGateway, TurnCancelledError
 from app.services.schemas import (
     AttributeSetRequest,
     AvatarActionRequest,
     AvatarGenerateRequest,
+    CalendarVisibilityUpdateRequest,
     CampaignRuleUpdate,
     CampaignFlagsUpdate,
     CharacterPortraitRequest,
@@ -45,12 +57,17 @@ from app.services.schemas import (
     RosterUpsertRequest,
     SessionCreateRequest,
     SessionUpdateRequest,
+    SmsDeleteMessageRequest,
+    SmsDeleteThreadRequest,
+    SmsEditMessageRequest,
     SmsListRequest,
     SmsReadRequest,
     SmsWriteRequest,
     SourceMaterialDigestIngest,
     SourceMaterialIngest,
     SourceMaterialSearchRequest,
+    TurnEditRequest,
+    TurnCancelRequest,
     TurnRequest,
 )
 
@@ -68,6 +85,27 @@ class CampaignCreateRequest(BaseModel):
     actor_id: str
 
 
+class DtmLinkConfirmRequest(BaseModel):
+    code: str
+    actor_id: str
+    display_name: str = ""
+
+
+class InternalTurnRefreshRequest(BaseModel):
+    actor_id: str | None = None
+    session_id: str | None = None
+
+
+class InternalMediaDeliverRequest(BaseModel):
+    image_url: str | None = None
+    image_base64: str | None = None
+    prompt: str = ""
+    ref_type: str = "scene"  # scene | avatar
+    actor_id: str | None = None
+    room_key: str | None = None
+    job_id: str | None = None
+
+
 def get_gateway(request: Request) -> EngineGateway:
     return request.app.state.gateway
 
@@ -78,6 +116,186 @@ def _not_found(err: KeyError) -> NoReturn:
 
 def _bad_request(err: ValueError) -> NoReturn:
     raise HTTPException(status_code=400, detail=str(err)) from err
+
+
+def _linked_actor_id(request: Request) -> str | None:
+    actor_id = str(getattr(request.state, "linked_actor_id", "") or "").strip()
+    return actor_id or None
+
+
+def _linked_display_name(request: Request) -> str:
+    return str(getattr(request.state, "linked_display_name", "") or "").strip()
+
+
+def _coerced_actor_id(request: Request, provided: str | None = None) -> str:
+    return _linked_actor_id(request) or str(provided or "").strip()
+
+
+def _coerced_mentioned_actor_ids(payload: TurnRequest) -> list[str]:
+    actor_id = str(payload.actor_id or "").strip()
+    seen: set[str] = set()
+    rows: list[str] = []
+    for raw in list(payload.mentioned_actor_ids or []):
+        target_actor_id = str(raw or "").strip()
+        if not target_actor_id or target_actor_id == actor_id or target_actor_id in seen:
+            continue
+        seen.add(target_actor_id)
+        rows.append(target_actor_id)
+    return rows
+
+
+async def _publish_pending_mentions(
+    request: Request,
+    campaign_id: str,
+    payload: TurnRequest,
+) -> tuple[str | None, list[str]]:
+    target_actor_ids = _coerced_mentioned_actor_ids(payload)
+    if not target_actor_ids:
+        return None, []
+    pending_id = uuid4().hex
+    for target_actor_id in target_actor_ids:
+        try:
+            await request.app.state.realtime.publish_to_actor(
+                campaign_id,
+                target_actor_id,
+                {
+                    "type": "pending_mention",
+                    "actor_id": target_actor_id,
+                    "payload": {
+                        "pending_id": pending_id,
+                        "source_actor_id": str(payload.actor_id or "").strip(),
+                        "source_session_id": str(payload.session_id or "").strip() or None,
+                        "action_text": str(payload.action or "").strip(),
+                    },
+                },
+            )
+        except Exception:
+            pass
+    return pending_id, target_actor_ids
+
+
+async def _shared_pending_session_id(
+    gateway: EngineGateway,
+    campaign_id: str,
+    payload: TurnRequest,
+) -> str | None:
+    source_session_id = str(payload.session_id or "").strip()
+    if not source_session_id:
+        return None
+    try:
+        sessions = await gateway.list_sessions(campaign_id)
+    except Exception:
+        return None
+    for row in sessions:
+        if str(row.get("id") or "").strip() != source_session_id:
+            continue
+        surface = str(row.get("surface") or "").strip().lower()
+        enabled = row.get("enabled")
+        if surface == "web_shared" and enabled is not False:
+            return source_session_id
+        return None
+    return None
+
+
+async def _publish_pending_shared_turn(
+    request: Request,
+    campaign_id: str,
+    payload: TurnRequest,
+    gateway: EngineGateway,
+) -> tuple[str | None, list[str]]:
+    shared_session_id = await _shared_pending_session_id(gateway, campaign_id, payload)
+    if not shared_session_id:
+        return None, []
+    try:
+        target_actor_ids = await gateway.shared_pending_target_actor_ids(
+            campaign_id,
+            str(payload.actor_id or "").strip(),
+        )
+    except Exception:
+        target_actor_ids = []
+    target_actor_ids = [
+        actor_id
+        for actor_id in target_actor_ids
+        if actor_id and actor_id != str(payload.actor_id or "").strip()
+    ]
+    if not target_actor_ids:
+        return None, []
+    pending_id = uuid4().hex
+    delivered_any = False
+    for target_actor_id in target_actor_ids:
+        try:
+            await request.app.state.realtime.publish_to_actor(
+                campaign_id,
+                target_actor_id,
+                {
+                    "type": "pending_shared_turn",
+                    "actor_id": target_actor_id,
+                    "session_id": shared_session_id,
+                    "payload": {
+                        "pending_id": pending_id,
+                        "source_actor_id": str(payload.actor_id or "").strip(),
+                        "source_actor_name": _linked_display_name(request),
+                        "source_session_id": str(payload.session_id or "").strip() or None,
+                        "action_text": str(payload.action or "").strip(),
+                    },
+                },
+            )
+            delivered_any = True
+        except Exception:
+            pass
+    return (pending_id, target_actor_ids) if delivered_any else (None, [])
+
+
+async def _clear_pending_mentions(
+    request: Request,
+    campaign_id: str,
+    pending_id: str | None,
+    target_actor_ids: list[str],
+) -> None:
+    pending_text = str(pending_id or "").strip()
+    if not pending_text or not target_actor_ids:
+        return
+    for target_actor_id in target_actor_ids:
+        try:
+            await request.app.state.realtime.publish_to_actor(
+                campaign_id,
+                target_actor_id,
+                {
+                    "type": "pending_mention_clear",
+                    "actor_id": target_actor_id,
+                    "payload": {
+                        "pending_id": pending_text,
+                    },
+                },
+            )
+        except Exception:
+            pass
+
+
+async def _clear_pending_shared_turn(
+    request: Request,
+    campaign_id: str,
+    pending_id: str | None,
+    target_actor_ids: list[str],
+) -> None:
+    pending_text = str(pending_id or "").strip()
+    if not pending_text or not target_actor_ids:
+        return
+    for target_actor_id in target_actor_ids:
+        try:
+            await request.app.state.realtime.publish_to_actor(
+                campaign_id,
+                target_actor_id,
+                {
+                    "type": "pending_shared_turn_clear",
+                    "actor_id": target_actor_id,
+                    "payload": {
+                        "pending_id": pending_text,
+                    },
+                },
+            )
+        except Exception:
+            pass
 
 
 @router.get("/health")
@@ -143,15 +361,258 @@ async def features() -> dict:
     return {"features": FEATURES}
 
 
+@router.get("/dtm-link/status")
+async def dtm_link_status(request: Request) -> JSONResponse:
+    settings = request.app.state.settings
+    linked = get_linked_actor_from_request(request)
+    prefix = str(getattr(settings, "dtm_command_prefix", "+") or "+").strip() or "+"
+    if not dtm_link_enabled(settings):
+        return JSONResponse(
+            {
+                "enabled": False,
+                "linked": False,
+                "actor_id": None,
+                "display_name": "",
+                "link_code": None,
+                "command": "",
+            }
+        )
+    if linked is not None:
+        response = JSONResponse(
+            {
+                "enabled": True,
+                "linked": True,
+                "actor_id": linked.actor_id,
+                "display_name": linked.display_name,
+                "link_code": None,
+                "command": "",
+            }
+        )
+        response.delete_cookie(LINK_PENDING_COOKIE, path="/")
+        return response
+
+    pending_cookie = request.cookies.get(LINK_PENDING_COOKIE)
+    row = get_or_create_pending_link(request.app, pending_cookie)
+    actor_id = str(row.get("actor_id") or "").strip()
+    display_name = str(row.get("display_name") or "").strip()
+    if actor_id:
+        session_cookie = issue_session_cookie_value(
+            settings,
+            actor_id=actor_id,
+            display_name=display_name,
+        )
+        response = JSONResponse(
+            {
+                "enabled": True,
+                "linked": True,
+                "actor_id": actor_id,
+                "display_name": display_name,
+                "link_code": None,
+                "command": "",
+            }
+        )
+        response.set_cookie(
+            LINK_SESSION_COOKIE,
+            session_cookie,
+            httponly=True,
+            samesite="lax",
+            path="/",
+            max_age=60 * 60 * 24 * 30,
+        )
+        response.delete_cookie(LINK_PENDING_COOKIE, path="/")
+        return response
+
+    code = str(row.get("code") or "").strip()
+    response = JSONResponse(
+        {
+            "enabled": True,
+            "linked": False,
+            "actor_id": None,
+            "display_name": "",
+            "link_code": code,
+            "command": f"{prefix}zork link-account {code}",
+        }
+    )
+    response.set_cookie(
+        LINK_PENDING_COOKIE,
+        code,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        max_age=60 * 60 * 12,
+    )
+    return response
+
+
+@router.post("/dtm-link/confirm")
+async def dtm_link_confirm(payload: DtmLinkConfirmRequest, request: Request) -> dict:
+    settings = request.app.state.settings
+    if not dtm_link_enabled(settings):
+        raise HTTPException(status_code=404, detail="Discord link auth is not enabled.")
+    provided_secret = str(request.headers.get(LINK_CONFIRM_HEADER) or "").strip()
+    expected_secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
+    if not provided_secret or provided_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Invalid link secret.")
+    row = confirm_pending_link(
+        request.app,
+        code=payload.code,
+        actor_id=payload.actor_id,
+        display_name=payload.display_name,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired link code.")
+    return {
+        "ok": True,
+        "code": str(row.get("code") or ""),
+        "actor_id": str(row.get("actor_id") or ""),
+        "display_name": str(row.get("display_name") or ""),
+    }
+
+
+@router.post("/internal/campaigns/{campaign_id}/turns/refresh")
+async def internal_turn_refresh(
+    campaign_id: str,
+    payload: InternalTurnRefreshRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    settings = request.app.state.settings
+    provided_secret = str(request.headers.get(LINK_CONFIRM_HEADER) or "").strip()
+    expected_secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
+    if not provided_secret or provided_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Invalid link secret.")
+    try:
+        await gateway.debug_snapshot(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn_refresh",
+            "actor_id": str(payload.actor_id or "").strip() or None,
+            "session_id": str(payload.session_id or "").strip() or None,
+            "payload": {
+                "actor_id": str(payload.actor_id or "").strip() or None,
+                "session_id": str(payload.session_id or "").strip() or None,
+                "source": "discord",
+            },
+        },
+    )
+    return {"ok": True}
+
+
+@router.post("/internal/campaigns/{campaign_id}/media/deliver")
+async def internal_media_deliver(
+    campaign_id: str,
+    payload: InternalMediaDeliverRequest,
+    request: Request,
+) -> dict:
+    """Receive a generated image from DTM and publish it to WebSocket subscribers."""
+    import logging as _log
+
+    settings = request.app.state.settings
+    provided_secret = str(request.headers.get(LINK_CONFIRM_HEADER) or "").strip()
+    expected_secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
+    if not provided_secret or provided_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Invalid link secret.")
+
+    # Resolve image bytes — prefer base64, fall back to downloading the URL.
+    png_bytes: bytes | None = None
+    if payload.image_base64:
+        import base64
+
+        try:
+            png_bytes = base64.b64decode(payload.image_base64)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid base64 image data.")
+    elif payload.image_url:
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=30, verify=False) as client:
+                resp = await client.get(payload.image_url)
+                resp.raise_for_status()
+                png_bytes = resp.content
+        except Exception as exc:
+            _log.getLogger(__name__).warning(
+                "Failed to download DTM image %s: %s", payload.image_url, exc,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not download image from DTM: {exc}",
+            )
+    else:
+        raise HTTPException(status_code=400, detail="Either image_url or image_base64 is required.")
+
+    # Store in local cache
+    image_cache = getattr(request.app.state, "image_cache", None)
+    if image_cache is None:
+        raise HTTPException(status_code=500, detail="Image cache not initialized.")
+
+    entry = image_cache.store(
+        png_bytes=png_bytes,
+        prompt=payload.prompt,
+        campaign_id=campaign_id,
+        room_key=payload.room_key,
+        ref_type=payload.ref_type,
+    )
+    local_url = image_cache.url_for(entry)
+
+    # Track DTM job completion (for "Generate" button polling)
+    dtm_pending = getattr(request.app.state, "dtm_pending_jobs", None)
+    if dtm_pending is not None and payload.job_id:
+        dtm_pending[payload.job_id] = {
+            "status": "completed",
+            "image_url": local_url,
+            "image_id": entry.image_id,
+        }
+
+    # Publish to WebSocket subscribers
+    hub = request.app.state.realtime
+    await hub.publish(
+        campaign_id,
+        {
+            "type": "media",
+            "campaign_id": campaign_id,
+            "payload": {
+                "action": f"{payload.ref_type}_generated",
+                "actor_id": payload.actor_id,
+                "image_url": local_url,
+                "image_id": entry.image_id,
+                "prompt": payload.prompt,
+                "source": "dtm",
+            },
+        },
+    )
+
+    return {"ok": True, "image_url": local_url, "image_id": entry.image_id}
+
+
 @router.get("/campaigns")
-async def list_campaigns(namespace: str = "all", gateway: EngineGateway = Depends(get_gateway)) -> dict:
-    rows = await gateway.list_campaigns(namespace)
+async def list_campaigns(
+    request: Request,
+    namespace: str = "all",
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    linked_actor = _linked_actor_id(request)
+    if dtm_link_enabled(request.app.state.settings) and linked_actor:
+        rows = await gateway.list_campaigns_for_actor(linked_actor)
+    else:
+        rows = await gateway.list_campaigns(namespace)
     return {"campaigns": [row.model_dump() for row in rows]}
 
 
 @router.post("/campaigns")
-async def create_campaign(payload: CampaignCreateRequest, gateway: EngineGateway = Depends(get_gateway)) -> dict:
-    row = await gateway.create_campaign(payload.namespace, payload.name, payload.actor_id)
+async def create_campaign(
+    payload: CampaignCreateRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _linked_actor_id(request) or payload.actor_id
+    namespace = payload.namespace
+    if str(namespace or "").strip().lower() in {"", "*", "all"}:
+        namespace = "default"
+    row = await gateway.create_campaign(namespace, payload.name, actor_id)
     return {"campaign": row.model_dump()}
 
 
@@ -211,7 +672,14 @@ async def update_session(
     return {"session": row}
 
 
-async def _publish_turn_events(request: Request, campaign_id: str, result, gateway) -> None:
+async def _publish_turn_events(
+    request: Request,
+    campaign_id: str,
+    result,
+    gateway,
+    *,
+    action_text: str | None = None,
+) -> None:
     """Publish turn, media, and timer events via the realtime layer."""
     await request.app.state.realtime.publish(
         campaign_id,
@@ -219,7 +687,10 @@ async def _publish_turn_events(request: Request, campaign_id: str, result, gatew
             "type": "turn",
             "session_id": result.session_id,
             "actor_id": result.actor_id,
-            "payload": result.model_dump(),
+            "payload": {
+                **result.model_dump(),
+                "action_text": str(action_text or "").strip() or None,
+            },
         },
     )
     if result.image_prompt:
@@ -264,14 +735,91 @@ async def submit_turn(
     request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
+    pending_id, pending_targets = await _publish_pending_mentions(request, campaign_id, payload)
+    shared_pending_id, shared_pending_targets = await _publish_pending_shared_turn(
+        request,
+        campaign_id,
+        payload,
+        gateway,
+    )
     try:
         result = await gateway.submit_turn(campaign_id, payload)
+    except KeyError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
+        _not_found(err)
+    except ValueError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
+        _bad_request(err)
+    except TurnCancelledError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
+        raise HTTPException(status_code=409, detail=str(err)) from err
+    except Exception:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
+        raise
+    await _publish_turn_events(
+        request,
+        campaign_id,
+        result,
+        gateway,
+        action_text=payload.action,
+    )
+    await gateway.queue_discord_mirror(
+        campaign_id,
+        result,
+        actor_display_name=_linked_display_name(request),
+        action_text=payload.action,
+    )
+    await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+    await _clear_pending_shared_turn(
+        request,
+        campaign_id,
+        shared_pending_id,
+        shared_pending_targets,
+    )
+    return result.model_dump()
+
+
+@router.post("/campaigns/{campaign_id}/turns/cancel")
+async def cancel_turn(
+    campaign_id: str,
+    payload: TurnCancelRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, payload.actor_id)
+    if not str(actor_id or "").strip():
+        raise HTTPException(status_code=400, detail="actor_id is required.")
+    try:
+        return await gateway.cancel_active_turn(campaign_id, str(actor_id))
     except KeyError as err:
         _not_found(err)
     except ValueError as err:
         _bad_request(err)
-    await _publish_turn_events(request, campaign_id, result, gateway)
-    return result.model_dump()
 
 
 @router.post("/campaigns/{campaign_id}/turns/stream")
@@ -282,6 +830,23 @@ async def submit_turn_stream(
     gateway: EngineGateway = Depends(get_gateway),
 ) -> StreamingResponse:
     from app.services.schemas import TurnResult as TurnResultModel
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
+    pending_id, pending_targets = await _publish_pending_mentions(request, campaign_id, payload)
+    shared_pending_id, shared_pending_targets = await _publish_pending_shared_turn(
+        request,
+        campaign_id,
+        payload,
+        gateway,
+    )
+    progress_visible_actor_ids: list[str] = []
+    for raw_actor_id in [
+        str(payload.actor_id or "").strip(),
+        *list(pending_targets or []),
+        *list(shared_pending_targets or []),
+    ]:
+        actor_id_text = str(raw_actor_id or "").strip()
+        if actor_id_text and actor_id_text not in progress_visible_actor_ids:
+            progress_visible_actor_ids.append(actor_id_text)
 
     # Collect all events *before* streaming so turn execution and realtime
     # publishing are not cancelled if the client disconnects mid-stream.
@@ -302,6 +867,7 @@ async def submit_turn_stream(
                             "type": "turn_progress",
                             "session_id": payload.session_id,
                             "actor_id": payload.actor_id,
+                            "visible_actor_ids": progress_visible_actor_ids,
                             "payload": event_data,
                         },
                     )
@@ -312,13 +878,55 @@ async def submit_turn_stream(
             elif event_type == "error":
                 break
     except KeyError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
         error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
     except ValueError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
+        error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+    except Exception as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
         error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
 
     # Publish realtime events unconditionally — not tied to client connection.
     if final_result:
-        await _publish_turn_events(request, campaign_id, final_result, gateway)
+        await _publish_turn_events(
+            request,
+            campaign_id,
+            final_result,
+            gateway,
+            action_text=payload.action,
+        )
+        await gateway.queue_discord_mirror(
+            campaign_id,
+            final_result,
+            actor_display_name=_linked_display_name(request),
+            action_text=payload.action,
+        )
+    await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+    await _clear_pending_shared_turn(
+        request,
+        campaign_id,
+        shared_pending_id,
+        shared_pending_targets,
+    )
 
     async def _sse():
         if error_event:
@@ -436,14 +1044,37 @@ async def update_campaign_rule(
 async def rewind_to_turn(
     campaign_id: str,
     target_turn_id: int,
+    request: Request,
+    session_id: str | None = None,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
     try:
-        return await gateway.rewind_to_turn(campaign_id, target_turn_id)
+        result = await gateway.rewind_to_turn(
+            campaign_id,
+            target_turn_id,
+            session_id=str(session_id or "").strip() or None,
+            actor_id=_linked_actor_id(request),
+        )
     except KeyError as err:
         _not_found(err)
     except ValueError as err:
         _bad_request(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn_refresh",
+            "session_id": str(result.get("session_id") or "").strip() or None,
+            "actor_id": _linked_actor_id(request),
+            "payload": {
+                "target_turn_id": int(result.get("target_turn_id") or 0),
+                "resolved_turn_id": int(result.get("resolved_turn_id") or 0),
+                "session_id": str(result.get("session_id") or "").strip() or None,
+                "source": "webui",
+                "operation": "rewind",
+            },
+        },
+    )
+    return result
 
 
 @router.post("/campaigns/{campaign_id}/timers/cancel")
@@ -455,7 +1086,13 @@ async def cancel_pending_timer(campaign_id: str, gateway: EngineGateway = Depend
 
 
 @router.get("/campaigns/{campaign_id}/player-statistics")
-async def get_player_statistics(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_player_statistics(
+    campaign_id: str,
+    actor_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id)
     try:
         return await gateway.get_player_statistics(campaign_id, actor_id)
     except KeyError as err:
@@ -463,7 +1100,13 @@ async def get_player_statistics(campaign_id: str, actor_id: str, gateway: Engine
 
 
 @router.get("/campaigns/{campaign_id}/player-attributes")
-async def get_player_attributes(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_player_attributes(
+    campaign_id: str,
+    actor_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id)
     try:
         return await gateway.get_player_attributes(campaign_id, actor_id)
     except KeyError as err:
@@ -474,8 +1117,10 @@ async def get_player_attributes(campaign_id: str, actor_id: str, gateway: Engine
 async def set_player_attribute(
     campaign_id: str,
     payload: AttributeSetRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.set_player_attribute(campaign_id, payload.actor_id, payload.attribute, payload.value)
     except KeyError as err:
@@ -488,8 +1133,10 @@ async def set_player_attribute(
 async def rename_player_character(
     campaign_id: str,
     payload: PlayerNameUpdateRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.rename_player_character(campaign_id, payload.actor_id, payload.name)
     except KeyError as err:
@@ -502,8 +1149,10 @@ async def rename_player_character(
 async def level_up_player(
     campaign_id: str,
     payload: LevelUpRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.level_up_player(campaign_id, payload.actor_id)
     except KeyError as err:
@@ -515,14 +1164,120 @@ async def get_recent_turns(
     campaign_id: str,
     limit: int = 30,
     offset: int = 0,
+    session_id: str | None = None,
+    request: Request = None,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
     if offset < 0 or limit < 1:
         _bad_request(ValueError("limit must be >= 1 and offset must be >= 0"))
     try:
-        return await gateway.get_recent_turns(campaign_id, limit=limit, offset=offset)
+        return await gateway.get_recent_turns(
+            campaign_id,
+            limit=limit,
+            offset=offset,
+            session_id=session_id,
+            actor_id=_linked_actor_id(request),
+        )
     except KeyError as err:
         _not_found(err)
+
+
+@router.get("/campaigns/{campaign_id}/turn-search")
+async def search_turns(
+    campaign_id: str,
+    q: str,
+    limit: int = 30,
+    offset: int = 0,
+    session_id: str | None = None,
+    request: Request = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    if offset < 0 or limit < 1:
+        _bad_request(ValueError("limit must be >= 1 and offset must be >= 0"))
+    query = str(q or "").strip()
+    if not query:
+        return {"results": [], "count": 0, "has_more": False}
+    try:
+        return await gateway.search_turns(
+            campaign_id,
+            query,
+            limit=limit,
+            offset=offset,
+            session_id=session_id,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.patch("/campaigns/{campaign_id}/turns/{turn_id}")
+async def edit_turn(
+    campaign_id: str,
+    turn_id: int,
+    payload: TurnEditRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        result = await gateway.edit_turn(
+            campaign_id,
+            turn_id,
+            content=payload.content,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn_refresh",
+            "actor_id": result.get("actor_id"),
+            "session_id": result.get("session_id"),
+            "payload": {
+                "turn_id": int(result.get("turn_id") or 0),
+                "actor_id": result.get("actor_id"),
+                "session_id": result.get("session_id"),
+                "source": "webui",
+                "operation": "edit",
+            },
+        },
+    )
+    return result
+
+
+@router.delete("/campaigns/{campaign_id}/turns/{turn_id}")
+async def delete_turn(
+    campaign_id: str,
+    turn_id: int,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        result = await gateway.delete_turn(
+            campaign_id,
+            turn_id,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(
+        campaign_id,
+        {
+            "type": "turn_refresh",
+            "actor_id": result.get("actor_id"),
+            "session_id": result.get("session_id"),
+            "payload": {
+                "turn_id": int(result.get("turn_id") or 0),
+                "actor_id": result.get("actor_id"),
+                "session_id": result.get("session_id"),
+                "source": "webui",
+                "operation": "delete",
+            },
+        },
+    )
+    return result
 
 
 @router.get("/campaigns/{campaign_id}/persona")
@@ -603,8 +1358,10 @@ async def get_setup_status(campaign_id: str, gateway: EngineGateway = Depends(ge
 async def start_campaign_setup(
     campaign_id: str,
     payload: SetupStartRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.start_campaign_setup(
             campaign_id,
@@ -622,8 +1379,10 @@ async def start_campaign_setup(
 async def handle_setup_message(
     campaign_id: str,
     payload: SetupMessageRequest,
+    request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         return await gateway.handle_setup_message(campaign_id, payload.actor_id, payload.message)
     except KeyError as err:
@@ -763,12 +1522,30 @@ async def get_chapter_list(campaign_id: str, gateway: EngineGateway = Depends(ge
 
 
 @router.get("/campaigns/{campaign_id}/map")
-async def get_map(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_map(
+    campaign_id: str,
+    actor_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id)
     try:
         data = await gateway.get_map(campaign_id, actor_id)
     except KeyError as err:
         _not_found(err)
     return {"map": data}
+
+
+@router.get("/campaigns/{campaign_id}/map-graph")
+async def get_map_graph(
+    campaign_id: str,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = gateway.get_map_graph(campaign_id)
+    except KeyError as err:
+        _not_found(err)
+    return data
 
 
 @router.get("/campaigns/{campaign_id}/timers")
@@ -780,9 +1557,54 @@ async def get_timers(campaign_id: str, gateway: EngineGateway = Depends(get_gate
 
 
 @router.get("/campaigns/{campaign_id}/calendar")
-async def get_calendar(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_calendar(
+    campaign_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
     try:
-        return await gateway.get_calendar(campaign_id)
+        return await gateway.get_calendar(
+            campaign_id,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+
+
+@router.post("/campaigns/{campaign_id}/calendar/{event_key}/visibility")
+async def update_calendar_event_visibility(
+    campaign_id: str,
+    event_key: str,
+    payload: CalendarVisibilityUpdateRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.update_calendar_event_visibility(
+            campaign_id,
+            event_key,
+            visibility=payload.visibility,
+            actor_id=_linked_actor_id(request),
+        )
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.delete("/campaigns/{campaign_id}/calendar/{event_key}")
+async def delete_calendar_event(
+    campaign_id: str,
+    event_key: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        return await gateway.delete_calendar_event(
+            campaign_id,
+            event_key,
+            actor_id=_linked_actor_id(request),
+        )
     except KeyError as err:
         _not_found(err)
 
@@ -844,7 +1666,13 @@ async def remove_roster_character(
 
 
 @router.get("/campaigns/{campaign_id}/player-state")
-async def get_player_state(campaign_id: str, actor_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def get_player_state(
+    campaign_id: str,
+    actor_id: str,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id)
     try:
         data = await gateway.get_player_state(campaign_id, actor_id)
     except KeyError as err:
@@ -856,8 +1684,10 @@ async def get_player_state(campaign_id: str, actor_id: str, gateway: EngineGatew
 async def get_media(
     campaign_id: str,
     actor_id: str | None = None,
+    request: Request = None,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    actor_id = _coerced_actor_id(request, actor_id) if request is not None else actor_id
     try:
         data = await gateway.get_media(campaign_id, actor_id)
     except KeyError as err:
@@ -872,6 +1702,7 @@ async def generate_avatar(
     request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     """Generate an avatar image from a prompt and set it as the pending avatar."""
     settings = request.app.state.settings
     backend = (settings.image_backend or "none").strip().lower()
@@ -923,7 +1754,7 @@ async def commit_avatar(
 ) -> dict:
     """After generation completes, commit the image as the pending avatar."""
     body = await request.json()
-    actor_id = body.get("actor_id", "")
+    actor_id = _coerced_actor_id(request, body.get("actor_id", ""))
     image_url = body.get("image_url", "")
     prompt = body.get("prompt", "")
     if not actor_id or not image_url:
@@ -946,6 +1777,7 @@ async def accept_pending_avatar(
     request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         data = await gateway.accept_pending_avatar(campaign_id, payload.actor_id)
     except KeyError as err:
@@ -964,6 +1796,7 @@ async def decline_pending_avatar(
     request: Request,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
+    payload.actor_id = _coerced_actor_id(request, payload.actor_id)
     try:
         data = await gateway.decline_pending_avatar(campaign_id, payload.actor_id)
     except KeyError as err:
@@ -1008,15 +1841,22 @@ async def memory_store(campaign_id: str, payload: MemoryStoreRequest, gateway: E
 
 
 @router.post("/campaigns/{campaign_id}/sms/list")
-async def sms_list(campaign_id: str, payload: SmsListRequest, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def sms_list(campaign_id: str, payload: SmsListRequest, request: Request, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+    payload.viewer_actor_id = _coerced_actor_id(request, payload.viewer_actor_id)
     try:
-        return await gateway.sms_list(campaign_id, payload.wildcard)
+        return await gateway.sms_list(campaign_id, payload.wildcard, viewer_actor_id=payload.viewer_actor_id)
     except KeyError as err:
         _not_found(err)
 
 
 @router.post("/campaigns/{campaign_id}/sms/read")
-async def sms_read(campaign_id: str, payload: SmsReadRequest, gateway: EngineGateway = Depends(get_gateway)) -> dict:
+async def sms_read(
+    campaign_id: str,
+    payload: SmsReadRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    payload.viewer_actor_id = _coerced_actor_id(request, payload.viewer_actor_id)
     try:
         return await gateway.sms_read(campaign_id, payload.thread, payload.limit, viewer_actor_id=payload.viewer_actor_id)
     except KeyError as err:
@@ -1038,6 +1878,51 @@ async def sms_write(
     return data
 
 
+@router.post("/campaigns/{campaign_id}/sms/delete-thread")
+async def sms_delete_thread(
+    campaign_id: str,
+    payload: SmsDeleteThreadRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.sms_delete_thread(campaign_id, payload.thread)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": {"action": "thread_deleted", "thread": payload.thread}})
+    return data
+
+
+@router.post("/campaigns/{campaign_id}/sms/delete-message")
+async def sms_delete_message(
+    campaign_id: str,
+    payload: SmsDeleteMessageRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.sms_delete_message(campaign_id, payload.thread, payload.message_seq)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": {"action": "message_deleted", "thread": payload.thread}})
+    return data
+
+
+@router.post("/campaigns/{campaign_id}/sms/edit-message")
+async def sms_edit_message(
+    campaign_id: str,
+    payload: SmsEditMessageRequest,
+    request: Request,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    try:
+        data = await gateway.sms_edit_message(campaign_id, payload.thread, payload.message_seq, payload.new_text)
+    except KeyError as err:
+        _not_found(err)
+    await request.app.state.realtime.publish(campaign_id, {"type": "sms", "payload": {"action": "message_edited", "thread": payload.thread}})
+    return data
+
+
 @router.get("/campaigns/{campaign_id}/debug/snapshot")
 async def debug_snapshot(campaign_id: str, gateway: EngineGateway = Depends(get_gateway)) -> dict:
     try:
@@ -1047,22 +1932,30 @@ async def debug_snapshot(campaign_id: str, gateway: EngineGateway = Depends(get_
 
 
 @router.get("/settings")
-async def get_settings(request: Request) -> dict:
+async def get_settings(
+    request: Request,
+    campaign_id: str | None = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
     settings = request.app.state.settings
-    try:
-        ollama_options = json.loads(settings.tge_ollama_options_json or "{}")
-    except (json.JSONDecodeError, TypeError):
-        ollama_options = {}
+    effective = await gateway.effective_llm_settings(campaign_id=str(campaign_id or "").strip() or None)
     return {
-        "completion_mode": settings.tge_completion_mode,
-        "base_url": settings.tge_llm_base_url,
-        "model": settings.tge_llm_model,
-        "temperature": settings.tge_llm_temperature,
-        "max_tokens": settings.tge_llm_max_tokens,
-        "timeout_seconds": settings.tge_llm_timeout_seconds,
-        "keep_alive": settings.tge_ollama_keep_alive,
-        "ollama_options": ollama_options,
+        "completion_mode": effective.get("completion_mode") or settings.tge_completion_mode,
+        "base_url": effective.get("base_url") or settings.tge_llm_base_url,
+        "model": effective.get("model") or settings.tge_llm_model,
+        "temperature": effective.get("temperature", settings.tge_llm_temperature),
+        "max_tokens": effective.get("max_tokens", settings.tge_llm_max_tokens),
+        "timeout_seconds": effective.get("timeout_seconds", settings.tge_llm_timeout_seconds),
+        "keep_alive": effective.get("keep_alive") or settings.tge_ollama_keep_alive,
+        "ollama_options": effective.get("ollama_options") or {},
         "gateway_backend": settings.gateway_backend,
+        "locked": bool(settings.tge_sync_with_dtm),
+        "lock_message": (
+            "LLM settings are managed by DTM while sync_zork_backend is enabled. "
+            "Use Discord-side backend controls instead."
+            if settings.tge_sync_with_dtm
+            else ""
+        ),
     }
 
 
@@ -1078,6 +1971,11 @@ async def update_settings(
 
     if not isinstance(gateway, TextGameEngineGateway):
         raise HTTPException(status_code=400, detail="Gateway does not support reconfiguration.")
+    if request.app.state.settings.tge_sync_with_dtm:
+        raise HTTPException(
+            status_code=400,
+            detail="LLM settings are managed by DTM while sync_zork_backend is enabled.",
+        )
     raw = payload.model_dump()
     merged = {}
     for k, v in raw.items():
@@ -1757,6 +2655,32 @@ async def generate_image(
                 _gpu_orchestrated_jobs.add(prompt_id)
         return {"job_id": prompt_id, "status": "pending", "backend": "comfyui"}
 
+    elif backend == "dtm":
+        dtm_port = getattr(request.app.state, "media_port", None)
+        if dtm_port is None:
+            raise HTTPException(status_code=400, detail="DTM media port not initialized.")
+        job_id = str(uuid4())
+        # Track this job so the callback can mark it complete
+        dtm_pending = getattr(request.app.state, "dtm_pending_jobs", None)
+        if dtm_pending is None:
+            request.app.state.dtm_pending_jobs = {}
+            dtm_pending = request.app.state.dtm_pending_jobs
+        dtm_pending[job_id] = {"status": "pending"}
+        campaign_id = payload.campaign_id if hasattr(payload, "campaign_id") else None
+        ok = await dtm_port.enqueue_scene_generation(
+            actor_id="webui",
+            prompt=payload.prompt,
+            model="flux",
+            metadata={
+                "campaign_id": campaign_id,
+                "webui_job_id": job_id,
+            },
+        )
+        if not ok:
+            dtm_pending.pop(job_id, None)
+            raise HTTPException(status_code=502, detail="Failed to enqueue job on DTM.")
+        return {"job_id": job_id, "status": "pending", "backend": "dtm"}
+
     else:
         raise HTTPException(
             status_code=400,
@@ -1834,6 +2758,18 @@ async def image_job_status(job_id: str, request: Request) -> dict:
                 return {"status": "completed", "images": []}
             return {"status": "processing"}
         return {"status": "pending"}
+
+    elif backend == "dtm":
+        dtm_pending = getattr(request.app.state, "dtm_pending_jobs", None)
+        if dtm_pending is None:
+            return {"status": "failed", "error": "DTM job tracking not initialized."}
+        job = dtm_pending.get(job_id)
+        if job is None:
+            return {"status": "failed", "error": "Unknown DTM job."}
+        if job["status"] == "completed":
+            # Clean up after returning
+            dtm_pending.pop(job_id, None)
+        return job
 
     raise HTTPException(status_code=400, detail="No image backend configured.")
 

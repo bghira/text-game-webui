@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
+import logging
+import os
 import re
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import Any, Protocol
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+from uuid import uuid4
 
 from app.settings import Settings
 from app.services.schemas import CampaignSummary, MemoryStoreRequest, TurnRequest, TurnResult
+from sqlalchemy import and_, or_
+from sqlalchemy.exc import IntegrityError
 
-from .engine_gateway import EngineGateway
+from .engine_gateway import EngineGateway, TurnCancelledError
 
 try:
     from text_game_engine.backends.factory import build_text_completion_port
@@ -49,6 +57,89 @@ except Exception as exc:  # pragma: no cover - import guarded at runtime
         "text-game-engine backend selected but package is unavailable. "
         "Install it with: pip install -e ../text-game-engine"
     ) from exc
+
+
+logger = logging.getLogger(__name__)
+_ZORK_LOG_ROOT = os.getenv("TEXT_GAME_WEBUI_ZORK_LOG_ROOT") or str(
+    Path(__file__).resolve().parents[3] / "zork-logs"
+)
+_ZORK_LOG_PATH: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "text_game_webui_zork_log_path",
+    default=None,
+)
+_ZORK_LOG_RETENTION = 100
+_DEFAULT_PROVIDER_MODELS = {
+    "zai": "glm-5.1",
+}
+_TURN_COMPLETION_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "text_game_webui_turn_completion_override",
+    default=None,
+)
+
+
+@dataclass
+class _CampaignRuntime:
+    signature: tuple[Any, ...]
+    completion_mode: str
+    completion_port: Any
+    llm: Any
+    game_engine: GameEngine
+    emulator: ZorkEmulator
+
+
+@dataclass
+class _ActiveTurnTask:
+    task: asyncio.Task[Any]
+    session_id: str | None
+
+
+def _zork_log_component(value: object, label: str = "id") -> str:
+    raw = str(value or label).strip()
+    raw = re.sub(r"[^A-Za-z0-9._-]+", "-", raw)
+    return raw.strip("-") or label
+
+
+def _zork_log_rotate(path: str) -> None:
+    try:
+        if not os.path.exists(path):
+            return
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        archive = os.path.join(os.path.dirname(path), f"turn-{ts}.log")
+        counter = 0
+        while os.path.exists(archive):
+            counter += 1
+            archive = os.path.join(os.path.dirname(path), f"turn-{ts}-{counter}.log")
+        os.rename(path, archive)
+        archives = sorted(
+            (f for f in os.listdir(os.path.dirname(path)) if f.startswith("turn-")),
+            reverse=True,
+        )
+        for old in archives[_ZORK_LOG_RETENTION:]:
+            try:
+                os.remove(os.path.join(os.path.dirname(path), old))
+            except Exception:
+                pass
+    except Exception:
+        logger.exception("Failed rotating webui zork log")
+
+
+def _zork_log(section: str, body: str = "") -> None:
+    try:
+        log_path = _ZORK_LOG_PATH.get()
+        if log_path is None:
+            log_dir = os.path.join(_ZORK_LOG_ROOT, "webui", "global")
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, "event.log")
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a") as fh:
+            fh.write(f"\n{'=' * 72}\n[{ts}] {section}\n{'=' * 72}\n")
+            if body:
+                fh.write(body)
+                if not body.endswith("\n"):
+                    fh.write("\n")
+    except Exception:
+        logger.exception("Failed writing webui zork log")
 
 
 class CompletionPortProtocol(Protocol):
@@ -154,6 +245,185 @@ class ProviderCompletionPort:
         if not response or not response.strip():
             return False, "No completion content returned."
         return True, f"{self._provider} backend responded."
+
+
+class RoutedCompletionPort:
+    def __init__(self, default_port: CompletionPortProtocol | None) -> None:
+        self._default_port = default_port
+
+    def _current_port(self) -> CompletionPortProtocol | None:
+        override = _TURN_COMPLETION_OVERRIDE.get()
+        return override if override is not None else self._default_port
+
+    async def complete(
+        self,
+        system_prompt: str,
+        prompt: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str | None:
+        port = self._current_port()
+        if port is None:
+            return None
+        return await port.complete(
+            system_prompt,
+            prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
+        port = self._current_port()
+        if port is None:
+            return False, "No completion backend configured."
+        return await port.probe(timeout_seconds=timeout_seconds)
+
+
+class BrowserLLMRelayBroker:
+    def __init__(self) -> None:
+        self._hub = None
+        self._pending: dict[str, asyncio.Future] = {}
+        self._lock = threading.Lock()
+
+    def set_hub(self, hub: Any) -> None:
+        self._hub = hub
+
+    async def request_completion(
+        self,
+        *,
+        campaign_id: str,
+        actor_id: str,
+        base_url: str,
+        model: str,
+        system_prompt: str,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        timeout_seconds: int,
+        keep_alive: str,
+        ollama_options: dict[str, Any] | None = None,
+    ) -> str:
+        hub = self._hub
+        if hub is None:
+            raise RuntimeError("Browser-local Ollama bridge is unavailable.")
+        actor_text = str(actor_id or "").strip()
+        if not actor_text:
+            raise RuntimeError("Browser-local Ollama requires an actor.")
+        if hasattr(hub, "has_actor_subscription") and not hub.has_actor_subscription(
+            campaign_id,
+            actor_text,
+        ):
+            raise RuntimeError("Browser-local Ollama requires this browser tab to be connected.")
+        request_id = uuid4().hex
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        with self._lock:
+            self._pending[request_id] = fut
+        try:
+            await hub.publish_to_actor(
+                campaign_id,
+                actor_text,
+                {
+                    "type": "browser_llm_request",
+                    "actor_id": actor_text,
+                    "payload": {
+                        "request_id": request_id,
+                        "provider": "ollama",
+                        "base_url": base_url,
+                        "model": model,
+                        "system_prompt": system_prompt,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "timeout_seconds": timeout_seconds,
+                        "keep_alive": keep_alive,
+                        "ollama_options": ollama_options if isinstance(ollama_options, dict) else {},
+                    },
+                },
+            )
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.shield(fut),
+                    timeout=max(int(timeout_seconds or 0), 1) + 30,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError(
+                    f"Browser-local Ollama timed out after {max(int(timeout_seconds or 0), 1)}s."
+                ) from exc
+        finally:
+            with self._lock:
+                self._pending.pop(request_id, None)
+        if not isinstance(result, dict):
+            raise RuntimeError("Browser-local Ollama returned no result.")
+        if result.get("ok") is True:
+            return str(result.get("text") or "")
+        raise RuntimeError(str(result.get("detail") or "Browser-local Ollama request failed."))
+
+    async def deliver_result(self, payload: dict[str, Any]) -> bool:
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id:
+            return False
+        with self._lock:
+            fut = self._pending.pop(request_id, None)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(
+            {
+                "ok": payload.get("ok") is True,
+                "text": str(payload.get("text") or ""),
+                "detail": str(payload.get("detail") or ""),
+            }
+        )
+        return True
+
+
+class BrowserOllamaCompletionPort:
+    def __init__(
+        self,
+        *,
+        broker: BrowserLLMRelayBroker,
+        campaign_id: str,
+        actor_id: str,
+        base_url: str,
+        model: str,
+        timeout_seconds: int,
+        keep_alive: str,
+        ollama_options: dict[str, Any] | None = None,
+    ) -> None:
+        self._broker = broker
+        self._campaign_id = str(campaign_id or "").strip()
+        self._actor_id = str(actor_id or "").strip()
+        self._base_url = str(base_url or "").strip()
+        self._model = str(model or "").strip()
+        self._timeout_seconds = max(int(timeout_seconds or 600), 1)
+        self._keep_alive = str(keep_alive or "").strip()
+        self._ollama_options = ollama_options if isinstance(ollama_options, dict) else {}
+
+    async def complete(
+        self,
+        system_prompt: str,
+        prompt: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str | None:
+        return await self._broker.request_completion(
+            campaign_id=self._campaign_id,
+            actor_id=self._actor_id,
+            base_url=self._base_url,
+            model=self._model,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_seconds=self._timeout_seconds,
+            keep_alive=self._keep_alive,
+            ollama_options=self._ollama_options,
+        )
+
+    async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
+        return True, "Browser-local Ollama will be used for this actor's turns."
 
 
 class OpenAICompatibleCompletionPort:
@@ -2292,6 +2562,11 @@ class TextGameEngineGateway(EngineGateway):
         return normalized in {"", "*", "all"}
 
     @staticmethod
+    def _default_model_for_mode(mode: str) -> str:
+        normalized = str(mode or "").strip().lower()
+        return str(_DEFAULT_PROVIDER_MODELS.get(normalized) or "").strip()
+
+    @staticmethod
     def _parse_json_object(text: str, env_name: str) -> dict[str, Any]:
         raw = str(text or "").strip() or "{}"
         try:
@@ -2313,34 +2588,143 @@ class TextGameEngineGateway(EngineGateway):
         def _uow_factory():
             return SQLAlchemyUnitOfWork(self._session_factory)
 
+        self._uow_factory = _uow_factory
+        self._injected_media_port: object | None = None
+        self._injected_timer_effects_port: object | None = None
+        self._injected_notification_port: object | None = None
+        default_signature = self._campaign_runtime_signature(None)
+        default_runtime = self._build_campaign_runtime(default_signature)
+        self._game_engine = default_runtime.game_engine
+        self._emulator = default_runtime.emulator
+        self._completion_port = default_runtime.completion_port
+        self._llm = default_runtime.llm
+        self._reconfigure_lock = threading.Lock()
+        self._campaign_runtime_lock = threading.Lock()
+        self._actor_turn_lock_guard = threading.Lock()
+        self._active_turn_tasks_guard = threading.Lock()
+        self._campaign_runtimes: dict[str, _CampaignRuntime] = {}
+        self._actor_turn_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._active_turn_tasks: dict[tuple[str, str], _ActiveTurnTask] = {}
+        self._probe_timeout_seconds = max(int(settings.tge_runtime_probe_timeout_seconds or 8), 1)
+        self._browser_llm_broker = BrowserLLMRelayBroker()
+
+    def set_realtime_hub(self, hub: Any) -> None:
+        self._browser_llm_broker.set_hub(hub)
+
+    async def handle_browser_llm_result(self, payload: dict[str, Any]) -> bool:
+        body = payload.get("payload")
+        if not isinstance(body, dict):
+            body = payload
+        return await self._browser_llm_broker.deliver_result(body)
+
+    @property
+    def completion_mode(self) -> str:
+        return self._completion_mode
+
+    async def effective_llm_settings(self, campaign_id: str | None = None) -> dict[str, object]:
+        override = self._campaign_backend_override(campaign_id) if campaign_id else None
+        mode = str(
+            (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
+        ).strip().lower()
+        model = str(
+            (override or {}).get("model")
+            or self._default_model_for_mode(mode)
+            or self._settings.tge_llm_model
+            or ""
+        ).strip()
+        try:
+            ollama_options = self._parse_json_object(
+                self._settings.tge_ollama_options_json,
+                "TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON",
+            )
+        except ValueError:
+            ollama_options = {}
+        return {
+            "completion_mode": mode,
+            "model": model,
+            "base_url": str(self._settings.tge_llm_base_url or "").strip(),
+            "api_key": str(self._settings.tge_llm_api_key or "").strip(),
+            "temperature": float(self._settings.tge_llm_temperature),
+            "max_tokens": int(self._settings.tge_llm_max_tokens),
+            "timeout_seconds": int(self._settings.tge_llm_timeout_seconds),
+            "keep_alive": str(self._settings.tge_ollama_keep_alive or "").strip(),
+            "ollama_options": ollama_options,
+        }
+
+    @staticmethod
+    def _pick(merged: dict[str, Any], key: str, fallback: Any) -> Any:
+        val = merged.get(key)
+        return val if val is not None else fallback
+
+    def _campaign_runtime_signature(self, campaign_id: str | None) -> tuple[Any, ...]:
+        override = self._campaign_backend_override(campaign_id) if campaign_id else None
+        mode = str(
+            (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
+        ).strip().lower()
+        model = str(
+            (override or {}).get("model")
+            or self._default_model_for_mode(mode)
+            or self._settings.tge_llm_model
+            or ""
+        ).strip()
+        base_url = str(self._settings.tge_llm_base_url or "").strip()
+        api_key = str(self._settings.tge_llm_api_key or "").strip()
+        temperature = float(self._settings.tge_llm_temperature)
+        max_tokens = int(self._settings.tge_llm_max_tokens)
+        timeout_seconds = int(self._settings.tge_llm_timeout_seconds)
+        keep_alive = str(self._settings.tge_ollama_keep_alive or "").strip()
+        ollama_options_json = str(self._settings.tge_ollama_options_json or "{}")
+        return (
+            mode,
+            model,
+            base_url,
+            api_key,
+            temperature,
+            max_tokens,
+            timeout_seconds,
+            keep_alive,
+            ollama_options_json,
+        )
+
+    def _build_campaign_runtime(self, signature: tuple[Any, ...]) -> _CampaignRuntime:
+        (
+            mode,
+            model,
+            base_url,
+            api_key,
+            temperature,
+            max_tokens,
+            timeout_seconds,
+            keep_alive,
+            ollama_options_json,
+        ) = signature
         ollama_options = self._parse_json_object(
-            settings.tge_ollama_options_json,
+            ollama_options_json,
             "TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON",
         )
-        completion_port = self._build_completion_port(
-            mode=self._completion_mode,
-            base_url=settings.tge_llm_base_url,
-            api_key=settings.tge_llm_api_key,
-            model=settings.tge_llm_model,
-            timeout_seconds=settings.tge_llm_timeout_seconds,
-            keep_alive=settings.tge_ollama_keep_alive,
+        base_completion_port = self._build_completion_port(
+            mode=mode,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            keep_alive=keep_alive,
             ollama_options=ollama_options,
         )
-        if self._completion_mode == "deterministic":
+        completion_port = RoutedCompletionPort(base_completion_port)
+        if mode == "deterministic":
             llm = EngineDeterministicLLM()
         else:
             llm = EngineToolAwareLLM(
                 session_factory=self._session_factory,
                 completion_port=completion_port,
-                temperature=settings.tge_llm_temperature,
-                max_tokens=settings.tge_llm_max_tokens,
+                temperature=temperature,
+                max_tokens=max_tokens,
                 turn_visibility_default_resolver=self._session_visibility_default,
             )
-
-        self._game_engine = GameEngine(uow_factory=_uow_factory, llm=llm)
-        self._uow_factory = _uow_factory
-        self._emulator = ZorkEmulator(
-            game_engine=self._game_engine,
+        game_engine = GameEngine(uow_factory=self._uow_factory, llm=llm)
+        emulator = ZorkEmulator(
+            game_engine=game_engine,
             session_factory=self._session_factory,
             completion_port=completion_port,
             map_completion_port=completion_port,
@@ -2348,22 +2732,230 @@ class TextGameEngineGateway(EngineGateway):
             imdb_port=None,
             media_port=None,
         )
-        self._completion_port = completion_port
-        self._llm = llm
-        self._reconfigure_lock = threading.Lock()
-        self._turn_llm_lock = asyncio.Lock()
-        self._probe_timeout_seconds = max(int(settings.tge_runtime_probe_timeout_seconds or 8), 1)
+        # Inject ports that were set after gateway construction so per-campaign
+        # runtimes share the same notification/timer/media wiring as the default.
+        if self._injected_notification_port is not None:
+            emulator._notification_port = self._injected_notification_port
+        if self._injected_timer_effects_port is not None:
+            emulator._timer_effects_port = self._injected_timer_effects_port
+        if self._injected_media_port is not None:
+            emulator._media_port = self._injected_media_port
         if isinstance(llm, EngineToolAwareLLM):
-            llm.bind_emulator(self._emulator)
+            llm.bind_emulator(emulator)
+            llm.set_log_callback(_zork_log)
+        return _CampaignRuntime(
+            signature=signature,
+            completion_mode=str(mode),
+            completion_port=completion_port,
+            llm=llm,
+            game_engine=game_engine,
+            emulator=emulator,
+        )
 
-    @property
-    def completion_mode(self) -> str:
-        return self._completion_mode
+    def _campaign_runtime(self, campaign_id: str) -> _CampaignRuntime:
+        signature = self._campaign_runtime_signature(campaign_id)
+        with self._campaign_runtime_lock:
+            runtime = self._campaign_runtimes.get(campaign_id)
+            if runtime is not None and runtime.signature == signature:
+                return runtime
+            runtime = self._build_campaign_runtime(signature)
+            self._campaign_runtimes[campaign_id] = runtime
+            return runtime
+
+    def _invalidate_campaign_runtime(self, campaign_id: str) -> None:
+        with self._campaign_runtime_lock:
+            self._campaign_runtimes.pop(campaign_id, None)
+
+    def _browser_local_ollama_override(self, request: TurnRequest) -> dict[str, Any] | None:
+        raw = request.browser_local_ollama
+        if not isinstance(raw, dict):
+            return None
+        if raw.get("enabled") is not True:
+            return None
+        base_url = str(raw.get("base_url") or "").strip() or "http://127.0.0.1:11434"
+        model = str(raw.get("model") or "").strip()
+        if not model:
+            raise ValueError("Browser-local Ollama requires a model name.")
+        keep_alive = str(raw.get("keep_alive") or "").strip() or "30m"
+        timeout_seconds = int(raw.get("timeout_seconds") or 600)
+        ollama_options = raw.get("ollama_options")
+        if not isinstance(ollama_options, dict):
+            ollama_options = {}
+        return {
+            "base_url": base_url,
+            "model": model,
+            "keep_alive": keep_alive,
+            "timeout_seconds": max(timeout_seconds, 1),
+            "ollama_options": ollama_options,
+        }
+
+    def _browser_local_completion_port(
+        self,
+        campaign_id: str,
+        request: TurnRequest,
+    ) -> BrowserOllamaCompletionPort | None:
+        override = self._browser_local_ollama_override(request)
+        if override is None:
+            return None
+        return BrowserOllamaCompletionPort(
+            broker=self._browser_llm_broker,
+            campaign_id=campaign_id,
+            actor_id=request.actor_id,
+            base_url=str(override.get("base_url") or ""),
+            model=str(override.get("model") or ""),
+            timeout_seconds=int(override.get("timeout_seconds") or 600),
+            keep_alive=str(override.get("keep_alive") or ""),
+            ollama_options=override.get("ollama_options"),
+        )
+
+    def _resolve_rewind_target_turn_id(
+        self,
+        campaign_id: str,
+        target_turn_id: int,
+        *,
+        session_id: str | None = None,
+    ) -> int | None:
+        wanted_turn_id = int(target_turn_id or 0)
+        if wanted_turn_id <= 0:
+            return None
+        session_id_text = str(session_id or "").strip() or None
+        with self._session_factory() as session:
+            target_turn = (
+                session.query(Turn)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Turn.id == wanted_turn_id)
+                .first()
+            )
+            if target_turn is None:
+                return None
+            if (
+                session_id_text
+                and str(target_turn.session_id or "").strip()
+                and str(target_turn.session_id or "").strip() != session_id_text
+            ):
+                return None
+            snapshot = (
+                session.query(Snapshot)
+                .filter(Snapshot.campaign_id == campaign_id)
+                .filter(Snapshot.turn_id == wanted_turn_id)
+                .first()
+            )
+            if snapshot is not None and (
+                not session_id_text
+                or str(target_turn.session_id or "").strip() == session_id_text
+            ):
+                return wanted_turn_id
+            narrator_query = (
+                session.query(Turn)
+                .join(Snapshot, Snapshot.turn_id == Turn.id)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Snapshot.campaign_id == campaign_id)
+                .filter(Turn.kind == "narrator")
+                .filter(Turn.id >= wanted_turn_id)
+            )
+            if session_id_text:
+                narrator_query = narrator_query.filter(Turn.session_id == session_id_text)
+            narrator_turn = narrator_query.order_by(Turn.id.asc()).first()
+            if narrator_turn is not None:
+                return int(narrator_turn.id)
+            return None
+
+    def _turn_lock_for(self, campaign_id: str, actor_id: str | None) -> asyncio.Lock:
+        key = (str(campaign_id).strip(), str(actor_id or "__campaign__").strip() or "__campaign__")
+        with self._actor_turn_lock_guard:
+            lock = self._actor_turn_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._actor_turn_locks[key] = lock
+            return lock
 
     @staticmethod
-    def _pick(merged: dict[str, Any], key: str, fallback: Any) -> Any:
-        val = merged.get(key)
-        return val if val is not None else fallback
+    def _active_turn_task_key(campaign_id: str, actor_id: str | None) -> tuple[str, str]:
+        return (
+            str(campaign_id or "").strip(),
+            str(actor_id or "").strip(),
+        )
+
+    def _register_active_turn_task(
+        self,
+        campaign_id: str,
+        actor_id: str | None,
+        task: asyncio.Task[Any] | None,
+        *,
+        session_id: str | None = None,
+    ) -> None:
+        if task is None:
+            return
+        key = self._active_turn_task_key(campaign_id, actor_id)
+        if not all(key):
+            return
+        with self._active_turn_tasks_guard:
+            self._active_turn_tasks[key] = _ActiveTurnTask(
+                task=task,
+                session_id=str(session_id or "").strip() or None,
+            )
+
+    def _unregister_active_turn_task(
+        self,
+        campaign_id: str,
+        actor_id: str | None,
+        task: asyncio.Task[Any] | None = None,
+    ) -> None:
+        key = self._active_turn_task_key(campaign_id, actor_id)
+        if not all(key):
+            return
+        with self._active_turn_tasks_guard:
+            existing = self._active_turn_tasks.get(key)
+            if existing is None:
+                return
+            if task is not None and existing.task is not task:
+                return
+            self._active_turn_tasks.pop(key, None)
+
+    def _get_active_turn_task(self, campaign_id: str, actor_id: str | None) -> _ActiveTurnTask | None:
+        key = self._active_turn_task_key(campaign_id, actor_id)
+        if not all(key):
+            return None
+        with self._active_turn_tasks_guard:
+            return self._active_turn_tasks.get(key)
+
+    def _clear_active_turn_claims(self, campaign_id: str, actor_id: str | None) -> int:
+        campaign_id_text = str(campaign_id or "").strip()
+        actor_id_text = str(actor_id or "").strip()
+        if not campaign_id_text or not actor_id_text:
+            return 0
+        deleted = 0
+        try:
+            with self._session_factory() as session:
+                deleted = int(
+                    session.query(InflightTurn)
+                    .filter(InflightTurn.campaign_id == campaign_id_text)
+                    .filter(InflightTurn.actor_id == actor_id_text)
+                    .delete()
+                    or 0
+                )
+                session.commit()
+        except Exception:
+            logger.warning(
+                "Failed clearing inflight claim for cancelled turn campaign=%s actor=%s",
+                campaign_id_text,
+                actor_id_text,
+                exc_info=True,
+            )
+        try:
+            runtime = self._campaign_runtime(campaign_id_text)
+            runtime.emulator._clear_inflight_turn(campaign_id_text, actor_id_text)
+            claims = getattr(runtime.emulator, "_claims", None)
+            if isinstance(claims, dict):
+                claims.pop((campaign_id_text, actor_id_text), None)
+        except Exception:
+            logger.debug(
+                "Failed clearing emulator-local inflight state for cancelled turn campaign=%s actor=%s",
+                campaign_id_text,
+                actor_id_text,
+                exc_info=True,
+            )
+        return deleted
 
     def _campaign_backend_override(self, campaign_id: str) -> dict[str, str] | None:
         with self._session_factory() as session:
@@ -2390,7 +2982,12 @@ class TextGameEngineGateway(EngineGateway):
         if not override:
             return
         target_mode = str(override.get("completion_mode") or "").strip().lower()
-        target_model = str(override.get("model") or self._settings.tge_llm_model or "").strip()
+        target_model = str(
+            override.get("model")
+            or self._default_model_for_mode(target_mode)
+            or self._settings.tge_llm_model
+            or ""
+        ).strip()
         current_mode = str(self._completion_mode or "").strip().lower()
         current_model = str(self._settings.tge_llm_model or "").strip()
         if target_mode == current_mode and target_model == current_model:
@@ -2437,7 +3034,7 @@ class TextGameEngineGateway(EngineGateway):
 
             # -- swap or rebuild the LLM instance --
             need_new_llm = False
-            if mode == "deterministic" and not isinstance(self._llm, DeterministicLLM):
+            if mode == "deterministic" and not isinstance(self._llm, EngineDeterministicLLM):
                 need_new_llm = True
             elif mode != "deterministic" and not isinstance(self._llm, EngineToolAwareLLM):
                 need_new_llm = True
@@ -2454,12 +3051,14 @@ class TextGameEngineGateway(EngineGateway):
                         turn_visibility_default_resolver=self._session_visibility_default,
                     )
                     new_llm.bind_emulator(self._emulator)
+                    new_llm.set_log_callback(_zork_log)
                 self._llm = new_llm
                 self._game_engine._llm = new_llm
             elif isinstance(self._llm, EngineToolAwareLLM):
                 self._llm._completion = new_port
                 self._llm._temperature = temperature
                 self._llm._max_tokens = max_tokens
+                self._llm.set_log_callback(_zork_log)
 
             self._emulator._completion_port = new_port
             self._emulator._map_completion_port = new_port
@@ -2528,6 +3127,35 @@ class TextGameEngineGateway(EngineGateway):
             actor_id=str(row.created_by_actor_id or ""),
             created_at=row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at,
         )
+
+    def _begin_turn_log_scope(
+        self,
+        campaign_id: str,
+        *,
+        actor_id: str | None,
+        section: str,
+        body: str = "",
+    ) -> contextvars.Token:
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            namespace = str(campaign.namespace if campaign is not None else "unknown")
+        dir_path = os.path.join(
+            _ZORK_LOG_ROOT,
+            "webui",
+            _zork_log_component(namespace, "namespace"),
+            _zork_log_component(campaign_id, "campaign"),
+        )
+        os.makedirs(dir_path, exist_ok=True)
+        latest_name = f"latest-{_zork_log_component(actor_id, 'system')}.log"
+        log_path = os.path.join(dir_path, latest_name)
+        _zork_log_rotate(log_path)
+        token = _ZORK_LOG_PATH.set(log_path)
+        _zork_log(section, body)
+        return token
+
+    @staticmethod
+    def _end_turn_log_scope(token: contextvars.Token) -> None:
+        _ZORK_LOG_PATH.reset(token)
 
     @staticmethod
     def _to_session_record(row: GameSession) -> dict:
@@ -2648,16 +3276,19 @@ class TextGameEngineGateway(EngineGateway):
         scope = str(visibility.get("scope") or "public").strip().lower()
         if scope not in {"public", "private", "limited", "local"}:
             scope = "public"
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
         resolved_actor_ids: list[str] = []
         raw_actor_ids = visibility.get("visible_actor_ids")
         if isinstance(raw_actor_ids, list):
             for item in raw_actor_ids:
                 text = str(item or "").strip()
-                if text and text not in resolved_actor_ids:
-                    resolved_actor_ids.append(text)
+                if not text:
+                    continue
+                actor_id = slug_map.get(self._canonical_slug(text)) or text
+                if actor_id not in resolved_actor_ids:
+                    resolved_actor_ids.append(actor_id)
         raw_player_slugs = visibility.get("visible_player_slugs")
         if isinstance(raw_player_slugs, list) and raw_player_slugs:
-            slug_map = self._player_slug_to_actor_ids(campaign_id)
             for item in raw_player_slugs:
                 slug = self._canonical_slug(str(item or ""))
                 actor_id = slug_map.get(slug)
@@ -2666,6 +3297,61 @@ class TextGameEngineGateway(EngineGateway):
         visibility["scope"] = scope
         visibility["visible_actor_ids"] = resolved_actor_ids
         visibility["location_key"] = str(visibility.get("location_key") or "").strip() or None
+        return visibility
+
+    def _augment_turn_visibility_with_scene_awareness(
+        self,
+        campaign_id: str,
+        turn_visibility: dict[str, Any],
+        scene_output: dict[str, Any] | None,
+        *,
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        visibility = dict(turn_visibility) if isinstance(turn_visibility, dict) else {}
+        existing_actor_ids: list[str] = []
+        seen_actor_ids: set[str] = set()
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
+
+        def _add_actor_id(raw_actor_id: object) -> None:
+            actor_text = str(raw_actor_id or "").strip()
+            if actor_text:
+                actor_text = str(
+                    slug_map.get(self._canonical_slug(actor_text))
+                    or actor_text
+                ).strip()
+            if actor_text and actor_text not in seen_actor_ids:
+                seen_actor_ids.add(actor_text)
+                existing_actor_ids.append(actor_text)
+
+        for raw_actor_id in list(visibility.get("visible_actor_ids") or []):
+            _add_actor_id(raw_actor_id)
+        _add_actor_id(actor_id)
+
+        if not isinstance(scene_output, dict):
+            visibility["visible_actor_ids"] = existing_actor_ids
+            return visibility
+        beats = scene_output.get("beats")
+        if not isinstance(beats, list):
+            visibility["visible_actor_ids"] = existing_actor_ids
+            return visibility
+
+        def _add_actor_slug(raw_slug: object) -> None:
+            actor_text = slug_map.get(self._canonical_slug(str(raw_slug or "")))
+            if actor_text:
+                _add_actor_id(actor_text)
+
+        for beat in beats:
+            if not isinstance(beat, dict):
+                continue
+            for raw_actor_id in list(beat.get("visible_actor_ids") or beat.get("aware_actor_ids") or []):
+                _add_actor_id(raw_actor_id)
+            for raw_slug in list(beat.get("actors") or []):
+                _add_actor_slug(raw_slug)
+            for raw_slug in list(beat.get("listeners") or []):
+                _add_actor_slug(raw_slug)
+            _add_actor_slug(beat.get("speaker"))
+
+        visibility["visible_actor_ids"] = existing_actor_ids
         return visibility
 
     @staticmethod
@@ -2735,6 +3421,44 @@ class TextGameEngineGateway(EngineGateway):
             return [self._to_summary(row) for row in rows]
         rows = self._emulator.list_campaigns(namespace)
         return [self._to_summary(row) for row in rows]
+
+    async def list_campaigns_for_actor(self, actor_id: str) -> list[CampaignSummary]:
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return []
+        with self._session_factory() as session:
+            rows = (
+                session.query(Campaign)
+                .outerjoin(Player, Player.campaign_id == Campaign.id)
+                .filter(
+                    or_(
+                        Campaign.created_by_actor_id == actor,
+                        Player.actor_id == actor,
+                    )
+                )
+                .distinct()
+                .order_by(Campaign.updated_at.desc(), Campaign.name.asc())
+                .all()
+            )
+        return [self._to_summary(row) for row in rows]
+
+    async def actor_can_access_campaign(self, campaign_id: str, actor_id: str) -> bool:
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return False
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            if str(campaign.created_by_actor_id or "").strip() == actor:
+                return True
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor)
+                .first()
+            )
+        return player is not None
 
     async def list_sessions(self, campaign_id: str) -> list[dict]:
         with self._session_factory() as session:
@@ -2868,6 +3592,8 @@ class TextGameEngineGateway(EngineGateway):
         self,
         campaign_id: str,
         request: TurnRequest,
+        *,
+        emulator: ZorkEmulator,
     ) -> tuple[int, str | None]:
         """Validate campaign, resolve session, and capture XP before the turn.
 
@@ -2889,7 +3615,7 @@ class TextGameEngineGateway(EngineGateway):
                 xp_before = int(player_before.xp or 0)
 
         self._enforce_session_access(campaign_id, request.actor_id, session_id)
-        self._emulator.get_or_create_player(campaign_id, request.actor_id)
+        emulator.get_or_create_player(campaign_id, request.actor_id)
         return xp_before, session_id
 
     def _build_turn_result(
@@ -2954,6 +3680,23 @@ class TextGameEngineGateway(EngineGateway):
                 raw_scene = turn_meta.get("scene_output")
                 if isinstance(raw_scene, dict) and isinstance(raw_scene.get("beats"), list):
                     scene_output = raw_scene
+        turn_visibility = self._augment_turn_visibility_with_scene_awareness(
+            campaign_id,
+            turn_visibility,
+            scene_output,
+            actor_id=request.actor_id,
+        )
+        if narrator_turn is not None:
+            actual_visible_actor_ids = self._viewer_actor_ids_for_turn(campaign_id, narrator_turn)
+            merged_actor_ids: list[str] = []
+            for raw_actor_id in list(turn_visibility.get("visible_actor_ids") or []):
+                actor_id_text = str(raw_actor_id or "").strip()
+                if actor_id_text and actor_id_text not in merged_actor_ids:
+                    merged_actor_ids.append(actor_id_text)
+            for actor_id_text in actual_visible_actor_ids:
+                if actor_id_text and actor_id_text not in merged_actor_ids:
+                    merged_actor_ids.append(actor_id_text)
+            turn_visibility["visible_actor_ids"] = merged_actor_ids
 
         # Extract latest scene image prompt from outbox (if generated this turn)
         image_prompt: str | None = None
@@ -2992,6 +3735,7 @@ class TextGameEngineGateway(EngineGateway):
                 active_minigame = raw_minigame
 
         return TurnResult(
+            turn_id=int(narrator_turn.id) if narrator_turn is not None else None,
             actor_id=request.actor_id,
             session_id=session_id,
             narration=str(narration),
@@ -3010,21 +3754,58 @@ class TextGameEngineGateway(EngineGateway):
         )
 
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
-        xp_before, session_id = self._pre_turn_setup(campaign_id, request)
-        async with self._turn_llm_lock:
-            self._ensure_campaign_llm(campaign_id)
-            narration = await self._emulator.play_action(
-                campaign_id=campaign_id,
-                actor_id=request.actor_id,
-                action=request.action,
-                session_id=session_id,
-                manage_claim=True,
-            )
-        notices = self._emulator.pop_turn_ephemeral_notices(
+        runtime = self._campaign_runtime(campaign_id)
+        xp_before, session_id = self._pre_turn_setup(
+            campaign_id,
+            request,
+            emulator=runtime.emulator,
+        )
+        completion_override = self._browser_local_completion_port(campaign_id, request)
+        active_task = asyncio.current_task()
+        self._register_active_turn_task(
             campaign_id,
             request.actor_id,
-            session_id,
+            active_task,
+            session_id=session_id,
         )
+        log_token = self._begin_turn_log_scope(
+            campaign_id,
+            actor_id=request.actor_id,
+            section=f"WEBUI TURN REQUEST campaign={campaign_id}",
+            body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
+        )
+        try:
+            token = _TURN_COMPLETION_OVERRIDE.set(completion_override)
+            try:
+                async with self._turn_lock_for(campaign_id, request.actor_id):
+                    narration = await runtime.emulator.play_action(
+                        campaign_id=campaign_id,
+                        actor_id=request.actor_id,
+                        action=request.action,
+                        session_id=session_id,
+                        manage_claim=True,
+                    )
+            finally:
+                _TURN_COMPLETION_OVERRIDE.reset(token)
+            notices = runtime.emulator.pop_turn_ephemeral_notices(
+                campaign_id,
+                request.actor_id,
+                session_id,
+            )
+            _zork_log(
+                f"WEBUI TURN RESULT campaign={campaign_id}",
+                str(narration or "(empty)"),
+            )
+        except asyncio.CancelledError as exc:
+            self._clear_active_turn_claims(campaign_id, request.actor_id)
+            raise TurnCancelledError("Turn cancelled.") from exc
+        finally:
+            self._unregister_active_turn_task(
+                campaign_id,
+                request.actor_id,
+                active_task,
+            )
+            self._end_turn_log_scope(log_token)
 
         if narration is None:
             narration = "The world shifts, but nothing clear emerges."
@@ -3035,7 +3816,13 @@ class TextGameEngineGateway(EngineGateway):
         """Async generator yielding SSE event dicts for streaming turn resolution."""
         yield {"event": "phase", "data": {"phase": "starting"}}
 
-        xp_before, session_id = self._pre_turn_setup(campaign_id, request)
+        runtime = self._campaign_runtime(campaign_id)
+        xp_before, session_id = self._pre_turn_setup(
+            campaign_id,
+            request,
+            emulator=runtime.emulator,
+        )
+        completion_override = self._browser_local_completion_port(campaign_id, request)
 
         yield {"event": "phase", "data": {"phase": "generating"}}
 
@@ -3045,23 +3832,52 @@ class TextGameEngineGateway(EngineGateway):
         async def on_progress(phase, detail=None):
             await progress_queue.put({"event": "phase", "data": {"phase": phase, **(detail or {})}})
 
-        result_box: dict = {"narration": None, "error": None}
+        result_box: dict = {"narration": None, "error": None, "cancelled": False}
 
         async def _run():
+            log_token = self._begin_turn_log_scope(
+                campaign_id,
+                actor_id=request.actor_id,
+                section=f"WEBUI STREAM TURN REQUEST campaign={campaign_id}",
+                body=f"actor_id={request.actor_id}\nsession_id={session_id or ''}\naction={request.action}",
+            )
             try:
-                async with self._turn_llm_lock:
-                    self._ensure_campaign_llm(campaign_id)
-                    result_box["narration"] = await self._emulator.play_action(
-                        campaign_id=campaign_id,
-                        actor_id=request.actor_id,
-                        action=request.action,
-                        session_id=session_id,
-                        manage_claim=True,
-                        progress=on_progress,
-                    )
+                active_task = asyncio.current_task()
+                self._register_active_turn_task(
+                    campaign_id,
+                    request.actor_id,
+                    active_task,
+                    session_id=session_id,
+                )
+                token = _TURN_COMPLETION_OVERRIDE.set(completion_override)
+                try:
+                    async with self._turn_lock_for(campaign_id, request.actor_id):
+                        result_box["narration"] = await runtime.emulator.play_action(
+                            campaign_id=campaign_id,
+                            actor_id=request.actor_id,
+                            action=request.action,
+                            session_id=session_id,
+                            manage_claim=True,
+                            progress=on_progress,
+                        )
+                        _zork_log(
+                            f"WEBUI STREAM TURN RESULT campaign={campaign_id}",
+                            str(result_box["narration"] or "(empty)"),
+                        )
+                finally:
+                    _TURN_COMPLETION_OVERRIDE.reset(token)
+            except asyncio.CancelledError:
+                result_box["cancelled"] = True
+                self._clear_active_turn_claims(campaign_id, request.actor_id)
             except Exception as exc:
                 result_box["error"] = exc
             finally:
+                self._unregister_active_turn_task(
+                    campaign_id,
+                    request.actor_id,
+                    asyncio.current_task(),
+                )
+                self._end_turn_log_scope(log_token)
                 await progress_queue.put(_SENTINEL)
 
         task = asyncio.create_task(_run())
@@ -3080,11 +3896,15 @@ class TextGameEngineGateway(EngineGateway):
                 pass
             raise
 
+        if result_box["cancelled"]:
+            yield {"event": "error", "data": {"message": "Turn cancelled."}}
+            return
+
         if result_box["error"] is not None:
             raise result_box["error"]
 
         narration = result_box["narration"]
-        notices = self._emulator.pop_turn_ephemeral_notices(
+        notices = runtime.emulator.pop_turn_ephemeral_notices(
             campaign_id,
             request.actor_id,
             session_id,
@@ -3102,6 +3922,120 @@ class TextGameEngineGateway(EngineGateway):
         # Build complete result (DB queries)
         result = self._build_turn_result(campaign_id, request, narration, notices, xp_before, session_id)
         yield {"event": "complete", "data": result.model_dump()}
+
+    async def queue_discord_mirror(
+        self,
+        campaign_id: str,
+        result: TurnResult,
+        *,
+        actor_display_name: str | None = None,
+        action_text: str | None = None,
+    ) -> None:
+        turn_id = int(result.turn_id or 0)
+        if turn_id <= 0:
+            return
+        aware_actor_ids: list[str] = []
+        seen_actor_ids: set[str] = set()
+        slug_map = self._player_slug_to_actor_ids(campaign_id)
+
+        def _add_aware_actor(raw_actor_id: object) -> None:
+            actor_id = str(raw_actor_id or "").strip()
+            if actor_id:
+                actor_id = str(
+                    slug_map.get(self._canonical_slug(actor_id))
+                    or actor_id
+                ).strip()
+            if actor_id and actor_id not in seen_actor_ids:
+                seen_actor_ids.add(actor_id)
+                aware_actor_ids.append(actor_id)
+
+        turn_visibility = result.turn_visibility if isinstance(result.turn_visibility, dict) else {}
+        for raw_actor_id in list(turn_visibility.get("visible_actor_ids") or []):
+            _add_aware_actor(raw_actor_id)
+
+        scene_output = result.scene_output if isinstance(result.scene_output, dict) else None
+        beats = scene_output.get("beats") if isinstance(scene_output, dict) else None
+        if isinstance(beats, list):
+            for beat in beats:
+                if not isinstance(beat, dict):
+                    continue
+                for raw_actor_id in list(beat.get("visible_actor_ids") or beat.get("aware_actor_ids") or []):
+                    _add_aware_actor(raw_actor_id)
+                for raw_slug in list(beat.get("actors") or []):
+                    actor_id = slug_map.get(self._canonical_slug(str(raw_slug or "")))
+                    if actor_id:
+                        _add_aware_actor(actor_id)
+                for raw_slug in list(beat.get("listeners") or []):
+                    actor_id = slug_map.get(self._canonical_slug(str(raw_slug or "")))
+                    if actor_id:
+                        _add_aware_actor(actor_id)
+                speaker_actor_id = slug_map.get(self._canonical_slug(str(beat.get("speaker") or "")))
+                if speaker_actor_id:
+                    _add_aware_actor(speaker_actor_id)
+
+        payload = {
+            "turn_id": turn_id,
+            "actor_id": str(result.actor_id or "").strip() or None,
+            "actor_display_name": str(actor_display_name or "").strip() or None,
+            "session_id": str(result.session_id or "").strip() or None,
+            "action_text": str(action_text or "").strip() or None,
+            "narration": str(result.narration or "").strip(),
+            "scene_output": scene_output,
+            "turn_visibility": turn_visibility,
+            "aware_actor_ids": aware_actor_ids,
+        }
+        row = OutboxEvent(
+            campaign_id=campaign_id,
+            session_id=str(result.session_id or "").strip() or None,
+            session_scope=str(result.session_id or "").strip() or "__none__",
+            event_type="webui_discord_echo",
+            idempotency_key=f"turn:{turn_id}",
+            payload_json=json.dumps(payload, ensure_ascii=True),
+        )
+        try:
+            with self._session_factory() as session:
+                session.add(row)
+                session.commit()
+        except IntegrityError as exc:
+            message = str(exc).lower()
+            if (
+                "uq_tge_outbox_campaign_session_event_key" in message
+                or "tge_outbox_events.campaign_id, tge_outbox_events.session_scope, tge_outbox_events.event_type, tge_outbox_events.idempotency_key" in message
+            ):
+                return
+            raise
+
+    async def cancel_active_turn(self, campaign_id: str, actor_id: str) -> dict:
+        campaign_id_text = str(campaign_id or "").strip()
+        actor_id_text = str(actor_id or "").strip()
+        if not campaign_id_text:
+            raise KeyError("Unknown campaign")
+        if not actor_id_text:
+            raise ValueError("actor_id is required.")
+
+        active = self._get_active_turn_task(campaign_id_text, actor_id_text)
+        cancelled = False
+        session_id = None
+        if active is not None:
+            session_id = active.session_id
+            task = active.task
+            if task is not None and not task.done():
+                task.cancel()
+                cancelled = True
+                try:
+                    await asyncio.gather(task, return_exceptions=True)
+                except Exception:
+                    pass
+
+        cleared_claims = self._clear_active_turn_claims(campaign_id_text, actor_id_text)
+        self._unregister_active_turn_task(campaign_id_text, actor_id_text)
+        return {
+            "ok": True,
+            "cancelled": bool(cancelled or cleared_claims > 0),
+            "cleared_claims": int(cleared_claims),
+            "session_id": session_id,
+            "note": "Turn cancelled." if (cancelled or cleared_claims > 0) else "No active turn to cancel.",
+        }
 
     async def campaign_export(
         self,
@@ -3137,46 +4071,17 @@ class TextGameEngineGateway(EngineGateway):
                 raise KeyError(f"Unknown campaign: {campaign_id}")
 
         generated = await self._emulator.generate_map(campaign_id, actor_id=actor_id)
-        if generated and generated not in {"Map unavailable.", "Map is foggy. Try again."}:
+        if generated and generated not in {"Map unavailable."}:
             return generated
+        return "Map unavailable."
 
+    def get_map_graph(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
-            player = (
-                session.query(Player)
-                .filter(Player.campaign_id == campaign_id)
-                .filter(Player.actor_id == actor_id)
-                .first()
-            )
-            if player is None:
-                return "Map unavailable."
-            pstate = self._parse_json(player.state_json, {})
-            title = str(pstate.get("room_title") or pstate.get("location") or "Unknown Room")
-
-            others = (
-                session.query(Player)
-                .filter(Player.campaign_id == campaign_id)
-                .filter(Player.actor_id != actor_id)
-                .order_by(Player.actor_id.asc())
-                .all()
-            )
-
-        lines = [
-            "+-----------------------------+",
-            f"| {title[:27]:<27} |",
-            "|              @              |",
-            "+-----------------------------+",
-            "",
-            "Legend:",
-            f"  @ {actor_id}",
-        ]
-        marker_ord = ord("A")
-        for other in others[:8]:
-            marker = chr(marker_ord)
-            marker_ord += 1
-            ostate = self._parse_json(other.state_json, {})
-            oloc = str(ostate.get("room_title") or ostate.get("location") or "unknown")
-            lines.append(f"  {marker} {other.actor_id} - {oloc}")
-        return "\n".join(lines)
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            return state.get("_room_map_graph") or {}
 
     async def get_timers(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
@@ -3218,7 +4123,7 @@ class TextGameEngineGateway(EngineGateway):
             "timers": timers,
         }
 
-    async def get_calendar(self, campaign_id: str) -> dict:
+    async def get_calendar(self, campaign_id: str, actor_id: str | None = None) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
@@ -3226,26 +4131,220 @@ class TextGameEngineGateway(EngineGateway):
             state = self._parse_json(campaign.state_json, {})
             if not isinstance(state, dict):
                 state = {}
-        events = state.get("calendar", [])
-        if not isinstance(events, list):
-            events = []
-        shaped_events: list[dict[str, Any]] = []
-        for raw in events:
-            if isinstance(raw, dict):
-                event = dict(raw)
-                target_players = event.get("target_players")
-                has_targets = isinstance(target_players, list) and any(
-                    str(item or "").strip() for item in target_players
+            player = None
+            actor_id_text = str(actor_id or "").strip()
+            if actor_id_text:
+                player = (
+                    session.query(Player)
+                    .filter(Player.campaign_id == campaign_id)
+                    .filter(Player.actor_id == actor_id_text)
+                    .first()
                 )
-                event.setdefault("scope", "targeted" if has_targets else "global")
-                shaped_events.append(event)
-            else:
+                if player is None:
+                    raise KeyError(f"Unknown player in campaign: {actor_id_text}")
+        actor_id_text = str(actor_id or "").strip()
+        player_state = self._emulator.get_player_state(player) if actor_id_text and player is not None else {}
+        effective_game_time, _global_game_time, _time_model, _calendar_policy = self._emulator._current_game_time_for_prompt(  # noqa: SLF001
+            state,
+            player_state,
+        )
+        prompt_events = self._emulator._calendar_for_prompt(  # noqa: SLF001
+            state,
+            player_state=player_state,
+            viewer_actor_id=actor_id_text or None,
+        )
+        shaped_events: list[dict[str, Any]] = []
+        for raw in prompt_events:
+            if not isinstance(raw, dict):
                 shaped_events.append({"value": raw, "scope": "global"})
+                continue
+            event = dict(raw)
+            if actor_id_text and event.get("target_players") and not self._emulator._calendar_event_targets_player(  # noqa: SLF001
+                raw,
+                actor_id=actor_id_text,
+                player_state=player_state,
+            ):
+                continue
+            target_players = event.get("target_players")
+            has_targets = isinstance(target_players, list) and any(
+                str(item or "").strip() for item in target_players
+            )
+            event["scope"] = "targeted" if has_targets else "global"
+            event["event_key"] = self._emulator._calendar_event_key(event)  # noqa: SLF001
+            shaped_events.append(event)
 
         return {
-            "game_time": state.get("game_time", {}),
+            "game_time": effective_game_time,
             "events": shaped_events,
         }
+
+    async def update_calendar_event_visibility(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        visibility: str,
+        actor_id: str | None = None,
+    ) -> dict:
+        visibility_value = str(visibility or "").strip().lower()
+        if visibility_value not in {"public", "private"}:
+            raise ValueError("visibility must be `public` or `private`.")
+        actor_id_text = str(actor_id or "").strip()
+        if not actor_id_text:
+            raise ValueError("actor_id is required for calendar visibility updates.")
+
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            player = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .filter(Player.actor_id == actor_id_text)
+                .first()
+            )
+            if player is None:
+                raise KeyError(f"Unknown player in campaign: {actor_id_text}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+            raw_calendar = state.get("calendar")
+            if not isinstance(raw_calendar, list):
+                raw_calendar = []
+                state["calendar"] = raw_calendar
+
+            player_state = self._emulator.get_player_state(player)
+            current_game_time, _global_game_time, _time_model, _calendar_policy = self._emulator._current_game_time_for_prompt(  # noqa: SLF001
+                state,
+                player_state,
+            )
+            current_day = int(current_game_time.get("day", 1) or 1)
+            current_hour = int(current_game_time.get("hour", 8) or 8)
+            match_key = str(event_key or "").strip().lower()
+            updated = False
+            for raw_event in raw_calendar:
+                if not isinstance(raw_event, dict):
+                    continue
+                normalized = self._emulator._calendar_normalize_event(  # noqa: SLF001
+                    raw_event,
+                    current_day=current_day,
+                    current_hour=current_hour,
+                )
+                if not isinstance(normalized, dict):
+                    continue
+                normalized_key = self._emulator._calendar_event_key(normalized).lower()  # noqa: SLF001
+                if normalized_key != match_key:
+                    continue
+                if visibility_value == "public":
+                    for key in (
+                        "target_players",
+                        "target_player",
+                        "targets",
+                        "target",
+                        "participants",
+                        "participant",
+                        "players",
+                        "player",
+                        "player_id",
+                        "user_id",
+                        "target_user_id",
+                        "target_user_ids",
+                        "who",
+                    ):
+                        raw_event.pop(key, None)
+                else:
+                    raw_event["target_players"] = [actor_id_text]
+                    for key in (
+                        "target_player",
+                        "targets",
+                        "target",
+                        "participants",
+                        "participant",
+                        "players",
+                        "player",
+                        "player_id",
+                        "user_id",
+                        "target_user_id",
+                        "target_user_ids",
+                        "who",
+                    ):
+                        raw_event.pop(key, None)
+                updated = True
+                break
+            if not updated:
+                raise KeyError(f"Unknown calendar event: {match_key}")
+            campaign.state_json = json.dumps(state, ensure_ascii=True)
+            session.commit()
+
+        return await self.get_calendar(campaign_id, actor_id=actor_id_text)
+
+    async def delete_calendar_event(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        actor_id: str | None = None,
+    ) -> dict:
+        actor_id_text = str(actor_id or "").strip()
+        match_key = str(event_key or "").strip().lower()
+
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            state = self._parse_json(campaign.state_json, {})
+            if not isinstance(state, dict):
+                state = {}
+            raw_calendar = state.get("calendar")
+            if not isinstance(raw_calendar, list):
+                raw_calendar = []
+                state["calendar"] = raw_calendar
+
+            player_state: dict = {}
+            if actor_id_text:
+                player = (
+                    session.query(Player)
+                    .filter(Player.campaign_id == campaign_id)
+                    .filter(Player.actor_id == actor_id_text)
+                    .first()
+                )
+                if player is not None:
+                    player_state = self._emulator.get_player_state(player)
+
+            current_game_time, _global_game_time, _time_model, _calendar_policy = (
+                self._emulator._current_game_time_for_prompt(state, player_state)
+            )
+            current_day = int(current_game_time.get("day", 1) or 1)
+            current_hour = int(current_game_time.get("hour", 8) or 8)
+
+            removed = False
+            new_calendar: list[dict] = []
+            for raw_event in raw_calendar:
+                if not isinstance(raw_event, dict):
+                    new_calendar.append(raw_event)
+                    continue
+                normalized = self._emulator._calendar_normalize_event(
+                    raw_event,
+                    current_day=current_day,
+                    current_hour=current_hour,
+                )
+                if not isinstance(normalized, dict):
+                    new_calendar.append(raw_event)
+                    continue
+                normalized_key = self._emulator._calendar_event_key(normalized).lower()
+                if normalized_key == match_key:
+                    removed = True
+                    continue
+                new_calendar.append(raw_event)
+
+            if not removed:
+                raise KeyError(f"Unknown calendar event: {match_key}")
+
+            state["calendar"] = new_calendar
+            campaign.state_json = json.dumps(state, ensure_ascii=True)
+            session.commit()
+
+        return await self.get_calendar(campaign_id, actor_id=actor_id_text)
 
     async def get_roster(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
@@ -3271,6 +4370,8 @@ class TextGameEngineGateway(EngineGateway):
                     "location": pstate.get("location") or pstate.get("room_title") or "unknown",
                     "status": pstate.get("current_status") or "active",
                     "player": True,
+                    "gender": pstate.get("gender") or "",
+                    "voice_assignment": pstate.get("voice_assignment") or "",
                 }
             )
         if isinstance(characters, dict):
@@ -3286,6 +4387,8 @@ class TextGameEngineGateway(EngineGateway):
                         "location": payload.get("location") or "unknown",
                         "status": payload.get("current_status") or "active",
                         "player": False,
+                        "gender": payload.get("gender") or "",
+                        "voice_assignment": payload.get("voice_assignment") or "",
                     }
                 )
 
@@ -3463,6 +4566,57 @@ class TextGameEngineGateway(EngineGateway):
             "state": state,
             "inventory": inventory,
         }
+
+    async def shared_pending_target_actor_ids(self, campaign_id: str, actor_id: str) -> list[str]:
+        actor_id_text = str(actor_id or "").strip()
+        if not actor_id_text or self._emulator is None:
+            return []
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            players = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .order_by(Player.actor_id.asc())
+                .all()
+            )
+        source_player = next(
+            (row for row in players if str(row.actor_id or "").strip() == actor_id_text),
+            None,
+        )
+        if source_player is None:
+            raise KeyError(f"Unknown player in campaign: {actor_id_text}")
+        source_state = self._parse_json(source_player.state_json, {})
+        if not isinstance(source_state, dict):
+            source_state = {}
+        source_location_key = self._emulator._room_key_from_player_state(source_state)  # noqa: SLF001
+        source_location_norm = self._emulator._normalize_location_key(source_location_key)  # noqa: SLF001
+        if not source_location_key and not source_location_norm:
+            return []
+        out: list[str] = []
+        for player in players:
+            other_actor_id = str(player.actor_id or "").strip()
+            if not other_actor_id or other_actor_id == actor_id_text:
+                continue
+            other_state = self._parse_json(player.state_json, {})
+            if not isinstance(other_state, dict):
+                other_state = {}
+            other_location_key = self._emulator._room_key_from_player_state(other_state)  # noqa: SLF001
+            other_location_norm = self._emulator._normalize_location_key(other_location_key)  # noqa: SLF001
+            same_zone = bool(
+                source_location_norm
+                and other_location_norm
+                and source_location_norm == other_location_norm
+            )
+            if not same_zone and source_location_key and other_location_key:
+                same_zone = bool(
+                    self._emulator._state_container_matches_location(source_location_key, other_location_key)  # noqa: SLF001
+                    or self._emulator._state_container_matches_location(other_location_key, source_location_key)  # noqa: SLF001
+                )
+            if same_zone:
+                out.append(other_actor_id)
+        return out
 
     async def get_media(self, campaign_id: str, actor_id: str | None = None) -> dict:
         with self._session_factory() as session:
@@ -3810,8 +4964,13 @@ class TextGameEngineGateway(EngineGateway):
         self._persist_fallback_memory_state(campaign_id, entries)
         return {"stored": True, "provider": "webui_fallback", "entry": entry}
 
-    async def sms_list(self, campaign_id: str, wildcard: str) -> dict:
-        rows = self._emulator.list_sms_threads(campaign_id, wildcard=wildcard or "*", limit=200)
+    async def sms_list(self, campaign_id: str, wildcard: str, viewer_actor_id: str | None = None) -> dict:
+        rows = self._emulator.list_sms_threads(
+            campaign_id,
+            wildcard=wildcard or "*",
+            limit=200,
+            viewer_actor_id=viewer_actor_id,
+        )
         return {"threads": rows}
 
     async def sms_read(self, campaign_id: str, thread: str, limit: int, viewer_actor_id: str | None = None) -> dict:
@@ -3851,6 +5010,18 @@ class TextGameEngineGateway(EngineGateway):
                 "created_at": datetime.now(UTC).isoformat(),
             },
         }
+
+    async def sms_delete_thread(self, campaign_id: str, thread: str) -> dict:
+        ok, reason = self._emulator.delete_sms_thread(campaign_id, thread)
+        return {"ok": ok, "reason": reason}
+
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_seq: int) -> dict:
+        ok, reason = self._emulator.delete_sms_message(campaign_id, thread, message_seq)
+        return {"ok": ok, "reason": reason}
+
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_seq: int, new_text: str) -> dict:
+        ok, reason = self._emulator.edit_sms_message(campaign_id, thread, message_seq, new_text)
+        return {"ok": ok, "reason": reason}
 
     async def debug_snapshot(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
@@ -4059,18 +5230,150 @@ class TextGameEngineGateway(EngineGateway):
         )
         return result if isinstance(result, dict) else {"ok": True}
 
-    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict:
+    async def rewind_to_turn(
+        self,
+        campaign_id: str,
+        target_turn_id: int,
+        *,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
-        result = self._game_engine.rewind_to_turn(campaign_id, target_turn_id)
-        ok = result.status == "ok" if hasattr(result, "status") else True
+        session_id_text = str(session_id or "").strip() or None
+        actor_id_text = str(actor_id or "").strip() or None
+        if session_id_text:
+            self._enforce_session_access(campaign_id, actor_id_text or "", session_id_text)
+        resolved_turn_id = self._resolve_rewind_target_turn_id(
+            campaign_id,
+            target_turn_id,
+            session_id=session_id_text,
+        )
+        if resolved_turn_id is None:
+            return {
+                "ok": False,
+                "target_turn_id": target_turn_id,
+                "resolved_turn_id": None,
+                "note": "No rewind snapshot exists for that turn yet.",
+                "detail": "snapshot_not_found",
+            }
+        runtime = self._campaign_runtime(campaign_id)
+        runtime.emulator.cancel_pending_timer(campaign_id)
+
+        if session_id_text:
+            with self._session_factory() as session:
+                snapshot = (
+                    session.query(Snapshot)
+                    .filter(Snapshot.campaign_id == campaign_id)
+                    .filter(Snapshot.turn_id == resolved_turn_id)
+                    .first()
+                )
+                if snapshot is None:
+                    return {
+                        "ok": False,
+                        "target_turn_id": target_turn_id,
+                        "resolved_turn_id": None,
+                        "session_id": session_id_text,
+                        "note": "No rewind snapshot exists for that turn yet.",
+                        "detail": "snapshot_not_found",
+                    }
+                campaign = session.get(Campaign, campaign_id)
+                if campaign is None:
+                    raise KeyError(f"Unknown campaign: {campaign_id}")
+
+                campaign.state_json = snapshot.campaign_state_json
+                campaign.characters_json = snapshot.campaign_characters_json
+                campaign.summary = snapshot.campaign_summary
+                campaign.last_narration = snapshot.campaign_last_narration
+                campaign.memory_visible_max_turn_id = resolved_turn_id
+                campaign.row_version = max(int(campaign.row_version or 0), 0) + 1
+                campaign.updated_at = datetime.now(UTC).replace(tzinfo=None)
+
+                players_data = self._parse_json(snapshot.players_json, [])
+                if isinstance(players_data, dict):
+                    players_data = players_data.get("players", [])
+                if not isinstance(players_data, list):
+                    players_data = []
+                for pdata in players_data:
+                    actor = pdata.get("actor_id")
+                    if not actor:
+                        continue
+                    player = (
+                        session.query(Player)
+                        .filter(Player.campaign_id == campaign_id)
+                        .filter(Player.actor_id == actor)
+                        .first()
+                    )
+                    if player is None:
+                        continue
+                    player.level = int(pdata.get("level", player.level))
+                    player.xp = int(pdata.get("xp", player.xp))
+                    player.attributes_json = str(pdata.get("attributes_json", player.attributes_json))
+                    player.state_json = str(pdata.get("state_json", player.state_json))
+                    player.updated_at = datetime.now(UTC).replace(tzinfo=None)
+
+                turn_ids_to_delete = [
+                    row.id
+                    for row in (
+                        session.query(Turn.id)
+                        .filter(Turn.campaign_id == campaign_id)
+                        .filter(Turn.id > resolved_turn_id)
+                        .filter(
+                            or_(
+                                Turn.session_id == session_id_text,
+                                and_(
+                                    Turn.session_id.is_(None),
+                                    Turn.kind == "narrator",
+                                    Turn.meta_json.like('%"system_event": "timed"%'),
+                                ),
+                            )
+                        )
+                        .all()
+                    )
+                ]
+
+                if turn_ids_to_delete:
+                    session.query(Snapshot).filter(Snapshot.turn_id.in_(turn_ids_to_delete)).delete(
+                        synchronize_session=False
+                    )
+                    session.query(Embedding).filter(Embedding.turn_id.in_(turn_ids_to_delete)).delete(
+                        synchronize_session=False
+                    )
+                    deleted_count = (
+                        session.query(Turn)
+                        .filter(Turn.id.in_(turn_ids_to_delete))
+                        .delete(synchronize_session=False)
+                    )
+                else:
+                    deleted_count = 0
+                session.commit()
+            ok = True
+            result_note = f"RewindResult(status='ok', target_turn_id={resolved_turn_id}, deleted_turns={int(deleted_count)})"
+            detail = "session_scoped_rewind"
+            deleted_turns = int(deleted_count)
+        else:
+            runtime.emulator._cleanup_embeddings_after_rewind(campaign_id, after_turn_id=resolved_turn_id)  # noqa: SLF001
+            result = runtime.game_engine.rewind_to_turn(campaign_id, resolved_turn_id)
+            if getattr(result, "status", None) == "ok" and getattr(result, "target_turn_id", None) is not None:
+                runtime.emulator._cleanup_embeddings_after_rewind(  # noqa: SLF001
+                    campaign_id,
+                    after_turn_id=int(result.target_turn_id),
+                )
+            ok = result.status == "ok" if hasattr(result, "status") else True
+            result_note = str(result)
+            detail = str(result)
+            deleted_turns = None
+        self._invalidate_campaign_runtime(campaign_id)
         return {
             "ok": ok,
-            "target_turn_id": target_turn_id,
-            "note": str(result),
-            "detail": str(result),
+            "target_turn_id": resolved_turn_id,
+            "resolved_turn_id": resolved_turn_id,
+            "session_id": session_id_text,
+            "note": result_note,
+            "detail": detail,
+            "deleted_turns": deleted_turns,
         }
 
     async def cancel_pending_timer(self, campaign_id: str) -> dict:
@@ -4177,34 +5480,464 @@ class TextGameEngineGateway(EngineGateway):
         ok, message = self._emulator.level_up(player)
         return {"ok": ok, "message": message}
 
-    async def get_recent_turns(self, campaign_id: str, limit: int = 30, offset: int = 0) -> dict:
+    async def get_recent_turns(
+        self,
+        campaign_id: str,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict:
+        result = self._query_turn_rows(
+            campaign_id,
+            limit=limit,
+            offset=offset,
+            session_id=session_id,
+            actor_id=actor_id,
+        )
+        return {"turns": result["rows"], "count": result["count"], "has_more": result["has_more"]}
+
+    async def search_turns(
+        self,
+        campaign_id: str,
+        query: str,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict:
+        result = self._query_turn_rows(
+            campaign_id,
+            limit=limit,
+            offset=offset,
+            session_id=session_id,
+            actor_id=actor_id,
+            query=query,
+        )
+        return {"results": result["rows"], "count": result["count"], "has_more": result["has_more"]}
+
+    def _turn_row_for_webui(
+        self,
+        campaign_id: str,
+        turn: Turn,
+        player_labels: dict[str, str],
+    ) -> dict[str, Any]:
+        meta = self._parse_json(turn.meta_json, {})
+        if isinstance(meta, dict):
+            scene_output = meta.get("scene_output") if isinstance(meta.get("scene_output"), dict) else None
+            resolved_visibility = self._resolve_turn_visibility(campaign_id, meta.get("visibility"))
+            resolved_turn_visibility = self._augment_turn_visibility_with_scene_awareness(
+                campaign_id,
+                resolved_visibility,
+                scene_output,
+                actor_id=str(turn.actor_id or "").strip() or None,
+            )
+            actual_visible_actor_ids = self._viewer_actor_ids_for_turn(campaign_id, turn)
+            merged_actor_ids: list[str] = []
+            for raw_actor_id in list(resolved_turn_visibility.get("visible_actor_ids") or []):
+                actor_id_text = str(raw_actor_id or "").strip()
+                if actor_id_text and actor_id_text not in merged_actor_ids:
+                    merged_actor_ids.append(actor_id_text)
+            for actor_id_text in actual_visible_actor_ids:
+                if actor_id_text and actor_id_text not in merged_actor_ids:
+                    merged_actor_ids.append(actor_id_text)
+            resolved_turn_visibility["visible_actor_ids"] = merged_actor_ids
+            meta["turn_visibility"] = resolved_turn_visibility
+        return {
+            "id": turn.id,
+            "kind": turn.kind,
+            "actor_id": turn.actor_id,
+            "actor_name": player_labels.get(str(turn.actor_id), str(turn.actor_id or "")),
+            "session_id": turn.session_id,
+            "content": turn.content,
+            "meta": meta,
+            "created_at": turn.created_at.isoformat() if turn.created_at else None,
+        }
+
+    def _turn_row_matches_session(
+        self,
+        row: dict[str, Any],
+        selected_session: GameSession | None,
+        actor_id: str | None,
+    ) -> bool:
+        if selected_session is None:
+            return True
+        selected_session_id = str(getattr(selected_session, "id", "") or "").strip()
+        row_session_id = str(row.get("session_id") or "").strip()
+        if selected_session_id and row_session_id and row_session_id == selected_session_id:
+            return True
+        selected_surface = str(getattr(selected_session, "surface", "") or "").strip().lower()
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        visibility = meta.get("turn_visibility") if isinstance(meta.get("turn_visibility"), dict) else {}
+        scope = str(visibility.get("scope") or "").strip().lower()
+        actor_id_text = str(actor_id or "").strip()
+        visible_actor_ids = [
+            str(value or "").strip()
+            for value in list(visibility.get("visible_actor_ids") or [])
+            if str(value or "").strip()
+        ]
+        actor_can_see_turn = bool(
+            actor_id_text
+            and (
+                str(row.get("actor_id") or "").strip() == actor_id_text
+                or actor_id_text in visible_actor_ids
+                or scope == "public"
+            )
+        )
+        if selected_surface == "web_shared":
+            return actor_can_see_turn and scope in {"public", "local"}
+        metadata = self._parse_json(getattr(selected_session, "metadata_json", "{}"), {})
+        owner_actor_id = str(metadata.get("owner_actor_id") or "").strip()
+        if actor_can_see_turn and (
+            selected_surface == "discord"
+            or (selected_surface == "web_private" and owner_actor_id and owner_actor_id == actor_id_text)
+            or (selected_surface == "web_direct" and actor_id_text)
+        ):
+            return scope in {"public", "local"} or actor_id_text in visible_actor_ids
+        return False
+
+    def _query_turn_rows(
+        self,
+        campaign_id: str,
+        *,
+        limit: int,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        query_text = str(query or "").strip().lower()
+        query_words = query_text.split() if query_text else []
+        if query_text:
+            raw_limit = int(limit or 0)
+            safe_limit = max(1, raw_limit) if raw_limit > 0 else 10000
+        else:
+            safe_limit = max(1, min(int(limit or 30), 100))
+        safe_offset = max(0, int(offset or 0))
+        needed = safe_limit + safe_offset + 1
+        batch_size = max(100, min(500, safe_limit * 4))
+        actor_id_text = str(actor_id or "").strip()
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
-        # Guard against pathological pagination requests by capping limit/offset.
-        safe_limit = max(1, min(limit, 100))
-        safe_offset = max(0, min(offset, 1000))
-        fetch_limit = safe_limit + safe_offset + 1
-        raw = self._emulator.get_recent_turns(campaign_id, limit=fetch_limit)
-        # raw is oldest→newest
-        has_more = len(raw) >= fetch_limit
-        end_idx = len(raw) - safe_offset if safe_offset < len(raw) else 0
-        start_idx = max(0, end_idx - safe_limit)
-        page = raw[start_idx:end_idx] if end_idx > 0 else []
-        rows = []
-        for turn in page:
+            selected_session = None
+            session_id_text = str(session_id or "").strip()
+            if session_id_text:
+                selected_session = session.get(GameSession, session_id_text)
+                if selected_session is None or str(selected_session.campaign_id) != str(campaign_id):
+                    raise KeyError(f"Unknown session in campaign: {session_id_text}")
+            campaign_players = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .all()
+            )
+            player_labels: dict[str, str] = {}
+            player = None
+            for row in campaign_players:
+                state = self._parse_json(row.state_json, {})
+                label = ""
+                if isinstance(state, dict):
+                    raw_name = state.get("character_name")
+                    if isinstance(raw_name, dict):
+                        label = str(raw_name.get("name") or "").strip()
+                    elif raw_name is not None:
+                        label = str(raw_name).strip()
+                player_labels[str(row.actor_id)] = label or str(row.actor_id)
+                if actor_id_text and str(row.actor_id) == actor_id_text:
+                    player = row
+            viewer_slug = ""
+            viewer_location_key = ""
+            if actor_id_text:
+                if player is None:
+                    raise KeyError(f"Unknown player in campaign: {actor_id_text}")
+                player_state = self._emulator.get_player_state(player)
+                player_registry = self._emulator._campaign_player_registry(  # noqa: SLF001
+                    campaign_id,
+                    self._session_factory,
+                )
+                viewer_slug = str(
+                    (player_registry.get("by_actor_id", {}).get(actor_id_text, {}) or {}).get("slug")
+                    or self._emulator._player_visibility_slug(actor_id_text)  # noqa: SLF001
+                    or ""
+                ).strip()
+                viewer_location_key = self._emulator._room_key_from_player_state(player_state)  # noqa: SLF001
+            matched_rows_desc: list[dict[str, Any]] = []
+            db_offset = 0
+            while len(matched_rows_desc) < needed:
+                batch = (
+                    session.query(Turn)
+                    .filter(Turn.campaign_id == campaign_id)
+                    .order_by(Turn.id.desc())
+                    .offset(db_offset)
+                    .limit(batch_size)
+                    .all()
+                )
+                if not batch:
+                    break
+                db_offset += len(batch)
+                for turn in batch:
+                    if actor_id_text and not self._emulator._turn_visible_to_viewer(  # noqa: SLF001
+                        turn,
+                        actor_id_text,
+                        viewer_slug,
+                        viewer_location_key,
+                        for_display=True,
+                    ):
+                        continue
+                    if query_words:
+                        content_lower = str(turn.content or "").lower()
+                        if not all(
+                            fnmatch(content_lower, f"*{w}*") if "*" in w or "?" in w
+                            else w in content_lower
+                            for w in query_words
+                        ):
+                            continue
+                    row = self._turn_row_for_webui(campaign_id, turn, player_labels)
+                    if not self._turn_row_matches_session(row, selected_session, actor_id_text):
+                        continue
+                    if query_text:
+                        row["preview"] = str(turn.content or "")[:280]
+                    matched_rows_desc.append(row)
+                    if len(matched_rows_desc) >= needed:
+                        break
+                if len(batch) < batch_size:
+                    break
+        has_more = len(matched_rows_desc) > (safe_offset + safe_limit)
+        page_desc = matched_rows_desc[safe_offset:safe_offset + safe_limit]
+        page_rows = list(reversed(page_desc))
+        return {"rows": page_rows, "count": len(page_rows), "has_more": has_more}
+
+    def _viewer_can_access_turn(
+        self,
+        campaign_id: str,
+        turn: Turn,
+        *,
+        actor_id: str | None = None,
+    ) -> bool:
+        actor_id_text = str(actor_id or "").strip()
+        if not actor_id_text:
+            return True
+        with self._session_factory() as session:
+            campaign_players = (
+                session.query(Player)
+                .filter(Player.campaign_id == campaign_id)
+                .all()
+            )
+            player = next(
+                (row for row in campaign_players if str(row.actor_id) == actor_id_text),
+                None,
+            )
+        if player is None:
+            return False
+        player_state = self._emulator.get_player_state(player)
+        player_registry = self._emulator._campaign_player_registry(  # noqa: SLF001
+            campaign_id,
+            self._session_factory,
+        )
+        viewer_slug = str(
+            (player_registry.get("by_actor_id", {}).get(actor_id_text, {}) or {}).get("slug")
+            or self._emulator._player_visibility_slug(actor_id_text)  # noqa: SLF001
+            or ""
+        ).strip()
+        viewer_location_key = self._emulator._room_key_from_player_state(player_state)  # noqa: SLF001
+        return bool(
+            self._emulator._turn_visible_to_viewer(  # noqa: SLF001
+                turn,
+                actor_id_text,
+                viewer_slug,
+                viewer_location_key,
+                for_display=True,
+            )
+        )
+
+    def _viewer_actor_ids_for_turn(self, campaign_id: str, turn: Turn) -> list[str]:
+        visible_actor_ids: list[str] = []
+        with self._session_factory() as session:
+            players = session.query(Player).filter(Player.campaign_id == campaign_id).all()
+        if not players:
+            return visible_actor_ids
+        player_registry = self._emulator._campaign_player_registry(  # noqa: SLF001
+            campaign_id,
+            self._session_factory,
+        )
+        for player in players:
+            actor_id_text = str(player.actor_id or "").strip()
+            if not actor_id_text:
+                continue
+            player_state = self._emulator.get_player_state(player)
+            viewer_slug = str(
+                (player_registry.get("by_actor_id", {}).get(actor_id_text, {}) or {}).get("slug")
+                or self._emulator._player_visibility_slug(actor_id_text)  # noqa: SLF001
+                or ""
+            ).strip()
+            viewer_location_key = self._emulator._room_key_from_player_state(player_state)  # noqa: SLF001
+            if self._emulator._turn_visible_to_viewer(  # noqa: SLF001
+                turn,
+                actor_id_text,
+                viewer_slug,
+                viewer_location_key,
+                for_display=True,
+            ):
+                visible_actor_ids.append(actor_id_text)
+        return visible_actor_ids
+
+    def _delete_turn_memory_embeddings(self, campaign_id: str, turn_id: int) -> None:
+        raw_memory = getattr(self._emulator, "_memory_port", None)
+        if raw_memory is None or int(turn_id or 0) <= 0:
+            return
+        if hasattr(raw_memory, "delete_turn_embeddings"):
+            raw_memory.delete_turn_embeddings(campaign_id, int(turn_id))
+            return
+        cid = None
+        if hasattr(raw_memory, "_maybe_int_campaign_id"):
+            try:
+                cid = raw_memory._maybe_int_campaign_id(campaign_id)
+            except Exception:
+                cid = None
+        if cid is None:
+            return
+        try:
+            from discord_tron_master.classes.zork_memory import ZorkMemory
+
+            conn = ZorkMemory._get_conn()
+            conn.execute(
+                "DELETE FROM turn_embeddings WHERE campaign_id = ? AND turn_id = ?",
+                (cid, int(turn_id)),
+            )
+            conn.execute(
+                "DELETE FROM turn_embedding_visible_players WHERE campaign_id = ? AND turn_id = ?",
+                (cid, int(turn_id)),
+            )
+            conn.execute(
+                "DELETE FROM turn_embedding_aware_npcs WHERE campaign_id = ? AND turn_id = ?",
+                (cid, int(turn_id)),
+            )
+            conn.commit()
+        except Exception:
+            logger.debug(
+                "WebUI turn delete memory cleanup skipped for campaign=%s turn=%s",
+                campaign_id,
+                turn_id,
+                exc_info=True,
+            )
+
+    async def edit_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        content: str,
+        actor_id: str | None = None,
+    ) -> dict:
+        text = str(content or "").strip()
+        if not text:
+            raise ValueError("Turn content is required.")
+        actor_id_text = str(actor_id or "").strip()
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            turn = (
+                session.query(Turn)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Turn.id == int(turn_id))
+                .first()
+            )
+            if turn is None:
+                raise KeyError(f"Unknown turn in campaign: {turn_id}")
+            if not self._viewer_can_access_turn(campaign_id, turn, actor_id=actor_id_text):
+                raise KeyError(f"Unknown turn in campaign: {turn_id}")
             meta = self._parse_json(turn.meta_json, {})
-            rows.append({
-                "id": turn.id,
-                "kind": turn.kind,
-                "actor_id": turn.actor_id,
-                "session_id": turn.session_id,
-                "content": turn.content,
-                "meta": meta,
-                "created_at": turn.created_at.isoformat() if turn.created_at else None,
-            })
-        return {"turns": rows, "count": len(rows), "has_more": has_more}
+            if not isinstance(meta, dict):
+                meta = {}
+            if str(getattr(turn, "kind", "") or "").strip().lower() == "narrator":
+                meta.pop("scene_output", None)
+            turn.content = text
+            turn.meta_json = json.dumps(meta, ensure_ascii=False)
+            session.query(Embedding).filter(Embedding.turn_id == int(turn.id)).delete(
+                synchronize_session=False,
+            )
+            session.commit()
+            updated_turn_id = int(turn.id or 0)
+            updated_kind = str(turn.kind or "")
+            updated_actor_id = str(turn.actor_id or "")
+            updated_session_id = str(turn.session_id or "")
+            embed_meta = self._emulator._safe_turn_meta(turn)  # noqa: SLF001
+            embed_visibility = embed_meta.get("visibility")
+        if self._emulator._memory_port is not None and text and updated_turn_id > 0:
+            try:
+                self._emulator._memory_port.store_turn_embedding(
+                    turn_id=updated_turn_id,
+                    campaign_id=campaign_id,
+                    actor_id=updated_actor_id or None,
+                    kind=updated_kind or "narrator",
+                    content=text,
+                    metadata=self._emulator._turn_embedding_metadata(  # noqa: SLF001
+                        visibility=embed_visibility if isinstance(embed_visibility, dict) else None,
+                        actor_player_slug=embed_meta.get("actor_player_slug"),
+                        location_key=embed_meta.get("location_key"),
+                        session_id=updated_session_id or None,
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "WebUI turn edit embedding refresh skipped for campaign=%s turn=%s",
+                    campaign_id,
+                    updated_turn_id,
+                    exc_info=True,
+                )
+        return {
+            "ok": True,
+            "turn_id": updated_turn_id,
+            "actor_id": updated_actor_id,
+            "session_id": updated_session_id,
+            "kind": updated_kind,
+            "content": text,
+        }
+
+    async def delete_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        actor_id: str | None = None,
+    ) -> dict:
+        actor_id_text = str(actor_id or "").strip()
+        with self._session_factory() as session:
+            campaign = session.get(Campaign, campaign_id)
+            if campaign is None:
+                raise KeyError(f"Unknown campaign: {campaign_id}")
+            turn = (
+                session.query(Turn)
+                .filter(Turn.campaign_id == campaign_id)
+                .filter(Turn.id == int(turn_id))
+                .first()
+            )
+            if turn is None:
+                raise KeyError(f"Unknown turn in campaign: {turn_id}")
+            if not self._viewer_can_access_turn(campaign_id, turn, actor_id=actor_id_text):
+                raise KeyError(f"Unknown turn in campaign: {turn_id}")
+            deleted_actor_id = str(turn.actor_id or "")
+            deleted_session_id = str(turn.session_id or "")
+            deleted_kind = str(turn.kind or "")
+            session.query(Snapshot).filter(Snapshot.turn_id == int(turn.id)).delete(
+                synchronize_session=False,
+            )
+            session.query(Embedding).filter(Embedding.turn_id == int(turn.id)).delete(
+                synchronize_session=False,
+            )
+            session.delete(turn)
+            session.commit()
+        self._delete_turn_memory_embeddings(campaign_id, int(turn_id))
+        return {
+            "ok": True,
+            "turn_id": int(turn_id),
+            "actor_id": deleted_actor_id,
+            "session_id": deleted_session_id,
+            "kind": deleted_kind,
+        }
 
     async def get_campaign_persona(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
@@ -4400,15 +6133,21 @@ class TextGameEngineGateway(EngineGateway):
         on_rails: bool = False,
         attachment_text: str | None = None,
     ) -> dict:
+        runtime = self._campaign_runtime(campaign_id)
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
             campaign_name = campaign.name
+        log_token = self._begin_turn_log_scope(
+            campaign_id,
+            actor_id=actor_id,
+            section=f"WEBUI SETUP START campaign={campaign_id}",
+            body=f"actor_id={actor_id or ''}\non_rails={bool(on_rails)}\nattachment_text_present={bool(attachment_text)}",
+        )
         try:
-            async with self._turn_llm_lock:
-                self._ensure_campaign_llm(campaign_id)
-                message = await self._emulator.start_campaign_setup(
+            async with self._turn_lock_for(campaign_id, actor_id):
+                message = await runtime.emulator.start_campaign_setup(
                     campaign_id,
                     actor_id=actor_id,
                     raw_name=campaign_name,
@@ -4416,23 +6155,39 @@ class TextGameEngineGateway(EngineGateway):
                     attachment_text=attachment_text,
                     ingest_source_material=bool(attachment_text),
                 )
+            _zork_log(
+                f"WEBUI SETUP START RESULT campaign={campaign_id}",
+                str(message or "(empty)"),
+            )
             return {"ok": True, "message": str(message or ""), "setup_phase": "classify_confirm"}
         except Exception as exc:
             return {"ok": False, "message": str(exc), "setup_phase": None}
+        finally:
+            self._end_turn_log_scope(log_token)
 
     async def handle_setup_message(self, campaign_id: str, actor_id: str, message: str) -> dict:
+        runtime = self._campaign_runtime(campaign_id)
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
+        log_token = self._begin_turn_log_scope(
+            campaign_id,
+            actor_id=actor_id,
+            section=f"WEBUI SETUP MESSAGE campaign={campaign_id}",
+            body=f"actor_id={actor_id}\nmessage={message}",
+        )
         try:
-            async with self._turn_llm_lock:
-                self._ensure_campaign_llm(campaign_id)
-                response = await self._emulator.handle_setup_message(
+            async with self._turn_lock_for(campaign_id, actor_id):
+                response = await runtime.emulator.handle_setup_message(
                     campaign_id,
                     actor_id,
                     message,
                 )
+            _zork_log(
+                f"WEBUI SETUP MESSAGE RESULT campaign={campaign_id}",
+                str(response or "(empty)"),
+            )
             # Check current phase after handling
             with self._session_factory() as session:
                 campaign = session.get(Campaign, campaign_id)
@@ -4446,6 +6201,8 @@ class TextGameEngineGateway(EngineGateway):
             }
         except Exception as exc:
             return {"ok": False, "message": str(exc), "setup_phase": None, "completed": False}
+        finally:
+            self._end_turn_log_scope(log_token)
 
     async def get_scene_images(self, campaign_id: str) -> dict:
         with self._session_factory() as session:
@@ -4654,16 +6411,84 @@ class TextGameEngineGateway(EngineGateway):
             if campaign is None:
                 raise KeyError(f"Unknown campaign: {campaign_id}")
             name = campaign.name
-            # Delete all related data
-            session.query(Embedding).filter(Embedding.campaign_id == campaign_id).delete()
-            session.query(Snapshot).filter(Snapshot.campaign_id == campaign_id).delete()
-            session.query(Turn).filter(Turn.campaign_id == campaign_id).delete()
-            session.query(Timer).filter(Timer.campaign_id == campaign_id).delete()
-            session.query(InflightTurn).filter(InflightTurn.campaign_id == campaign_id).delete()
-            session.query(OutboxEvent).filter(OutboxEvent.campaign_id == campaign_id).delete()
-            session.query(GameSession).filter(GameSession.campaign_id == campaign_id).delete()
-            session.query(MediaRef).filter(MediaRef.campaign_id == campaign_id).delete()
-            session.query(Player).filter(Player.campaign_id == campaign_id).delete()
+            session_ids = [
+                str(row[0])
+                for row in session.query(GameSession.id)
+                .filter(GameSession.campaign_id == campaign_id)
+                .all()
+            ]
+            turn_ids = [
+                int(row[0])
+                for row in session.query(Turn.id)
+                .filter(
+                    or_(
+                        Turn.campaign_id == campaign_id,
+                        Turn.session_id.in_(session_ids) if session_ids else False,
+                    )
+                )
+                .all()
+            ]
+
+            # Delete child rows before parent rows. Use both campaign_id and the
+            # campaign's session/turn ids so old session rebinds do not leave
+            # foreign-key references behind.
+            if turn_ids:
+                session.query(Embedding).filter(Embedding.turn_id.in_(turn_ids)).delete(
+                    synchronize_session=False
+                )
+                session.query(Snapshot).filter(Snapshot.turn_id.in_(turn_ids)).delete(
+                    synchronize_session=False
+                )
+            else:
+                session.query(Embedding).filter(Embedding.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+                session.query(Snapshot).filter(Snapshot.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+
+            if session_ids:
+                session.query(Turn).filter(
+                    or_(
+                        Turn.campaign_id == campaign_id,
+                        Turn.session_id.in_(session_ids),
+                    )
+                ).delete(synchronize_session=False)
+                session.query(Timer).filter(
+                    or_(
+                        Timer.campaign_id == campaign_id,
+                        Timer.session_id.in_(session_ids),
+                    )
+                ).delete(synchronize_session=False)
+                session.query(OutboxEvent).filter(
+                    or_(
+                        OutboxEvent.campaign_id == campaign_id,
+                        OutboxEvent.session_id.in_(session_ids),
+                    )
+                ).delete(synchronize_session=False)
+                session.query(GameSession).filter(GameSession.id.in_(session_ids)).delete(
+                    synchronize_session=False
+                )
+            else:
+                session.query(Turn).filter(Turn.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+                session.query(Timer).filter(Timer.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+                session.query(OutboxEvent).filter(OutboxEvent.campaign_id == campaign_id).delete(
+                    synchronize_session=False
+                )
+
+            session.query(InflightTurn).filter(InflightTurn.campaign_id == campaign_id).delete(
+                synchronize_session=False
+            )
+            session.query(MediaRef).filter(MediaRef.campaign_id == campaign_id).delete(
+                synchronize_session=False
+            )
+            session.query(Player).filter(Player.campaign_id == campaign_id).delete(
+                synchronize_session=False
+            )
             session.delete(campaign)
             session.commit()
         return {"ok": True, "deleted_campaign_id": campaign_id, "name": name}
@@ -4674,6 +6499,7 @@ class TextGameEngineGateway(EngineGateway):
         Safe because ZorkEmulator null-checks ``_media_port`` at every
         usage site before calling into it.
         """
+        self._injected_media_port = media_port
         self._emulator._media_port = media_port
 
     def set_timer_effects_port(self, port: object) -> None:
@@ -4682,6 +6508,7 @@ class TextGameEngineGateway(EngineGateway):
         Safe because ZorkEmulator null-checks ``_timer_effects_port``
         before calling into it.
         """
+        self._injected_timer_effects_port = port
         self._emulator._timer_effects_port = port
 
     def set_notification_port(self, port: object) -> None:
@@ -4690,4 +6517,5 @@ class TextGameEngineGateway(EngineGateway):
         Safe because ZorkEmulator null-checks ``_notification_port``
         before calling into it.
         """
+        self._injected_notification_port = port
         self._emulator._notification_port = port

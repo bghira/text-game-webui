@@ -61,9 +61,15 @@ FEATURES = [
 ]
 
 
+class TurnCancelledError(Exception):
+    """Raised when a live web UI turn is explicitly cancelled by the user."""
+
+
 class EngineGateway(Protocol):
     async def list_campaigns(self, namespace: str) -> list[CampaignSummary]: ...
+    async def list_campaigns_for_actor(self, actor_id: str) -> list[CampaignSummary]: ...
     async def create_campaign(self, namespace: str, name: str, actor_id: str) -> CampaignSummary: ...
+    async def actor_can_access_campaign(self, campaign_id: str, actor_id: str) -> bool: ...
     async def list_sessions(self, campaign_id: str) -> list[dict]: ...
     async def create_or_update_session(
         self,
@@ -93,8 +99,18 @@ class EngineGateway(Protocol):
         session_id: str | None,
     ) -> None: ...
     async def runtime_checks(self, probe_llm: bool = False) -> dict: ...
+    async def effective_llm_settings(self, campaign_id: str | None = None) -> dict[str, object]: ...
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
     def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]: ...
+    async def cancel_active_turn(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def queue_discord_mirror(
+        self,
+        campaign_id: str,
+        result: TurnResult,
+        *,
+        actor_display_name: str | None = None,
+        action_text: str | None = None,
+    ) -> None: ...
     async def campaign_export(
         self,
         campaign_id: str,
@@ -103,8 +119,24 @@ class EngineGateway(Protocol):
         raw_format: str = "jsonl",
     ) -> dict: ...
     async def get_map(self, campaign_id: str, actor_id: str) -> str: ...
+    def get_map_graph(self, campaign_id: str) -> dict: ...
     async def get_timers(self, campaign_id: str) -> dict: ...
-    async def get_calendar(self, campaign_id: str) -> dict: ...
+    async def get_calendar(self, campaign_id: str, actor_id: str | None = None) -> dict: ...
+    async def update_calendar_event_visibility(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        visibility: str,
+        actor_id: str | None = None,
+    ) -> dict: ...
+    async def delete_calendar_event(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        actor_id: str | None = None,
+    ) -> dict: ...
     async def get_roster(self, campaign_id: str) -> dict: ...
     async def upsert_roster_character(
         self,
@@ -119,6 +151,7 @@ class EngineGateway(Protocol):
     ) -> dict: ...
     async def remove_roster_character(self, campaign_id: str, slug: str, *, player: bool = False) -> dict: ...
     async def get_player_state(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def shared_pending_target_actor_ids(self, campaign_id: str, actor_id: str) -> list[str]: ...
     async def get_media(self, campaign_id: str, actor_id: str | None = None) -> dict: ...
     async def record_pending_avatar(self, campaign_id: str, actor_id: str, image_url: str, prompt: str | None = None) -> dict: ...
     async def accept_pending_avatar(self, campaign_id: str, actor_id: str) -> dict: ...
@@ -127,9 +160,12 @@ class EngineGateway(Protocol):
     async def memory_terms(self, campaign_id: str, wildcard: str) -> dict: ...
     async def memory_turn(self, campaign_id: str, turn_id: int) -> dict: ...
     async def memory_store(self, campaign_id: str, payload: MemoryStoreRequest) -> dict: ...
-    async def sms_list(self, campaign_id: str, wildcard: str) -> dict: ...
+    async def sms_list(self, campaign_id: str, wildcard: str, viewer_actor_id: str | None = None) -> dict: ...
     async def sms_read(self, campaign_id: str, thread: str, limit: int, viewer_actor_id: str | None = None) -> dict: ...
     async def sms_write(self, campaign_id: str, thread: str, sender: str, recipient: str, message: str) -> dict: ...
+    async def sms_delete_thread(self, campaign_id: str, thread: str) -> dict: ...
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_seq: int) -> dict: ...
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_seq: int, new_text: str) -> dict: ...
     async def debug_snapshot(self, campaign_id: str) -> dict: ...
     async def get_campaign_flags(self, campaign_id: str) -> dict: ...
     async def update_campaign_flags(
@@ -148,14 +184,53 @@ class EngineGateway(Protocol):
     async def ingest_source_material(self, campaign_id: str, payload: SourceMaterialIngest) -> dict: ...
     async def get_campaign_rules(self, campaign_id: str, key: str | None = None) -> dict: ...
     async def update_campaign_rule(self, campaign_id: str, payload: CampaignRuleUpdate) -> dict: ...
-    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict: ...
+    async def rewind_to_turn(
+        self,
+        campaign_id: str,
+        target_turn_id: int,
+        *,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict: ...
     async def cancel_pending_timer(self, campaign_id: str) -> dict: ...
     async def get_player_statistics(self, campaign_id: str, actor_id: str) -> dict: ...
     async def get_player_attributes(self, campaign_id: str, actor_id: str) -> dict: ...
     async def set_player_attribute(self, campaign_id: str, actor_id: str, attribute: str, value: int) -> dict: ...
     async def rename_player_character(self, campaign_id: str, actor_id: str, name: str) -> dict: ...
     async def level_up_player(self, campaign_id: str, actor_id: str) -> dict: ...
-    async def get_recent_turns(self, campaign_id: str, limit: int = 30, offset: int = 0) -> dict: ...
+    async def get_recent_turns(
+        self,
+        campaign_id: str,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict: ...
+    async def search_turns(
+        self,
+        campaign_id: str,
+        query: str,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict: ...
+    async def edit_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        content: str,
+        actor_id: str | None = None,
+    ) -> dict: ...
+    async def delete_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        actor_id: str | None = None,
+    ) -> dict: ...
     async def get_campaign_persona(self, campaign_id: str) -> dict: ...
     async def set_campaign_persona(self, campaign_id: str, persona: str) -> dict: ...
     async def get_puzzle_hint(self, campaign_id: str) -> dict: ...
@@ -192,6 +267,17 @@ class InMemoryEngineGateway:
         self._roster_npcs: dict[str, dict[str, dict]] = defaultdict(dict)
         self._media: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
         self._campaign_rules: dict[str, dict[str, str]] = defaultdict(dict)
+        self._calendar: dict[str, list[dict]] = defaultdict(lambda: [
+            {
+                "event_key": "concierge-callback:1:11",
+                "name": "Concierge callback",
+                "fire_day": 1,
+                "fire_hour": 11,
+                "description": "The concierge promised to call back before lunch.",
+                "scope": "targeted",
+                "target_players": ["rigby"],
+            }
+        ])
 
     def _require_campaign(self, campaign_id: str) -> CampaignSummary:
         if campaign_id not in self._campaigns:
@@ -207,6 +293,25 @@ class InMemoryEngineGateway:
         if self._is_all_namespaces(namespace):
             return list(self._campaigns.values())
         return [row for row in self._campaigns.values() if row.namespace == namespace]
+
+    async def list_campaigns_for_actor(self, actor_id: str) -> list[CampaignSummary]:
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return []
+        out: list[CampaignSummary] = []
+        for row in self._campaigns.values():
+            if row.actor_id == actor or actor in self._players.get(row.id, {}):
+                out.append(row)
+        return out
+
+    async def actor_can_access_campaign(self, campaign_id: str, actor_id: str) -> bool:
+        actor = str(actor_id or "").strip()
+        if not actor:
+            return False
+        row = self._campaigns.get(campaign_id)
+        if row is None:
+            raise KeyError(f"Unknown campaign: {campaign_id}")
+        return bool(row.actor_id == actor or actor in self._players.get(campaign_id, {}))
 
     async def create_campaign(self, namespace: str, name: str, actor_id: str) -> CampaignSummary:
         campaign = CampaignSummary(
@@ -372,6 +477,20 @@ class InMemoryEngineGateway:
             "llm": {"configured": False, "probe_attempted": False, "ok": None, "detail": "Not applicable."},
         }
 
+    async def effective_llm_settings(self, campaign_id: str | None = None) -> dict[str, object]:
+        _ = campaign_id
+        return {
+            "completion_mode": "deterministic",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "temperature": 0.8,
+            "max_tokens": 3200,
+            "timeout_seconds": 90,
+            "keep_alive": "30m",
+            "ollama_options": {},
+        }
+
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
         self._require_campaign(campaign_id)
         player = self._ensure_player(campaign_id, request.actor_id)
@@ -451,6 +570,7 @@ class InMemoryEngineGateway:
             player["state"] = player_state
 
         return TurnResult(
+            turn_id=turn_id,
             actor_id=request.actor_id,
             session_id=session_id,
             narration=f"TURN {turn_id}: {request.actor_id} -> {request.action}",
@@ -493,6 +613,27 @@ class InMemoryEngineGateway:
         for i in range(0, len(narration), chunk_size):
             yield {"event": "token", "data": {"text": narration[i : i + chunk_size]}}
         yield {"event": "complete", "data": result.model_dump()}
+
+    async def cancel_active_turn(self, campaign_id: str, actor_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        _ = actor_id
+        return {
+            "ok": True,
+            "cancelled": False,
+            "cleared_claims": 0,
+            "session_id": None,
+            "note": "No active turn to cancel.",
+        }
+
+    async def queue_discord_mirror(
+        self,
+        campaign_id: str,
+        result: TurnResult,
+        *,
+        actor_display_name: str | None = None,
+        action_text: str | None = None,
+    ) -> None:
+        _ = campaign_id, result, actor_display_name, action_text
 
     async def campaign_export(
         self,
@@ -614,25 +755,61 @@ class InMemoryEngineGateway:
 Legend: @ current player
 """
 
+    def get_map_graph(self, campaign_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        return {}
+
     async def get_timers(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)
         return {"timers": self._timers[campaign_id][-30:]}
 
-    async def get_calendar(self, campaign_id: str) -> dict:
+    async def get_calendar(self, campaign_id: str, actor_id: str | None = None) -> dict:
+        _ = actor_id
         self._require_campaign(campaign_id)
         return {
             "game_time": {"day": 1, "hour": 9, "minute": 0},
-            "events": [
-                {
-                    "name": "Concierge callback",
-                    "fire_day": 1,
-                    "fire_hour": 11,
-                    "description": "The concierge promised to call back before lunch.",
-                    "scope": "targeted",
-                    "target_players": ["rigby"],
-                }
-            ],
+            "events": [dict(e) for e in self._calendar[campaign_id]],
         }
+
+    async def update_calendar_event_visibility(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        visibility: str,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        key = str(event_key or "").strip()
+        for event in self._calendar[campaign_id]:
+            if event.get("event_key") == key:
+                if visibility == "public":
+                    event.pop("target_players", None)
+                    event["scope"] = "global"
+                else:
+                    event["target_players"] = [actor_id] if actor_id else []
+                    event["scope"] = "targeted"
+                break
+        else:
+            raise KeyError(f"Unknown calendar event: {key}")
+        return await self.get_calendar(campaign_id, actor_id=actor_id)
+
+    async def delete_calendar_event(
+        self,
+        campaign_id: str,
+        event_key: str,
+        *,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        key = str(event_key or "").strip()
+        before = len(self._calendar[campaign_id])
+        self._calendar[campaign_id] = [
+            e for e in self._calendar[campaign_id] if e.get("event_key") != key
+        ]
+        if len(self._calendar[campaign_id]) == before:
+            raise KeyError(f"Unknown calendar event: {key}")
+        return await self.get_calendar(campaign_id, actor_id=actor_id)
 
     async def get_roster(self, campaign_id: str) -> dict:
         campaign = self._require_campaign(campaign_id)
@@ -783,6 +960,27 @@ Legend: @ current player
             "inventory": inventory,
         }
 
+    async def shared_pending_target_actor_ids(self, campaign_id: str, actor_id: str) -> list[str]:
+        self._require_campaign(campaign_id)
+        source = await self.get_player_state(campaign_id, actor_id)
+        source_state = source.get("state", {}) if isinstance(source, dict) else {}
+        source_location = str(
+            source_state.get("location") or source_state.get("room_title") or ""
+        ).strip()
+        if not source_location:
+            return []
+        out: list[str] = []
+        for other_actor_id, other_player in self._players[campaign_id].items():
+            if str(other_actor_id or "").strip() == str(actor_id or "").strip():
+                continue
+            other_state = other_player.get("state", {}) if isinstance(other_player, dict) else {}
+            other_location = str(
+                other_state.get("location") or other_state.get("room_title") or ""
+            ).strip()
+            if other_location and other_location == source_location:
+                out.append(str(other_actor_id))
+        return out
+
     async def get_media(self, campaign_id: str, actor_id: str | None = None) -> dict:
         self._require_campaign(campaign_id)
         scene_prompts = self._media[campaign_id].get("scene_prompts", [])
@@ -914,7 +1112,8 @@ Legend: @ current player
         self._memory[campaign_id].append(row)
         return {"stored": True, "entry": row}
 
-    async def sms_list(self, campaign_id: str, wildcard: str) -> dict:
+    async def sms_list(self, campaign_id: str, wildcard: str, viewer_actor_id: str | None = None) -> dict:
+        _ = viewer_actor_id  # InMemory doesn't resolve contacts
         self._require_campaign(campaign_id)
         threads = sorted(self._sms[campaign_id].keys())
         if wildcard and wildcard != "*":
@@ -931,6 +1130,33 @@ Legend: @ current player
         msg = SmsMessage(sender=sender, recipient=recipient, message=message, created_at=datetime.now(UTC))
         self._sms[campaign_id][thread].append(msg)
         return {"stored": True, "thread": thread, "message": msg.model_dump()}
+
+    async def sms_delete_thread(self, campaign_id: str, thread: str) -> dict:
+        self._require_campaign(campaign_id)
+        if thread in self._sms[campaign_id]:
+            del self._sms[campaign_id][thread]
+            return {"ok": True, "deleted": "thread"}
+        return {"ok": False, "error": "thread_not_found"}
+
+    async def sms_delete_message(self, campaign_id: str, thread: str, message_seq: int) -> dict:
+        self._require_campaign(campaign_id)
+        msgs = self._sms[campaign_id].get(thread, [])
+        for i, msg in enumerate(msgs):
+            if getattr(msg, "seq", None) == message_seq or i == message_seq:
+                msgs.pop(i)
+                if not msgs:
+                    del self._sms[campaign_id][thread]
+                return {"ok": True, "deleted": "message"}
+        return {"ok": False, "error": "message_not_found"}
+
+    async def sms_edit_message(self, campaign_id: str, thread: str, message_seq: int, new_text: str) -> dict:
+        self._require_campaign(campaign_id)
+        msgs = self._sms[campaign_id].get(thread, [])
+        for i, msg in enumerate(msgs):
+            if getattr(msg, "seq", None) == message_seq or i == message_seq:
+                msgs[i].message = new_text
+                return {"ok": True, "updated": "message"}
+        return {"ok": False, "error": "message_not_found"}
 
     async def debug_snapshot(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)
@@ -1043,7 +1269,7 @@ Legend: @ current player
             "replaced": old_value is not None,
         }
 
-    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int) -> dict:
+    async def rewind_to_turn(self, campaign_id: str, target_turn_id: int, *, session_id: str | None = None, actor_id: str | None = None) -> dict:
         self._require_campaign(campaign_id)
         return {"ok": False, "note": "InMemory backend — rewind not supported."}
 
@@ -1109,16 +1335,143 @@ Legend: @ current player
         self._require_campaign(campaign_id)
         return {"ok": False, "note": "InMemory backend — level up not supported."}
 
-    async def get_recent_turns(self, campaign_id: str, limit: int = 30, offset: int = 0) -> dict:
+    async def get_recent_turns(
+        self,
+        campaign_id: str,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict:
         self._require_campaign(campaign_id)
         all_turns = self._turns[campaign_id]
+        player_labels: dict[str, str] = {}
+        for actor_key, payload in self._players[campaign_id].items():
+            label = ""
+            if isinstance(payload, dict):
+                state = payload.get("state")
+                if isinstance(state, dict):
+                    raw_name = state.get("character_name")
+                    if isinstance(raw_name, dict):
+                        label = str(raw_name.get("name") or "").strip()
+                    elif raw_name is not None:
+                        label = str(raw_name).strip()
+            player_labels[str(actor_key)] = label or str(actor_key)
         total = len(all_turns)
         safe_offset = max(0, offset)
         safe_limit = max(1, limit)
         end = total - safe_offset
         start = max(0, end - safe_limit)
         page = all_turns[start:end] if end > 0 else []
-        return {"turns": page, "count": len(page), "has_more": start > 0}
+        page_rows = []
+        for row in page:
+            if not isinstance(row, dict):
+                continue
+            actor_key = str(row.get("actor_id") or "")
+            page_rows.append(
+                {
+                    **row,
+                    "actor_name": player_labels.get(actor_key, actor_key),
+                }
+            )
+        return {"turns": page_rows, "count": len(page_rows), "has_more": start > 0}
+
+    async def search_turns(
+        self,
+        campaign_id: str,
+        query: str,
+        *,
+        limit: int = 30,
+        offset: int = 0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        needle = str(query or "").strip().lower()
+        if not needle:
+            return {"results": [], "count": 0, "has_more": False}
+        rows = []
+        player_labels: dict[str, str] = {}
+        for actor_key, payload in self._players[campaign_id].items():
+            label = ""
+            if isinstance(payload, dict):
+                state = payload.get("state")
+                if isinstance(state, dict):
+                    raw_name = state.get("character_name")
+                    if isinstance(raw_name, dict):
+                        label = str(raw_name.get("name") or "").strip()
+                    elif raw_name is not None:
+                        label = str(raw_name).strip()
+            player_labels[str(actor_key)] = label or str(actor_key)
+        for row in reversed(self._turns[campaign_id]):
+            if not isinstance(row, dict):
+                continue
+            if session_id and str(row.get("session_id") or "").strip() != str(session_id or "").strip():
+                continue
+            content = str(row.get("content") or "")
+            if needle not in content.lower():
+                continue
+            actor_key = str(row.get("actor_id") or "")
+            rows.append(
+                {
+                    **row,
+                    "actor_name": player_labels.get(actor_key, actor_key),
+                    "preview": content[:280],
+                }
+            )
+        safe_offset = max(0, offset)
+        safe_limit = max(1, limit)
+        page = rows[safe_offset:safe_offset + safe_limit]
+        has_more = (safe_offset + safe_limit) < len(rows)
+        return {"results": page, "count": len(page), "has_more": has_more}
+
+    async def edit_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        content: str,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        text = str(content or "").strip()
+        if not text:
+            raise ValueError("Turn content is required.")
+        for row in self._turns[campaign_id]:
+            if int(row.get("id") or 0) != int(turn_id):
+                continue
+            row["content"] = text
+            return {
+                "ok": True,
+                "turn_id": int(turn_id),
+                "actor_id": str(row.get("actor_id") or actor_id or ""),
+                "session_id": str(row.get("session_id") or ""),
+                "kind": str(row.get("kind") or ""),
+                "content": text,
+            }
+        raise KeyError(f"Unknown turn in campaign: {turn_id}")
+
+    async def delete_turn(
+        self,
+        campaign_id: str,
+        turn_id: int,
+        *,
+        actor_id: str | None = None,
+    ) -> dict:
+        self._require_campaign(campaign_id)
+        rows = self._turns[campaign_id]
+        for idx, row in enumerate(rows):
+            if int(row.get("id") or 0) != int(turn_id):
+                continue
+            removed = rows.pop(idx)
+            return {
+                "ok": True,
+                "turn_id": int(turn_id),
+                "actor_id": str(removed.get("actor_id") or actor_id or ""),
+                "session_id": str(removed.get("session_id") or ""),
+                "kind": str(removed.get("kind") or ""),
+            }
+        raise KeyError(f"Unknown turn in campaign: {turn_id}")
 
     async def get_campaign_persona(self, campaign_id: str) -> dict:
         self._require_campaign(campaign_id)
