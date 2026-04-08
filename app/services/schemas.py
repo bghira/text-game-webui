@@ -20,6 +20,7 @@ class TurnRequest(BaseModel):
     session_id: str | None = None
     mentioned_actor_ids: list[str] = Field(default_factory=list)
     browser_local_ollama: dict[str, Any] | None = None
+    client_turn_id: str | None = None
 
 
 class TurnCancelRequest(BaseModel):

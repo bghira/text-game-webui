@@ -65,6 +65,10 @@ class TurnCancelledError(Exception):
     """Raised when a live web UI turn is explicitly cancelled by the user."""
 
 
+class DuplicateTurnError(Exception):
+    """Raised when a client_turn_id has already been processed."""
+
+
 class EngineGateway(Protocol):
     async def list_campaigns(self, namespace: str) -> list[CampaignSummary]: ...
     async def list_campaigns_for_actor(self, actor_id: str) -> list[CampaignSummary]: ...
@@ -103,6 +107,7 @@ class EngineGateway(Protocol):
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult: ...
     def submit_turn_stream(self, campaign_id: str, request: TurnRequest) -> AsyncIterator[dict]: ...
     async def cancel_active_turn(self, campaign_id: str, actor_id: str) -> dict: ...
+    async def get_active_turn_status(self, campaign_id: str, actor_id: str) -> dict: ...
     async def queue_discord_mirror(
         self,
         campaign_id: str,
@@ -624,6 +629,11 @@ class InMemoryEngineGateway:
             "session_id": None,
             "note": "No active turn to cancel.",
         }
+
+    async def get_active_turn_status(self, campaign_id: str, actor_id: str) -> dict:
+        self._require_campaign(campaign_id)
+        _ = actor_id
+        return {"active": False, "session_id": None}
 
     async def queue_discord_mirror(
         self,

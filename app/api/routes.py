@@ -29,7 +29,7 @@ from app.services.dtm_link_auth import (
     get_or_create_pending_link,
     issue_session_cookie_value,
 )
-from app.services.engine_gateway import FEATURES, EngineGateway, TurnCancelledError
+from app.services.engine_gateway import FEATURES, DuplicateTurnError, EngineGateway, TurnCancelledError
 from app.services.schemas import (
     AttributeSetRequest,
     AvatarActionRequest,
@@ -763,6 +763,15 @@ async def submit_turn(
             shared_pending_targets,
         )
         _bad_request(err)
+    except DuplicateTurnError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
+        raise HTTPException(status_code=409, detail=str(err)) from err
     except TurnCancelledError as err:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
         await _clear_pending_shared_turn(
@@ -816,6 +825,24 @@ async def cancel_turn(
         raise HTTPException(status_code=400, detail="actor_id is required.")
     try:
         return await gateway.cancel_active_turn(campaign_id, str(actor_id))
+    except KeyError as err:
+        _not_found(err)
+    except ValueError as err:
+        _bad_request(err)
+
+
+@router.get("/campaigns/{campaign_id}/turns/active")
+async def get_turn_active_status(
+    campaign_id: str,
+    request: Request,
+    actor_id: str | None = None,
+    gateway: EngineGateway = Depends(get_gateway),
+) -> dict:
+    resolved_actor_id = _coerced_actor_id(request, actor_id)
+    if not str(resolved_actor_id or "").strip():
+        raise HTTPException(status_code=400, detail="actor_id is required.")
+    try:
+        return await gateway.get_active_turn_status(campaign_id, str(resolved_actor_id))
     except KeyError as err:
         _not_found(err)
     except ValueError as err:
@@ -886,6 +913,15 @@ async def submit_turn_stream(
             shared_pending_targets,
         )
         error_event = f"event: error\ndata: {json.dumps({'message': str(err)})}\n\n"
+    except DuplicateTurnError as err:
+        await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
+        await _clear_pending_shared_turn(
+            request,
+            campaign_id,
+            shared_pending_id,
+            shared_pending_targets,
+        )
+        raise HTTPException(status_code=409, detail=str(err)) from err
     except ValueError as err:
         await _clear_pending_mentions(request, campaign_id, pending_id, pending_targets)
         await _clear_pending_shared_turn(
