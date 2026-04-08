@@ -4818,8 +4818,34 @@
         this.socket.onopen = () => {
           this.diagnostics.ws_state = "connected";
           this.diagnostics.ws_last_event_at = isoNow();
+          const wasReconnect = this.diagnostics.ws_reconnect_attempts > 0;
           this.diagnostics.ws_reconnect_attempts = 0;
           this.statusMessage = "Realtime connected.";
+          if (wasReconnect) {
+            if (!this.submitting) {
+              // Catch up on any turns that completed while WS was down (Bug B fix)
+              this.loadRecentTurns(30, { force: true }).then(() => {
+                this.populateTurnStreamFromHistory();
+              }).catch(() => {});
+            } else {
+              // Confirm the turn is still in progress on the server (Bug A fix)
+              const actorId = (this.turnForm.actor_id || "").trim();
+              if (actorId && this.selectedCampaignId) {
+                this.api(`/api/campaigns/${this.selectedCampaignId}/turns/active?actor_id=${encodeURIComponent(actorId)}`)
+                  .then((status) => {
+                    if (status && status.active) {
+                      this.statusMessage = "Realtime reconnected — turn still in progress...";
+                    } else if (status && !status.active) {
+                      // Turn finished while WS was down — recover
+                      this.loadRecentTurns(30, { force: true }).then(() => {
+                        this.populateTurnStreamFromHistory();
+                      }).catch(() => {});
+                    }
+                  })
+                  .catch(() => {});
+              }
+            }
+          }
         };
         this.socket.onmessage = (event) => {
           this.diagnostics.ws_last_event_at = isoNow();
@@ -4989,7 +5015,10 @@
         this.socket.onerror = () => {
           this.diagnostics.ws_state = "error";
           this.diagnostics.ws_last_error = "WebSocket transport error.";
-          if (this.submitting) {
+          if (this.submitting && this._activeTurnAbortController) {
+            // HTTP fetch still in flight — let it handle cleanup
+            this.statusMessage = "Realtime reconnecting \u2014 turn still in progress...";
+          } else if (this.submitting) {
             this.clearPendingSubmitUi();
             this._submittingTurn = false;
             this.submitting = false;
@@ -5003,7 +5032,10 @@
         };
         this.socket.onclose = (event) => {
           this.diagnostics.ws_state = "disconnected";
-          if (this.submitting && !event.target._deliberateClose) {
+          if (this.submitting && !event.target._deliberateClose && this._activeTurnAbortController) {
+            // HTTP fetch still in flight — don't clear submission state (Bug A/C fix)
+            this.statusMessage = "Realtime reconnecting \u2014 turn still in progress...";
+          } else if (this.submitting && !event.target._deliberateClose) {
             this.clearPendingSubmitUi();
             this._submittingTurn = false;
             this.submitting = false;
@@ -5319,6 +5351,12 @@
           actor_id: String(payload && payload.actor_id || "").trim(),
           session_id: String(payload && payload.session_id || "").trim(),
         };
+        // Attach an idempotency token to prevent duplicate submissions (Bug C fix)
+        if (!payload.client_turn_id) {
+          payload.client_turn_id = (typeof crypto !== "undefined" && crypto.randomUUID)
+            ? crypto.randomUUID()
+            : "clt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+        }
         const abortController = new AbortController();
         this._activeTurnAbortController = abortController;
         let backendTurnId = 0;
@@ -5420,13 +5458,30 @@
             });
             this._scrollStream();
 
+            // Combine user-abort with a 2-minute timeout (Bug B fix)
+            let fetchSignal = abortController.signal;
+            let _fetchTimeoutId = null;
+            if (typeof AbortSignal.any === "function" && typeof AbortSignal.timeout === "function") {
+              fetchSignal = AbortSignal.any([abortController.signal, AbortSignal.timeout(120000)]);
+            } else {
+              _fetchTimeoutId = setTimeout(() => { abortController.abort(); }, 120000);
+            }
             const resp = await fetch(`/api/campaigns/${campaignId}/turns/stream`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(payload),
-              signal: abortController.signal,
+              signal: fetchSignal,
             });
+            if (_fetchTimeoutId) clearTimeout(_fetchTimeoutId);
             if (!resp.ok) {
+              if (resp.status === 409) {
+                // Duplicate turn — recover the original result (Bug C fix)
+                const recovered = await this._recoverTurnAfterTransportFailure(
+                  campaignId, payload, baselineRecentTurnId,
+                );
+                if (recovered) return { ok: true, recovered: true };
+                throw new Error("Duplicate turn submission");
+              }
               const errBody = await resp.text();
               throw new Error(errBody || `HTTP ${resp.status}`);
             }
@@ -5538,6 +5593,15 @@
               this.turnStream = this.turnStream.filter((entry) => entry.id !== optimisticPlayerEntryId);
             }
             return { ok: false, cancelled: true, error: "Turn cancelled." };
+          }
+          // Handle 409 duplicate turn — recover the original result (Bug C fix)
+          if (error && String(error.message || error).includes("Duplicate turn submission")) {
+            this.statusMessage = "Duplicate submission detected. Recovering original result...";
+            this.errorMessage = "";
+            const recovered = await this._recoverTurnAfterTransportFailure(
+              campaignId, payload, baselineRecentTurnId,
+            );
+            if (recovered) return { ok: true, recovered: true };
           }
           if (isFetchTransportError(error)) {
             this.statusMessage = "Connection hiccup. Checking whether the turn completed...";

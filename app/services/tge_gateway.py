@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from fnmatch import fnmatch
@@ -2605,6 +2606,7 @@ class TextGameEngineGateway(EngineGateway):
         self._campaign_runtimes: dict[str, _CampaignRuntime] = {}
         self._actor_turn_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._active_turn_tasks: dict[tuple[str, str], _ActiveTurnTask] = {}
+        self._recent_client_turn_ids: dict[str, float] = {}
         self._probe_timeout_seconds = max(int(settings.tge_runtime_probe_timeout_seconds or 8), 1)
         self._browser_llm_broker = BrowserLLMRelayBroker()
 
@@ -2918,6 +2920,26 @@ class TextGameEngineGateway(EngineGateway):
             return None
         with self._active_turn_tasks_guard:
             return self._active_turn_tasks.get(key)
+
+    def _check_and_record_client_turn_id(self, client_turn_id: str | None) -> None:
+        """Raise DuplicateTurnError if *client_turn_id* was already seen.
+
+        Must be called inside the per-actor turn lock so there is no race.
+        Entries older than 5 minutes are pruned on each call.
+        """
+        from .engine_gateway import DuplicateTurnError
+
+        cid = str(client_turn_id or "").strip()
+        if not cid:
+            return
+        now = time.monotonic()
+        # Prune stale entries
+        stale = [k for k, ts in self._recent_client_turn_ids.items() if now - ts > 300]
+        for k in stale:
+            self._recent_client_turn_ids.pop(k, None)
+        if cid in self._recent_client_turn_ids:
+            raise DuplicateTurnError("Duplicate turn submission")
+        self._recent_client_turn_ids[cid] = now
 
     def _clear_active_turn_claims(self, campaign_id: str, actor_id: str | None) -> int:
         campaign_id_text = str(campaign_id or "").strip()
@@ -3778,6 +3800,7 @@ class TextGameEngineGateway(EngineGateway):
             token = _TURN_COMPLETION_OVERRIDE.set(completion_override)
             try:
                 async with self._turn_lock_for(campaign_id, request.actor_id):
+                    self._check_and_record_client_turn_id(request.client_turn_id)
                     narration = await runtime.emulator.play_action(
                         campaign_id=campaign_id,
                         actor_id=request.actor_id,
@@ -3852,6 +3875,7 @@ class TextGameEngineGateway(EngineGateway):
                 token = _TURN_COMPLETION_OVERRIDE.set(completion_override)
                 try:
                     async with self._turn_lock_for(campaign_id, request.actor_id):
+                        self._check_and_record_client_turn_id(request.client_turn_id)
                         result_box["narration"] = await runtime.emulator.play_action(
                             campaign_id=campaign_id,
                             actor_id=request.actor_id,
@@ -4035,6 +4059,19 @@ class TextGameEngineGateway(EngineGateway):
             "cleared_claims": int(cleared_claims),
             "session_id": session_id,
             "note": "Turn cancelled." if (cancelled or cleared_claims > 0) else "No active turn to cancel.",
+        }
+
+    async def get_active_turn_status(self, campaign_id: str, actor_id: str) -> dict:
+        campaign_id_text = str(campaign_id or "").strip()
+        actor_id_text = str(actor_id or "").strip()
+        if not campaign_id_text:
+            raise KeyError("Unknown campaign")
+        if not actor_id_text:
+            raise ValueError("actor_id is required.")
+        active = self._get_active_turn_task(campaign_id_text, actor_id_text)
+        return {
+            "active": active is not None and active.task is not None and not active.task.done(),
+            "session_id": active.session_id if active else None,
         }
 
     async def campaign_export(

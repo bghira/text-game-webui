@@ -110,6 +110,8 @@ class RealtimeHub:
         elif event_session_id is not None and payload_type in cls._SESSION_SCOPED_TYPES:
             return False
 
+        event_actor_id = cls._actor_id_for_event(payload)
+
         if payload_type not in cls._SESSION_SCOPED_TYPES:
             return True
 
@@ -129,7 +131,6 @@ class RealtimeHub:
             return True
         if not sub.actor_id:
             return False
-        event_actor_id = cls._actor_id_for_event(payload)
         if event_actor_id and sub.actor_id == event_actor_id:
             return True
         raw_actor_ids = visibility.get("visible_actor_ids")
