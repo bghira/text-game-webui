@@ -4999,12 +4999,19 @@
               this._typePhase(streamEntry.id, label);
             }
           } else if (payload.type === "turn_progress" && payload.payload) {
+            const progressActorId = String(payload.actor_id || "").trim();
+            const ownActorId = String(this.turnForm.actor_id || "").trim();
+            const isOwnLateEcho = ownActorId && progressActorId === ownActorId;
             const label = this._turnProgressLabel(payload.payload.phase, payload.payload);
             this._activeProgressCampaignId = String(campaignId || "").trim();
             this._activeProgressSessionId = String(payload.session_id || this.selectedSessionId || "").trim();
             this._activeProgressLabel = label;
             this.statusMessage = label;
-            this._timedEventInProgress = true;
+            if (!isOwnLateEcho) {
+              // Only block input for other players' in-progress turns, not our
+              // own turn_progress that arrived after our HTTP stream finished.
+              this._timedEventInProgress = true;
+            }
             this.upsertRemoteProgress(label, {
               phase: payload.payload.phase || "",
               actor_id: payload.actor_id || "",
