@@ -5465,21 +5465,12 @@
             });
             this._scrollStream();
 
-            // Combine user-abort with a 2-minute timeout (Bug B fix)
-            let fetchSignal = abortController.signal;
-            let _fetchTimeoutId = null;
-            if (typeof AbortSignal.any === "function" && typeof AbortSignal.timeout === "function") {
-              fetchSignal = AbortSignal.any([abortController.signal, AbortSignal.timeout(120000)]);
-            } else {
-              _fetchTimeoutId = setTimeout(() => { abortController.abort(); }, 120000);
-            }
             const resp = await fetch(`/api/campaigns/${campaignId}/turns/stream`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(payload),
-              signal: fetchSignal,
+              signal: abortController.signal,
             });
-            if (_fetchTimeoutId) clearTimeout(_fetchTimeoutId);
             if (!resp.ok) {
               if (resp.status === 409) {
                 // Duplicate turn — recover the original result (Bug C fix)
