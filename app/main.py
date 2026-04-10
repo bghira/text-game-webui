@@ -38,6 +38,17 @@ def _init_media(app: FastAPI, settings: Settings, app_dir: Path) -> None:
     )
 
     backend = (settings.image_backend or "none").strip().lower()
+
+    # Auto-detect DTM when running in the same process (no config needed).
+    if backend == "none":
+        try:
+            import discord_tron_master  # noqa: F401
+            backend = "dtm"
+            settings.image_backend = "dtm"
+            log.info("Auto-detected discord-tron-master in process; using dtm image backend")
+        except ImportError:
+            pass
+
     daemon = None
     diffusers_client = None
     comfyui_client = None
