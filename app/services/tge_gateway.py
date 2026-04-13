@@ -70,7 +70,7 @@ _ZORK_LOG_PATH: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 _ZORK_LOG_RETENTION = 100
 _DEFAULT_PROVIDER_MODELS = {
-    "zai": "glm-5.1",
+    "zai": "glm-5",
 }
 _TURN_COMPLETION_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "text_game_webui_turn_completion_override",
