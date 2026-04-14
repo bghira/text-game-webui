@@ -187,7 +187,7 @@ class ProviderCompletionPort:
                 config["model"] = model
             if base_url:
                 config["base_url"] = base_url
-            config["request_timeout"] = timeout_seconds
+            config["request_timeout"] = max(timeout_seconds, 300)
             if keep_alive:
                 config["keep_alive"] = keep_alive
             if isinstance(ollama_options, dict):
