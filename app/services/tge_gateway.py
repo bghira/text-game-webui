@@ -2688,8 +2688,23 @@ class TextGameEngineGateway(EngineGateway):
             or self._settings.tge_llm_model
             or ""
         ).strip()
-        base_url = str(self._settings.tge_llm_base_url or "").strip()
-        api_key = str(self._settings.tge_llm_api_key or "").strip()
+        # Resolve base_url/api_key from override first, then settings.
+        override_base_url = str((override or {}).get("base_url") or "").strip()
+        override_api_key = str((override or {}).get("api_key") or "").strip()
+        if mode == "ollama":
+            base_url = (
+                override_base_url
+                or str(self._settings.tge_ollama_base_url or "").strip()
+                or str(self._settings.tge_llm_base_url or "").strip()
+            )
+            api_key = (
+                override_api_key
+                or str(self._settings.tge_ollama_api_key or "").strip()
+                or str(self._settings.tge_llm_api_key or "").strip()
+            )
+        else:
+            base_url = override_base_url or str(self._settings.tge_llm_base_url or "").strip()
+            api_key = override_api_key or str(self._settings.tge_llm_api_key or "").strip()
         temperature = float(self._settings.tge_llm_temperature)
         max_tokens = int(self._settings.tge_llm_max_tokens)
         timeout_seconds = int(self._settings.tge_llm_timeout_seconds)
