@@ -2033,9 +2033,11 @@ async def update_settings(
     return result
 
 
-def _fetch_ollama_models(url: str) -> dict:
+def _fetch_ollama_models(url: str, api_key: str = "") -> dict:
     """Blocking helper — run via asyncio.to_thread to avoid stalling the event loop."""
     req = urllib_request.Request(url, method="GET")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
     with urllib_request.urlopen(req, timeout=5) as response:  # noqa: S310
         raw = response.read().decode("utf-8", errors="replace")
     data = json.loads(raw)
@@ -2052,17 +2054,20 @@ def _fetch_ollama_models(url: str) -> dict:
 @router.get("/ollama/models")
 async def list_ollama_models(request: Request) -> dict:
     settings = request.app.state.settings
-    base_url = settings.tge_llm_base_url.rstrip("/")
+    base_url = str(
+        settings.tge_ollama_base_url or settings.tge_llm_base_url or ""
+    ).strip().rstrip("/")
+    api_key = str(
+        settings.tge_ollama_api_key or settings.tge_llm_api_key or ""
+    ).strip()
     # Strip known path suffixes so we get the Ollama root.
-    # Users may configure base_url as "http://host:11434/v1" (for openai compat)
-    # or "http://host:11434" (native ollama).  The /api/tags endpoint lives on root.
     for suffix in ("/v1", "/api"):
         if base_url.endswith(suffix):
             base_url = base_url[: -len(suffix)]
             break
     url = f"{base_url}/api/tags"
     try:
-        return await asyncio.to_thread(_fetch_ollama_models, url)
+        return await asyncio.to_thread(_fetch_ollama_models, url, api_key)
     except Exception:
         return {"models": [], "reachable": False}
 
