@@ -131,7 +131,7 @@ def _default_tge_model() -> str:
         return explicit
     mode = str(os.getenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "ollama") or "").strip().lower()
     if mode == "zai":
-        return "glm-5"
+        return "glm-5-turbo"
     return "local-model"
 
 
