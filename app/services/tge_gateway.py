@@ -71,6 +71,7 @@ _ZORK_LOG_PATH: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _ZORK_LOG_RETENTION = 100
 _DEFAULT_PROVIDER_MODELS = {
     "zai": "glm-5-turbo",
+    "ollama": "glm-5.1",
 }
 _TURN_COMPLETION_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "text_game_webui_turn_completion_override",
@@ -191,6 +192,8 @@ class ProviderCompletionPort:
                 config["keep_alive"] = keep_alive
             if isinstance(ollama_options, dict):
                 config["options"] = ollama_options
+            if api_key:
+                config["headers"] = {"Authorization": f"Bearer {api_key}"}
         elif normalized == "codex":
             if model:
                 config["model"] = model
@@ -3020,7 +3023,7 @@ class TextGameEngineGateway(EngineGateway):
         }
         if target_mode in {"zai", "ollama", "openai"}:
             merged["base_url"] = str(self._settings.tge_llm_base_url or "").strip()
-        if target_mode in {"zai", "openai"}:
+        if target_mode in {"zai", "ollama", "openai"}:
             merged["api_key"] = str(self._settings.tge_llm_api_key or "").strip()
         if target_mode == "ollama":
             merged["keep_alive"] = str(self._settings.tge_ollama_keep_alive or "").strip()
