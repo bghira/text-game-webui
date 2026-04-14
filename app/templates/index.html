@@ -2451,12 +2451,12 @@
           <div class="stack compact">
             <label>
               Model
-              <select x-model="settingsForm.model" x-show="ollamaModels.length > 0 && settingsForm.completion_mode === 'ollama'" :disabled="settingsSaving || settingsLocked">
+              <select x-model="settingsForm.model" x-show="ollamaModels.length > 0 && settingsForm.completion_mode === 'ollama' && !settingsLocked" :disabled="settingsSaving">
                 <template x-for="m in ollamaModels" :key="m.name">
                   <option :value="m.name" x-text="m.name"></option>
                 </template>
               </select>
-              <input x-model="settingsForm.model" placeholder="model name" x-show="ollamaModels.length === 0 || settingsForm.completion_mode !== 'ollama'" :disabled="settingsSaving || settingsLocked" />
+              <input x-model="settingsForm.model" placeholder="model name" x-show="ollamaModels.length === 0 || settingsForm.completion_mode !== 'ollama' || settingsLocked" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
