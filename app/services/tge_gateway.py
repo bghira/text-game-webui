@@ -2644,11 +2644,27 @@ class TextGameEngineGateway(EngineGateway):
             )
         except ValueError:
             ollama_options = {}
+        override_base_url = str((override or {}).get("base_url") or "").strip()
+        override_api_key = str((override or {}).get("api_key") or "").strip()
+        if mode == "ollama":
+            base_url = (
+                override_base_url
+                or str(self._settings.tge_ollama_base_url or "").strip()
+                or str(self._settings.tge_llm_base_url or "").strip()
+            )
+            api_key = (
+                override_api_key
+                or str(self._settings.tge_ollama_api_key or "").strip()
+                or str(self._settings.tge_llm_api_key or "").strip()
+            )
+        else:
+            base_url = override_base_url or str(self._settings.tge_llm_base_url or "").strip()
+            api_key = override_api_key or str(self._settings.tge_llm_api_key or "").strip()
         return {
             "completion_mode": mode,
             "model": model,
-            "base_url": str(self._settings.tge_llm_base_url or "").strip(),
-            "api_key": str(self._settings.tge_llm_api_key or "").strip(),
+            "base_url": base_url,
+            "api_key": api_key,
             "temperature": float(self._settings.tge_llm_temperature),
             "max_tokens": int(self._settings.tge_llm_max_tokens),
             "timeout_seconds": int(self._settings.tge_llm_timeout_seconds),
@@ -3000,6 +3016,12 @@ class TextGameEngineGateway(EngineGateway):
         model = str(raw.get("model") or "").strip()
         if model:
             result["model"] = model
+        base_url = str(raw.get("base_url") or "").strip()
+        if base_url:
+            result["base_url"] = base_url
+        api_key = str(raw.get("api_key") or "").strip()
+        if api_key:
+            result["api_key"] = api_key
         return result
 
     def _ensure_campaign_llm(self, campaign_id: str) -> None:
@@ -3021,12 +3043,24 @@ class TextGameEngineGateway(EngineGateway):
             "completion_mode": target_mode,
             "model": target_model,
         }
-        if target_mode in {"zai", "ollama", "openai"}:
-            merged["base_url"] = str(self._settings.tge_llm_base_url or "").strip()
-        if target_mode in {"zai", "ollama", "openai"}:
-            merged["api_key"] = str(self._settings.tge_llm_api_key or "").strip()
+        # Prefer base_url/api_key from campaign state (set by DTM from AppConfig).
+        override_base_url = str(override.get("base_url") or "").strip()
+        override_api_key = str(override.get("api_key") or "").strip()
         if target_mode == "ollama":
+            merged["base_url"] = (
+                override_base_url
+                or str(self._settings.tge_ollama_base_url or "").strip()
+                or str(self._settings.tge_llm_base_url or "").strip()
+            )
+            merged["api_key"] = (
+                override_api_key
+                or str(self._settings.tge_ollama_api_key or "").strip()
+                or str(self._settings.tge_llm_api_key or "").strip()
+            )
             merged["keep_alive"] = str(self._settings.tge_ollama_keep_alive or "").strip()
+        elif target_mode in {"zai", "openai"}:
+            merged["base_url"] = override_base_url or str(self._settings.tge_llm_base_url or "").strip()
+            merged["api_key"] = override_api_key or str(self._settings.tge_llm_api_key or "").strip()
         self.reconfigure_llm(merged)
 
     def reconfigure_llm(self, merged: dict[str, Any]) -> dict[str, str]:

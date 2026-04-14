@@ -172,6 +172,12 @@ class Settings(BaseModel):
     tge_ollama_keep_alive: str = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_OLLAMA_KEEP_ALIVE", "30m")
     )
+    tge_ollama_base_url: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_OLLAMA_BASE_URL", "")
+    )
+    tge_ollama_api_key: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_OLLAMA_API_KEY", "")
+    )
     tge_ollama_options_json: str = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON", "{}")
     )
