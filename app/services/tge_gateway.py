@@ -172,6 +172,7 @@ class ProviderCompletionPort:
         timeout_seconds: int,
         keep_alive: str,
         ollama_options: dict[str, Any] | None = None,
+        thinking_enabled: bool = False,
     ) -> None:
         normalized = str(provider or "").strip().lower()
         config: dict[str, Any] = {}
@@ -194,6 +195,7 @@ class ProviderCompletionPort:
                 config["options"] = ollama_options
             if api_key:
                 config["headers"] = {"Authorization": f"Bearer {api_key}"}
+            config["think"] = thinking_enabled
         elif normalized == "codex":
             if model:
                 config["model"] = model
@@ -2537,6 +2539,7 @@ class TextGameEngineGateway(EngineGateway):
         timeout_seconds: int,
         keep_alive: str,
         ollama_options: dict[str, Any] | None = None,
+        thinking_enabled: bool = False,
     ) -> CompletionPortProtocol | None:
         normalized = str(mode or "").strip().lower()
         if normalized == "deterministic":
@@ -2557,6 +2560,7 @@ class TextGameEngineGateway(EngineGateway):
                 timeout_seconds=timeout_seconds,
                 keep_alive=keep_alive,
                 ollama_options=ollama_options,
+                thinking_enabled=thinking_enabled,
             )
         raise ValueError(f"Unsupported tge completion mode: {normalized}")
 
@@ -2710,6 +2714,7 @@ class TextGameEngineGateway(EngineGateway):
         timeout_seconds = int(self._settings.tge_llm_timeout_seconds)
         keep_alive = str(self._settings.tge_ollama_keep_alive or "").strip()
         ollama_options_json = str(self._settings.tge_ollama_options_json or "{}")
+        thinking_enabled = str((override or {}).get("thinking_enabled") or "").strip().lower()
         return (
             mode,
             model,
@@ -2720,6 +2725,7 @@ class TextGameEngineGateway(EngineGateway):
             timeout_seconds,
             keep_alive,
             ollama_options_json,
+            thinking_enabled,
         )
 
     def _build_campaign_runtime(self, signature: tuple[Any, ...]) -> _CampaignRuntime:
@@ -2733,6 +2739,7 @@ class TextGameEngineGateway(EngineGateway):
             timeout_seconds,
             keep_alive,
             ollama_options_json,
+            thinking_enabled,
         ) = signature
         ollama_options = self._parse_json_object(
             ollama_options_json,
@@ -2746,6 +2753,7 @@ class TextGameEngineGateway(EngineGateway):
             timeout_seconds=timeout_seconds,
             keep_alive=keep_alive,
             ollama_options=ollama_options,
+            thinking_enabled=(thinking_enabled == "true"),
         )
         completion_port = RoutedCompletionPort(base_completion_port)
         if mode == "deterministic":
@@ -3037,6 +3045,9 @@ class TextGameEngineGateway(EngineGateway):
         api_key = str(raw.get("api_key") or "").strip()
         if api_key:
             result["api_key"] = api_key
+        thinking_enabled = raw.get("thinking_enabled")
+        if isinstance(thinking_enabled, bool):
+            result["thinking_enabled"] = str(thinking_enabled).lower()
         return result
 
     def _ensure_campaign_llm(self, campaign_id: str) -> None:
