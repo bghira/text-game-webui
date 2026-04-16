@@ -2714,7 +2714,12 @@ class TextGameEngineGateway(EngineGateway):
         timeout_seconds = int(self._settings.tge_llm_timeout_seconds)
         keep_alive = str(self._settings.tge_ollama_keep_alive or "").strip()
         ollama_options_json = str(self._settings.tge_ollama_options_json or "{}")
-        thinking_enabled = str((override or {}).get("thinking_enabled") or "").strip().lower()
+        # Default to "true" for ollama when the campaign state doesn't specify.
+        _raw_thinking = (override or {}).get("thinking_enabled")
+        if _raw_thinking is None or _raw_thinking == "":
+            thinking_enabled = "true" if mode == "ollama" else ""
+        else:
+            thinking_enabled = str(_raw_thinking).strip().lower()
         return (
             mode,
             model,
