@@ -134,7 +134,15 @@ class DtmMediaPort:
                     json=payload,
                     headers={"X-DTM-Link-Secret": self._secret},
                 )
-                resp.raise_for_status()
+                if resp.is_error:
+                    detail = resp.text.strip()
+                    log.warning(
+                        "DTM image enqueue failed (%s): HTTP %s %s",
+                        url,
+                        resp.status_code,
+                        detail,
+                    )
+                    resp.raise_for_status()
                 self._healthy = True
                 self._health_ts = time.monotonic()
                 return True
