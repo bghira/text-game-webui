@@ -218,9 +218,6 @@ describe("Timed event UX", () => {
 
   test("reconnect recovery clears stuck submission state and drains queued action", () => {
     const recovered = recoverCompletedTurnAfterReconnectState({
-      submitting: true,
-      timedEventInProgress: false,
-      activeProgressLabel: "Writing response...",
       queuedCount: 1,
     });
 

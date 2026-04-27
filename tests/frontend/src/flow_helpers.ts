@@ -1638,9 +1638,6 @@ export function submitButtonLabel(state: {
 }
 
 export function recoverCompletedTurnAfterReconnectState(state: {
-  submitting: boolean;
-  timedEventInProgress: boolean;
-  activeProgressLabel: string;
   queuedCount: number;
 }): {
   submitting: boolean;

@@ -1652,7 +1652,6 @@
         }
 
         this.clearPendingSubmitUi();
-        this.clearRemoteProgress();
         this._activeProgressCampaignId = "";
         this._activeProgressSessionId = "";
         this._activeProgressLabel = "";
