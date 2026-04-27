@@ -3,6 +3,7 @@ import {
   buildTimedEventWsPayload,
   buildTurnProgressWsPayload,
   submitButtonLabel,
+  recoverCompletedTurnAfterReconnectState,
   summarizeTimers,
   TimersResult,
 } from "../src/flow_helpers";
@@ -213,6 +214,25 @@ describe("Timed event UX", () => {
         queuedCount: 0,
       }),
     ).toBe("Generating...");
+  });
+
+  test("reconnect recovery clears stuck submission state and drains queued action", () => {
+    const recovered = recoverCompletedTurnAfterReconnectState({
+      queuedCount: 1,
+    });
+
+    expect(recovered.submitting).toBe(false);
+    expect(recovered.timedEventInProgress).toBe(false);
+    expect(recovered.activeProgressLabel).toBe("");
+    expect(recovered.shouldDrainQueue).toBe(true);
+    expect(
+      submitButtonLabel({
+        imageGenerating: 0,
+        submitting: recovered.submitting,
+        timedEventInProgress: recovered.timedEventInProgress,
+        queuedCount: 1,
+      }),
+    ).toBe("Submit");
   });
 
   test("full timed event lifecycle: timer active → progress → event fires → cleared", async () => {

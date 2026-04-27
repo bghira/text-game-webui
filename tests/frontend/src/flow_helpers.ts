@@ -1637,6 +1637,22 @@ export function submitButtonLabel(state: {
   return "Submit";
 }
 
+export function recoverCompletedTurnAfterReconnectState(state: {
+  queuedCount: number;
+}): {
+  submitting: boolean;
+  timedEventInProgress: boolean;
+  activeProgressLabel: string;
+  shouldDrainQueue: boolean;
+} {
+  return {
+    submitting: false,
+    timedEventInProgress: false,
+    activeProgressLabel: "",
+    shouldDrainQueue: state.queuedCount > 0,
+  };
+}
+
 export async function dtmImageGenerateFlow(
   fetcher: FetchLike,
   prompt: string,

@@ -80,6 +80,8 @@ def load_persisted_settings(settings: Settings) -> None:
     for key, value in rows:
         if key not in _PERSISTABLE_KEYS:
             continue
+        if key == "image_backend" and os.getenv("TEXT_GAME_WEBUI_IMAGE_BACKEND"):
+            continue
         if settings.tge_sync_with_dtm and key in _SYNC_LOCKED_TGE_KEYS:
             continue
         field_info = Settings.model_fields.get(key)
@@ -205,7 +207,7 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_IMAGE_BACKEND", "none")
     )  # none | diffusers | comfyui | dtm
     dtm_image_api_url: str = Field(
-        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_IMAGE_API_URL", "https://127.0.0.1:5000")
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DTM_IMAGE_API_URL", "http://127.0.0.1:5099")
     )
     diffusers_host: str = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_DIFFUSERS_HOST", "127.0.0.1")

@@ -1,0 +1,28 @@
+{
+  "name": "text-game-webui",
+  "version": "1.0.0",
+  "description": "Web UI shell for [bghira/text-game-engine](https://github.com/bghira/text-game-engine)",
+  "private": true,
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"No root-level tests are currently configured.\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/bghira/text-game-webui.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/bghira/text-game-webui/issues"
+  },
+  "homepage": "https://github.com/bghira/text-game-webui#readme",
+  "devDependencies": {
+    "@huggingface/transformers": "^4.0.1",
+    "esbuild": "^0.28.0"
+  }
+}

@@ -166,7 +166,19 @@ The runtime panel will show `Mode: ollama`, the active model, base URL, and conf
 
 ## Image generation
 
-Scene images and character avatars can be generated locally via a Diffusers daemon or an external ComfyUI server. Set the image backend and configure the relevant provider:
+Scene images and character avatars can be generated locally via a Diffusers daemon, an external ComfyUI server, or a discord-tron-master GPU worker pool. Set the image backend and configure the relevant provider:
+
+### DTM bridge
+
+When `text-game-webui` is launched by discord-tron-master, DTM sets these automatically:
+
+```bash
+export TEXT_GAME_WEBUI_IMAGE_BACKEND=dtm
+export TEXT_GAME_WEBUI_DTM_IMAGE_API_URL='http://127.0.0.1:5099'
+export TEXT_GAME_WEBUI_DTM_LINK_SECRET='...'
+```
+
+The web UI posts image jobs to DTM's bot-process `/api/zork/image/generate` bridge and receives completed images through `/api/internal/campaigns/{id}/media/deliver`.
 
 ### Diffusers (local GPU)
 
