@@ -1634,6 +1634,47 @@
         return false;
       },
 
+      async _recoverCompletedTurnAfterReconnect(campaignId, actorId) {
+        const targetCampaignId = String(campaignId || "").trim();
+        const targetActorId = String(actorId || "").trim();
+        if (!targetCampaignId || !targetActorId) return false;
+        if (String(this.selectedCampaignId || "").trim() !== targetCampaignId) {
+          return false;
+        }
+
+        const controller = this._activeTurnAbortController;
+        if (controller) {
+          try {
+            controller._recoveredAfterDisconnect = true;
+            controller.abort();
+          } catch (_error) {
+          }
+        }
+
+        this.clearPendingSubmitUi();
+        this.clearRemoteProgress();
+        this._activeProgressCampaignId = "";
+        this._activeProgressSessionId = "";
+        this._activeProgressLabel = "";
+        this._submittingTurn = false;
+        this.submitting = false;
+        this._timedEventInProgress = false;
+
+        await Promise.all([
+          this.loadRecentTurns(30, { force: true }),
+          this.loadSessions({ skipConnect: true }),
+          this.loadTimers(),
+          this.loadCalendar(),
+          this.loadStoryState(),
+          this.loadChapterList(),
+        ]);
+        this.populateTurnStreamFromHistory();
+        this.statusMessage = "Realtime reconnected — recovered completed turn.";
+        this.errorMessage = "";
+        await this._drainQueuedTurns();
+        return true;
+      },
+
       _rememberSubmittedPlayerTurnTime(turnId, atLabel) {
         const wanted = Number(turnId) || 0;
         const label = String(atLabel || "").trim();
@@ -4884,10 +4925,14 @@
                     if (status && status.active) {
                       this.statusMessage = "Realtime reconnected — turn still in progress...";
                     } else if (status && !status.active) {
-                      // Turn finished while WS was down — recover
-                      this.loadRecentTurns(30, { force: true }).then(() => {
-                        this.populateTurnStreamFromHistory();
-                      }).catch(() => {});
+                      this._recoverCompletedTurnAfterReconnect(
+                        this.selectedCampaignId,
+                        actorId,
+                      ).catch(() => {
+                        this.loadRecentTurns(30, { force: true }).then(() => {
+                          this.populateTurnStreamFromHistory();
+                        }).catch(() => {});
+                      });
                     }
                   })
                   .catch(() => {});
@@ -5643,6 +5688,9 @@
             }
             return { ok: false, cancelled: true, error: "Turn cancelled." };
           }
+          if (isAbort && abortController._recoveredAfterDisconnect === true) {
+            return { ok: true, recovered: true };
+          }
           // Handle 409 duplicate turn — recover the original result (Bug C fix)
           if (error && String(error.message || error).includes("Duplicate turn submission")) {
             this.statusMessage = "Duplicate submission detected. Recovering original result...";
@@ -5669,14 +5717,15 @@
           }
           return { ok: false, error };
         } finally {
-          if (this._activeTurnAbortController === abortController) {
+          const stillOwnsActiveSubmit = this._activeTurnAbortController === abortController;
+          if (stillOwnsActiveSubmit) {
             this._activeTurnAbortController = null;
+            this._activeSubmitMeta = null;
+            this._clearPhaseTyper();
+            this._submittingTurn = false;
+            this.submitting = false;
+            this._cancelTurnRequested = false;
           }
-          this._activeSubmitMeta = null;
-          this._clearPhaseTyper();
-          this._submittingTurn = false;
-          this.submitting = false;
-          this._cancelTurnRequested = false;
         }
       },
 

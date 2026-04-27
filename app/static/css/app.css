@@ -1474,6 +1474,7 @@ button:disabled {
   flex-direction: column;
   gap: 0.08rem;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .turn-player-actor {
@@ -1501,7 +1502,10 @@ button:disabled {
   color: var(--player-action-text);
   line-height: 1.4;
   display: block;
+  width: 100%;
   min-width: 0;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .turn-type-player {
@@ -3767,6 +3771,24 @@ details summary {
 
   .turn-stream-section-head {
     display: none;
+  }
+
+  .turn-player-shell {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .turn-player-meta {
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .turn-player-footnote {
+    max-width: 100%;
+    text-align: left;
   }
 
   .campaign-summary-bar,
