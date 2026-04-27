@@ -83,7 +83,7 @@
     "giggle", "laughter", "guffaw", "sigh", "cry", "gasp", "groan",
     "inhale", "exhale", "whisper", "mumble", "uh", "um",
     "singing", "humming", "cough", "sneeze", "sniff", "clear_throat",
-    "shhh", "silence",
+    "shhh", "quiet", "silence",
   ]);
 
   /** Strip <emotive> tags from text for display purposes. */
@@ -644,7 +644,7 @@
 
   function renderSceneOutputHtml(sceneOutput, fallbackText) {
     if (!sceneOutput || !Array.isArray(sceneOutput.beats) || !sceneOutput.beats.length) {
-      return renderSimpleMarkdown(fallbackText || "");
+      return renderSimpleMarkdown(_ttsStripEmotives(String(fallbackText || "")));
     }
     const parts = [];
     for (const beat of sceneOutput.beats) {
@@ -669,7 +669,7 @@
       parts.push(`<div class="beat-wrap"><span class="speaker-label">${escapeHtml(speaker)}${reasoningBtn}${ttsBtn}</span>${reasoningBlock}${escapedText}</div>`);
     }
     if (parts.length) return parts.join("");
-    return renderSimpleMarkdown(fallbackText || "");
+    return renderSimpleMarkdown(_ttsStripEmotives(String(fallbackText || "")));
   }
 
   function normalizeTurnNarration(payload) {
@@ -6613,7 +6613,7 @@
       },
 
       renderSimpleMarkdown(text) {
-        return renderSimpleMarkdown(text);
+        return renderSimpleMarkdown(_ttsStripEmotives(String(text || "")));
       },
 
       renderNarratorHtml(entry) {
