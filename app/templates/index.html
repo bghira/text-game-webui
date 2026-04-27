@@ -66,7 +66,7 @@
     </div>
 
     <!-- Active Timer Indicator -->
-    <div class="timer-indicator" x-show="_activeTimerCount > 0" x-cloak>
+    <div class="timer-indicator" x-show="_activeTimerCount > 0" :title="_activeTimerLabel" x-cloak>
       <span class="timer-indicator-icon">&#x23F2;</span>
       <span class="timer-indicator-label" x-text="_activeTimerLabel"></span>
     </div>

@@ -41,7 +41,7 @@ Web UI shell for [bghira/text-game-engine](https://github.com/bghira/text-game-e
 - LLM settings: completion mode, base URL, API key, model, temperature, max tokens, timeout, keep-alive, Ollama options.
 - Campaign flags: guardrails, on-rails story mode, timed events, difficulty (story through impossible), speed multiplier, clock type.
 - Narrator persona: customizable voice description (max 140 chars).
-- Timed events with active timer indicator, cancel control, and real-time WebSocket push.
+- Timed events with a sidebar "fires in/at" indicator, cancel control, and real-time WebSocket push.
 
 ### Image generation
 - Scene images and character avatars via local Diffusers daemon or external ComfyUI server.

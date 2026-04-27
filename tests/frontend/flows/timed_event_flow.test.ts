@@ -3,10 +3,12 @@ import {
   buildTimedEventWsPayload,
   buildTurnProgressWsPayload,
   submitButtonLabel,
+  summarizeTimers,
   TimersResult,
 } from "../src/flow_helpers";
 
 const CAMPAIGN = "camp-timed-1";
+const NOW = new Date("2026-03-30T13:55:00Z");
 
 describe("Timed event UX", () => {
   test("loadTimers computes active timer count and label", async () => {
@@ -43,11 +45,13 @@ describe("Timed event UX", () => {
     const { calls, activeCount, activeLabel } = await loadTimersFlow(
       fetcher,
       CAMPAIGN,
+      { now: NOW },
     );
 
     expect(calls).toEqual([`/api/campaigns/${CAMPAIGN}/timers`]);
     expect(activeCount).toBe(1);
     expect(activeLabel).toContain("Goblin ambush");
+    expect(activeLabel).toContain("fires in");
   });
 
   test("loadTimers with no active timers returns zero count and empty label", async () => {
@@ -72,10 +76,66 @@ describe("Timed event UX", () => {
     const { activeCount, activeLabel } = await loadTimersFlow(
       fetcher,
       CAMPAIGN,
+      { now: NOW },
     );
 
     expect(activeCount).toBe(0);
     expect(activeLabel).toBe("");
+  });
+
+  test("loadTimers ignores scheduled timers whose due time has passed", async () => {
+    const response: TimersResult = {
+      active_count: 1,
+      timers: [
+        {
+          id: "t-stale",
+          status: "scheduled_bound",
+          event_text: "Stale event",
+          interruptible: false,
+          due_at: "2026-03-30T13:54:00Z",
+          fired_at: null,
+          cancelled_at: null,
+          created_at: "2026-03-30T13:40:00Z",
+          updated_at: "2026-03-30T13:40:00Z",
+          meta: {},
+        },
+      ],
+    };
+    const fetcher = jest.fn().mockResolvedValue(response);
+    const { activeCount, activeLabel } = await loadTimersFlow(
+      fetcher,
+      CAMPAIGN,
+      { now: NOW },
+    );
+
+    expect(activeCount).toBe(0);
+    expect(activeLabel).toBe("");
+  });
+
+  test("realtime timers payload updates the same visible active timer summary", () => {
+    const payload: TimersResult = {
+      active_count: 1,
+      timers: [
+        {
+          id: "t-ws",
+          status: "scheduled_unbound",
+          event_text: "Alarm trip",
+          interruptible: true,
+          due_at: "2026-03-30T14:10:00",
+          fired_at: null,
+          cancelled_at: null,
+          created_at: "2026-03-30T13:55:00Z",
+          updated_at: "2026-03-30T13:55:00Z",
+          meta: {},
+        },
+      ],
+    };
+
+    const summary = summarizeTimers(payload, { now: NOW });
+
+    expect(summary.activeCount).toBe(1);
+    expect(summary.activeLabel).toContain("Alarm trip");
+    expect(summary.activeLabel).toContain("fires in");
   });
 
   test("buildTimedEventWsPayload creates correct structure", () => {
@@ -175,7 +235,7 @@ describe("Timed event UX", () => {
       ],
     };
     const timerFetcher = jest.fn().mockResolvedValue(activeTimerResponse);
-    const step1 = await loadTimersFlow(timerFetcher, CAMPAIGN);
+    const step1 = await loadTimersFlow(timerFetcher, CAMPAIGN, { now: NOW });
     expect(step1.activeCount).toBe(1);
     expect(step1.activeLabel).toContain("Earthquake");
 
@@ -232,7 +292,7 @@ describe("Timed event UX", () => {
       ],
     };
     const clearedFetcher = jest.fn().mockResolvedValue(clearedTimerResponse);
-    const step4 = await loadTimersFlow(clearedFetcher, CAMPAIGN);
+    const step4 = await loadTimersFlow(clearedFetcher, CAMPAIGN, { now: NOW });
     expect(step4.activeCount).toBe(0);
     expect(step4.activeLabel).toBe("");
   });

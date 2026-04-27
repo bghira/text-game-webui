@@ -4203,9 +4203,16 @@ class TextGameEngineGateway(EngineGateway):
 
         timers = []
         active_count = 0
+        now = datetime.now(UTC).replace(tzinfo=None)
         for row in rows:
             status = str(row.status or "")
-            if status in {"scheduled_unbound", "scheduled_bound"}:
+            due_at = row.due_at
+            is_active = (
+                status in {"scheduled_unbound", "scheduled_bound"}
+                and due_at is not None
+                and due_at > now
+            )
+            if is_active:
                 active_count += 1
             timers.append(
                 {
@@ -4214,11 +4221,12 @@ class TextGameEngineGateway(EngineGateway):
                     "event_text": row.event_text,
                     "interruptible": bool(row.interruptible),
                     "interrupt_action": row.interrupt_action,
-                    "due_at": row.due_at.isoformat() if row.due_at else None,
+                    "due_at": due_at.isoformat() if due_at else None,
                     "fired_at": row.fired_at.isoformat() if row.fired_at else None,
                     "cancelled_at": row.cancelled_at.isoformat() if row.cancelled_at else None,
                     "created_at": row.created_at.isoformat() if row.created_at else None,
                     "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                    "is_active": is_active,
                     "meta": self._parse_json(row.meta_json, {}),
                 }
             )

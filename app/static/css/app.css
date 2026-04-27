@@ -528,7 +528,6 @@ button:disabled {
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   font-size: 0.8rem;
-  animation: timer-pulse 2s ease-in-out infinite;
 }
 
 .timer-indicator-icon {
@@ -541,11 +540,6 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-@keyframes timer-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
 }
 
 /* ---- Chapters Panel (sidebar) ---- */

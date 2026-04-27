@@ -11,6 +11,54 @@
     return new Date().toISOString();
   }
 
+  function parseTimerDueAt(value) {
+    if (!value) return null;
+    let raw = String(value);
+    if (!/[zZ]|[+-]\d\d:\d\d$/.test(raw)) {
+      raw += "Z";
+    }
+    const due = new Date(raw);
+    return Number.isNaN(due.getTime()) ? null : due;
+  }
+
+  function timerRemainingLabel(due, now) {
+    const seconds = Math.max(0, Math.ceil((due.getTime() - now.getTime()) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.ceil(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remainder = minutes % 60;
+    return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+  }
+
+  function timerDisplayState(timer, now = new Date()) {
+    const status = String(timer?.status || "");
+    if (status !== "scheduled_unbound" && status !== "scheduled_bound") {
+      return null;
+    }
+    const due = parseTimerDueAt(timer?.due_at);
+    if (!due || due.getTime() <= now.getTime()) {
+      return null;
+    }
+    const event = String(timer?.event_text || "event").trim() || "event";
+    return {
+      due,
+      label: `Timer: ${event} - fires in ${timerRemainingLabel(due, now)} at ${due.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+    };
+  }
+
+  function timerSummaryFromBody(body, now = new Date()) {
+    const timers = Array.isArray(body?.timers) ? body.timers : [];
+    const active = timers
+      .map((timer) => ({ timer, display: timerDisplayState(timer, now) }))
+      .filter((entry) => entry.display)
+      .sort((a, b) => a.display.due.getTime() - b.display.due.getTime());
+    return {
+      activeCount: active.length,
+      activeLabel: active.length > 0 ? active[0].display.label : "",
+    };
+  }
+
   function stripTrailingInventory(text) {
     return text.replace(/\n\s*\**Inventory\**:[\s\S]*$/i, "").trimEnd();
   }
@@ -4934,6 +4982,9 @@
           if (payload.type === "timers" && payload.payload) {
             this.pushStream("timers", formatJson(payload.payload), payload.payload);
             this.timersText = formatJson(payload.payload);
+            const summary = timerSummaryFromBody(payload.payload);
+            this._activeTimerCount = summary.activeCount;
+            this._activeTimerLabel = summary.activeLabel;
           }
           if (payload.type === "pending_mention" && payload.payload) {
             this.upsertPendingMention(payload.payload);
@@ -5663,17 +5714,9 @@
         try {
           const body = await this.api(`/api/campaigns/${this.selectedCampaignId}/timers`);
           this.timersText = formatJson(body);
-          const timers = Array.isArray(body.timers) ? body.timers : [];
-          const active = timers.filter((t) => t.status === "scheduled_unbound" || t.status === "scheduled_bound");
-          this._activeTimerCount = active.length;
-          if (active.length > 0) {
-            const next = active[0];
-            const due = next.due_at ? new Date(next.due_at) : null;
-            const label = due ? `Timer: ${next.event_text || "event"} (${due.toLocaleTimeString()})` : `Timer: ${next.event_text || "pending"}`;
-            this._activeTimerLabel = label;
-          } else {
-            this._activeTimerLabel = "";
-          }
+          const summary = timerSummaryFromBody(body);
+          this._activeTimerCount = summary.activeCount;
+          this._activeTimerLabel = summary.activeLabel;
         } catch (_err) {
           /* background refresh */
         }

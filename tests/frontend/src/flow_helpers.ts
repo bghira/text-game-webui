@@ -1502,6 +1502,7 @@ export type TimerEntry = {
   cancelled_at: string | null;
   created_at: string | null;
   updated_at: string | null;
+  is_active?: boolean;
   meta: Record<string, unknown>;
 };
 
@@ -1529,27 +1530,68 @@ export type TurnProgressWsPayload = {
   };
 };
 
+function parseTimerDueAt(value: string | null): Date | null {
+  if (!value) return null;
+  let raw = String(value);
+  if (!/[zZ]|[+-]\d\d:\d\d$/.test(raw)) {
+    raw += "Z";
+  }
+  const due = new Date(raw);
+  return Number.isNaN(due.getTime()) ? null : due;
+}
+
+function timerRemainingLabel(due: Date, now: Date): string {
+  const seconds = Math.max(0, Math.ceil((due.getTime() - now.getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function timerDisplayState(timer: TimerEntry, now: Date): { due: Date; label: string } | null {
+  if (timer.status !== "scheduled_unbound" && timer.status !== "scheduled_bound") {
+    return null;
+  }
+  const due = parseTimerDueAt(timer.due_at);
+  if (!due || due.getTime() <= now.getTime()) {
+    return null;
+  }
+  const event = (timer.event_text || "event").trim() || "event";
+  return {
+    due,
+    label: `Timer: ${event} - fires in ${timerRemainingLabel(due, now)} at ${due.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+  };
+}
+
+export function summarizeTimers(
+  result: TimersResult,
+  options: { now?: Date } = {},
+): { activeCount: number; activeLabel: string } {
+  const timers = Array.isArray(result.timers) ? result.timers : [];
+  const now = options.now || new Date();
+  const active = timers
+    .map((timer) => ({ timer, display: timerDisplayState(timer, now) }))
+    .filter((entry): entry is { timer: TimerEntry; display: { due: Date; label: string } } => !!entry.display)
+    .sort((a, b) => a.display.due.getTime() - b.display.due.getTime());
+  return {
+    activeCount: active.length,
+    activeLabel: active.length > 0 ? active[0].display.label : "",
+  };
+}
+
 /** Fetch timers and compute active timer state. */
 export async function loadTimersFlow(
   fetcher: FetchLike,
   campaignId: string,
+  options: { now?: Date } = {},
 ): Promise<{ calls: string[]; result: TimersResult; activeCount: number; activeLabel: string }> {
   const calls: string[] = [];
   const url = `/api/campaigns/${campaignId}/timers`;
   calls.push(url);
   const result = (await fetcher(url)) as TimersResult;
-  const timers = Array.isArray(result.timers) ? result.timers : [];
-  const active = timers.filter(
-    (t) => t.status === "scheduled_unbound" || t.status === "scheduled_bound",
-  );
-  const activeCount = active.length;
-  let activeLabel = "";
-  if (active.length > 0) {
-    const next = active[0];
-    activeLabel = next.due_at
-      ? `Timer: ${next.event_text || "event"} (${new Date(next.due_at).toLocaleTimeString()})`
-      : `Timer: ${next.event_text || "pending"}`;
-  }
+  const { activeCount, activeLabel } = summarizeTimers(result, options);
   return { calls, result, activeCount, activeLabel };
 }
 

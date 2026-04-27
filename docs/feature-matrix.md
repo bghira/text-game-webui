@@ -8,7 +8,7 @@
 | Turn submit + narration | `POST /api/campaigns/{id}/turns` | Turn form + stream | `tests/backend/test_campaign_api.py`, `tests/frontend/flows/turn_submit_flow.test.ts` |
 | Realtime updates | `/ws/campaigns/{id}` (`turn`, `sms`, `session`, `media`, `timers`, `roster`) | Turn stream live events | `tests/backend/test_campaign_api.py`, `tests/backend/test_realtime_publish.py` |
 | Map inspector | `GET /api/campaigns/{id}/map` | Inspector Map tab | `tests/backend/test_campaign_api.py` |
-| Timers inspector | `GET /api/campaigns/{id}/timers` | Inspector Timers tab | `tests/backend/test_campaign_api.py`, `tests/frontend/flows/turn_submit_flow.test.ts`, `tests/backend/test_tge_gateway_optional.py` |
+| Timers inspector | `GET /api/campaigns/{id}/timers` | Sidebar active timer due label + Inspector Timers tab | `tests/backend/test_campaign_api.py`, `tests/frontend/flows/timed_event_flow.test.ts`, `tests/frontend/flows/turn_submit_flow.test.ts`, `tests/backend/test_tge_gateway_optional.py` |
 | Calendar inspector | `GET /api/campaigns/{id}/calendar` | Inspector Calendar tab | `tests/backend/test_campaign_api.py` |
 | Roster inspector + mutation | `GET /api/campaigns/{id}/roster`, `POST /api/campaigns/{id}/roster/upsert`, `POST /api/campaigns/{id}/roster/remove` | Inspector Roster tab (refresh/upsert/remove) | `tests/backend/test_campaign_api.py`, `tests/backend/test_tge_gateway_optional.py`, `tests/frontend/flows/roster_flow.test.ts` |
 | Player state + inventory inspector | `GET /api/campaigns/{id}/player-state?actor_id=...` | Inspector Player tab | `tests/backend/test_campaign_api.py`, `tests/frontend/flows/turn_submit_flow.test.ts` |
