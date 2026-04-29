@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 # Health-check result is cached for this many seconds.
 _HEALTH_TTL = 10.0
+DEFAULT_DTM_IMAGE_MODEL = "black-forest-labs/flux.2-klein-4b"
 
 
 class DtmMediaPort:
@@ -113,7 +114,7 @@ class DtmMediaPort:
 
         payload = {
             "prompt": prompt,
-            "model": model or "flux",
+            "model": model or DEFAULT_DTM_IMAGE_MODEL,
             "ref_type": ref_type,
             "actor_id": actor_id,
             "campaign_id": str(campaign_id) if campaign_id else None,

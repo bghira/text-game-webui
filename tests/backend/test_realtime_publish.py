@@ -162,6 +162,8 @@ def test_stream_turn_publishes_realtime_events(client):
     first = progress_events[0]
     assert first["actor_id"] == "dale-denton"
     assert "phase" in first["payload"]
+    assert progress_events[-1]["payload"]["phase"] == "complete"
+    assert progress_events[-1]["payload"]["completed"] is True
 
 
 def test_stream_turn_publishes_media_event_for_look(client):

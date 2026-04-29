@@ -2742,6 +2742,7 @@
             this.imageGenerating = Math.max(0, this.imageGenerating - 1);
             return;
           }
+          entry._imgJobId = jobId;
           // Poll for completion
           for (let i = 0; i < 120; i++) {
             await new Promise((r) => setTimeout(r, 2000));
@@ -2765,6 +2766,31 @@
         }
         entry._imgGenerating = false;
         this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+      },
+
+      applyDeliveredMedia(payload) {
+        const media = payload && typeof payload === "object" ? payload : {};
+        if (!media.image_url || media.ref_type === "avatar") return false;
+        const jobId = String(media.job_id || "").trim();
+        const prompt = String(media.prompt || "").trim();
+        const roomKey = String(media.room_key || "").trim();
+        const target = [...this.turnStream].reverse().find((entry) => {
+          if (!entry || entry.type !== "image_prompt") return false;
+          if (jobId && String(entry._imgJobId || "").trim() === jobId) return true;
+          const entryPrompt = String(entry.text || entry.meta?.image_prompt || "").trim();
+          const entryRoom = String(entry.meta?.room_key || "").trim();
+          if (prompt && entryPrompt && prompt === entryPrompt) {
+            return !roomKey || !entryRoom || roomKey === entryRoom;
+          }
+          return false;
+        });
+        if (!target) return false;
+        target._imgUrl = String(media.image_url || "");
+        target._imgError = "";
+        target._imgGenerating = false;
+        if (jobId) target._imgJobId = jobId;
+        this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+        return true;
       },
 
       resetError() {
@@ -4972,7 +4998,33 @@
             console.warn("WebSocket: malformed JSON frame ignored", event.data);
             return;
           }
+          if (payload.type === "turn_progress" && payload.payload) {
+            const phase = String(payload.payload.phase || "").trim().toLowerCase();
+            if (payload.payload.completed === true || phase === "complete" || phase === "completed") {
+              this.clearRemoteProgress();
+              this._clearPhaseTyper();
+              this._timedEventInProgress = false;
+              this._activeProgressCampaignId = "";
+              this._activeProgressSessionId = "";
+              this._activeProgressLabel = "";
+              const streamEntry = this.turnStream.find((e) => e._streaming);
+              if (streamEntry) {
+                streamEntry._phaseText = false;
+                streamEntry._streaming = false;
+              }
+              if (!this.submitting) {
+                this.statusMessage = "Turn completed.";
+              }
+              return;
+            }
+          }
           if (payload.type === "turn" && payload.payload) {
+            this.clearRemoteProgress();
+            this._clearPhaseTyper();
+            this._timedEventInProgress = false;
+            this._activeProgressCampaignId = "";
+            this._activeProgressSessionId = "";
+            this._activeProgressLabel = "";
             const selectedSession = this.currentSessionRecord();
             const turnForSession = {
               session_id: payload.session_id || "",
@@ -5044,6 +5096,7 @@
             this.loadSessions();
           }
           if (payload.type === "media" && payload.payload) {
+            this.applyDeliveredMedia(payload.payload);
             this.pushStream("media", formatJson(payload.payload), payload.payload);
             this.loadMedia();
           }

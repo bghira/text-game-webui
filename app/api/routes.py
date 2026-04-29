@@ -29,6 +29,8 @@ from app.services.dtm_link_auth import (
     get_or_create_pending_link,
     issue_session_cookie_value,
 )
+
+DEFAULT_DTM_IMAGE_MODEL = "black-forest-labs/flux.2-klein-4b"
 from app.services.engine_gateway import FEATURES, DuplicateTurnError, EngineGateway, TurnCancelledError
 from app.services.schemas import (
     AttributeSetRequest,
@@ -580,6 +582,9 @@ async def internal_media_deliver(
                 "image_url": local_url,
                 "image_id": entry.image_id,
                 "prompt": payload.prompt,
+                "ref_type": payload.ref_type,
+                "room_key": payload.room_key,
+                "job_id": payload.job_id,
                 "source": "dtm",
             },
         },
@@ -950,6 +955,23 @@ async def submit_turn_stream(
             gateway,
             action_text=payload.action,
         )
+        try:
+            await request.app.state.realtime.publish(
+                campaign_id,
+                {
+                    "type": "turn_progress",
+                    "session_id": final_result.session_id,
+                    "actor_id": final_result.actor_id,
+                    "visible_actor_ids": progress_visible_actor_ids,
+                    "payload": {
+                        "phase": "complete",
+                        "completed": True,
+                        "turn_id": final_result.turn_id,
+                    },
+                },
+            )
+        except Exception:
+            pass
         await gateway.queue_discord_mirror(
             campaign_id,
             final_result,
@@ -1791,7 +1813,7 @@ async def generate_avatar(
         ok = await dtm_port.enqueue_avatar_generation(
             actor_id=payload.actor_id,
             prompt=payload.prompt,
-            model="flux",
+            model=DEFAULT_DTM_IMAGE_MODEL,
             metadata={
                 "campaign_id": campaign_id,
                 "webui_job_id": job_id,
@@ -2736,7 +2758,7 @@ async def generate_image(
         ok = await dtm_port.enqueue_scene_generation(
             actor_id=actor_id,
             prompt=payload.prompt,
-            model="flux",
+            model=payload.model_id or DEFAULT_DTM_IMAGE_MODEL,
             metadata={
                 "campaign_id": campaign_id,
                 "room_key": room_key,
