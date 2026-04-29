@@ -1497,12 +1497,15 @@ export type DtmMediaDeliverRequest = {
   actor_id?: string;
   room_key?: string;
   job_id?: string;
+  status?: string;
+  error?: string;
 };
 
 export type DtmMediaDeliverResult = {
   ok: boolean;
-  image_url: string;
-  image_id: string;
+  image_url?: string;
+  image_id?: string;
+  status?: string;
 };
 
 /** Simulate submitting an image generation via the DTM backend. */

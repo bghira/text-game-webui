@@ -106,6 +106,8 @@ class InternalMediaDeliverRequest(BaseModel):
     actor_id: str | None = None
     room_key: str | None = None
     job_id: str | None = None
+    status: str | None = None
+    error: str | None = None
 
 
 def get_gateway(request: Request) -> EngineGateway:
@@ -517,6 +519,37 @@ async def internal_media_deliver(
     expected_secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
     if not provided_secret or provided_secret != expected_secret:
         raise HTTPException(status_code=403, detail="Invalid link secret.")
+
+    status = str(payload.status or "").strip().lower()
+    if status in {"failed", "interrupted"} or payload.error:
+        error = str(payload.error or status or "Image generation failed.").strip()
+        dtm_pending = getattr(request.app.state, "dtm_pending_jobs", None)
+        if dtm_pending is not None and payload.job_id:
+            dtm_pending[payload.job_id] = {
+                "status": status if status in {"failed", "interrupted"} else "failed",
+                "error": error,
+            }
+
+        hub = request.app.state.realtime
+        await hub.publish(
+            campaign_id,
+            {
+                "type": "media",
+                "campaign_id": campaign_id,
+                "payload": {
+                    "action": f"{payload.ref_type}_failed",
+                    "actor_id": payload.actor_id,
+                    "prompt": payload.prompt,
+                    "ref_type": payload.ref_type,
+                    "room_key": payload.room_key,
+                    "job_id": payload.job_id,
+                    "status": status if status in {"failed", "interrupted"} else "failed",
+                    "error": error,
+                    "source": "dtm",
+                },
+            },
+        )
+        return {"ok": True, "status": status if status in {"failed", "interrupted"} else "failed"}
 
     # Resolve image bytes — prefer base64, fall back to downloading the URL.
     png_bytes: bytes | None = None
@@ -2855,7 +2888,7 @@ async def image_job_status(job_id: str, request: Request) -> dict:
         job = dtm_pending.get(job_id)
         if job is None:
             return {"status": "failed", "error": "Unknown DTM job."}
-        if job["status"] == "completed":
+        if job["status"] in ("completed", "failed", "interrupted"):
             # Clean up after returning
             dtm_pending.pop(job_id, None)
         return job

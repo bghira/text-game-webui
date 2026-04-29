@@ -2770,10 +2770,12 @@
 
       applyDeliveredMedia(payload) {
         const media = payload && typeof payload === "object" ? payload : {};
-        if (!media.image_url || media.ref_type === "avatar") return false;
+        if (media.ref_type === "avatar") return false;
         const jobId = String(media.job_id || "").trim();
         const prompt = String(media.prompt || "").trim();
         const roomKey = String(media.room_key || "").trim();
+        const status = String(media.status || "").trim().toLowerCase();
+        const error = String(media.error || "").trim();
         const target = [...this.turnStream].reverse().find((entry) => {
           if (!entry || entry.type !== "image_prompt") return false;
           if (jobId && String(entry._imgJobId || "").trim() === jobId) return true;
@@ -2785,6 +2787,14 @@
           return false;
         });
         if (!target) return false;
+        if (status === "failed" || status === "interrupted" || error) {
+          target._imgError = error || status || "Image generation failed.";
+          target._imgGenerating = false;
+          if (jobId) target._imgJobId = jobId;
+          this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+          return true;
+        }
+        if (!media.image_url) return false;
         target._imgUrl = String(media.image_url || "");
         target._imgError = "";
         target._imgGenerating = false;

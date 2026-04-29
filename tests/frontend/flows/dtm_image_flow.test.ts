@@ -104,6 +104,29 @@ describe("DTM image generation flow", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("media deliver can report a failed DTM job", async () => {
+    const response: DtmMediaDeliverResult = {
+      ok: true,
+      status: "failed",
+    };
+    const fetcher = jest.fn().mockResolvedValue(response);
+    const { result } = await dtmMediaDeliverFlow(fetcher, CAMPAIGN, {
+      status: "failed",
+      error: "Image generation worker disconnected before completing the job.",
+      prompt: "A dark forest at twilight",
+      ref_type: "scene",
+      job_id: "dtm-job-abc",
+    });
+
+    const body = JSON.parse(
+      (fetcher.mock.calls[0] as unknown as [string, { body: string }])[1].body,
+    );
+    expect(body.status).toBe("failed");
+    expect(body.job_id).toBe("dtm-job-abc");
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("failed");
+  });
+
   test("full round-trip: generate → poll pending → deliver callback → poll completed", async () => {
     // Step 1: Submit generation
     const genResponse: DtmImageGenerateResult = {

@@ -482,6 +482,7 @@ def test_stream_turn_returns_sse_events(client):
 
 def test_internal_media_delivery_uses_link_secret_not_browser_cookie(monkeypatch):
     monkeypatch.setenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "inmemory")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_IMAGE_BACKEND", "dtm")
     monkeypatch.setenv("TEXT_GAME_WEBUI_DTM_LINK_AUTH", "1")
     monkeypatch.setenv("TEXT_GAME_WEBUI_DTM_LINK_SECRET", "shared-secret")
     app = create_app()
@@ -506,6 +507,34 @@ def test_internal_media_delivery_uses_link_secret_not_browser_cookie(monkeypatch
     )
     assert delivered.status_code == 200
     assert delivered.json()["ok"] is True
+
+
+def test_internal_media_delivery_failure_marks_dtm_job_failed(monkeypatch):
+    monkeypatch.setenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "inmemory")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_IMAGE_BACKEND", "dtm")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_DTM_LINK_SECRET", "shared-secret")
+    app = create_app()
+    with TestClient(app) as client:
+        app.state.dtm_pending_jobs["lost-job-1"] = {"status": "pending"}
+
+        delivered = client.post(
+            "/api/internal/campaigns/campaign-1/media/deliver",
+            json={
+                "status": "failed",
+                "error": "Image generation worker disconnected before completing the job.",
+                "prompt": "Callback image",
+                "ref_type": "scene",
+                "job_id": "lost-job-1",
+            },
+            headers={"X-DTM-Link-Secret": "shared-secret"},
+        )
+        assert delivered.status_code == 200
+        assert delivered.json() == {"ok": True, "status": "failed"}
+
+        status = client.get("/api/image/status/lost-job-1")
+        assert status.status_code == 200
+        assert status.json()["status"] == "failed"
+        assert "worker disconnected" in status.json()["error"]
 
 
 def test_stream_turn_unknown_campaign_returns_error_event(client):
