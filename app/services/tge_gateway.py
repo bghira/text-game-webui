@@ -2668,6 +2668,31 @@ class TextGameEngineGateway(EngineGateway):
             return str(spec)
 
     @classmethod
+    def _format_model_spec(cls, spec: Any) -> str:
+        """Render a model spec back to the bracket syntax that produced it.
+
+        Inverse of the DTM `_parse_zork_backend_model_arg` parser, so the API
+        returns a string the user (or the FE) can display and round-trip.
+        """
+        if spec is None:
+            return ""
+        if isinstance(spec, str):
+            return spec
+        if isinstance(spec, dict):
+            return f"[{spec.get('research', '')}, {spec.get('narration', '')}]"
+        if isinstance(spec, (list, tuple)):
+            parts: list[str] = []
+            for item in spec:
+                if isinstance(item, dict):
+                    parts.append(
+                        f"[{item.get('research', '')}, {item.get('narration', '')}]"
+                    )
+                else:
+                    parts.append(str(item))
+            return "[" + ", ".join(parts) + "]"
+        return str(spec)
+
+    @classmethod
     def _build_single_provider_port(
         cls,
         *,
@@ -2919,7 +2944,8 @@ class TextGameEngineGateway(EngineGateway):
             api_key = override_api_key or str(self._settings.tge_llm_api_key or "").strip()
         return {
             "completion_mode": mode,
-            "model": model,
+            "model": self._format_model_spec(model),
+            "model_spec": model,
             "base_url": base_url,
             "api_key": api_key,
             "temperature": float(self._settings.tge_llm_temperature),

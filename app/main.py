@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hmac
 import re
 from pathlib import Path
 
@@ -15,7 +16,11 @@ from app.api.themes import router as themes_router, settings_router as theme_set
 from app.api.ws import router as ws_router
 from app.media.image_cache import ImageCache
 from app.realtime.hub import RealtimeHub
-from app.services.dtm_link_auth import dtm_link_enabled, get_linked_actor_from_request
+from app.services.dtm_link_auth import (
+    LINK_CONFIRM_HEADER,
+    dtm_link_enabled,
+    get_linked_actor_from_request,
+)
 from app.services.gateway_factory import build_gateway
 from app.services.theme_service import ThemeService
 from app.settings import Settings, load_persisted_settings
@@ -325,6 +330,17 @@ def create_app() -> FastAPI:
         }
         if not path.startswith("/api") or path in public_api_paths:
             return await call_next(request)
+
+        if path.startswith("/api/internal/"):
+            provided_secret = str(request.headers.get(LINK_CONFIRM_HEADER) or "").strip()
+            expected_secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
+            if (
+                provided_secret
+                and expected_secret
+                and hmac.compare_digest(provided_secret, expected_secret)
+            ):
+                return await call_next(request)
+            return JSONResponse(status_code=403, content={"detail": "Invalid link secret."})
 
         if linked is None:
             return JSONResponse(

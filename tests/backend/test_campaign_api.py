@@ -1,3 +1,8 @@
+from fastapi.testclient import TestClient
+
+from app.main import create_app
+
+
 def _create_campaign(client, name="Smoke Test", actor_id="dale-denton"):
     res = client.post(
         "/api/campaigns",
@@ -473,6 +478,34 @@ def test_stream_turn_returns_sse_events(client):
     assert "TURN 1" in complete_data["narration"]
     assert complete_data["actor_id"] == "dale-denton"
     assert complete_data["image_prompt"] is not None
+
+
+def test_internal_media_delivery_uses_link_secret_not_browser_cookie(monkeypatch):
+    monkeypatch.setenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "inmemory")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_DTM_LINK_AUTH", "1")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_DTM_LINK_SECRET", "shared-secret")
+    app = create_app()
+    client = TestClient(app)
+    payload = {
+        "image_base64": "iVBORw0KGgo=",
+        "prompt": "Callback image",
+        "ref_type": "scene",
+        "job_id": "job-1",
+    }
+
+    unauthenticated = client.post(
+        "/api/internal/campaigns/campaign-1/media/deliver",
+        json=payload,
+    )
+    assert unauthenticated.status_code == 403
+
+    delivered = client.post(
+        "/api/internal/campaigns/campaign-1/media/deliver",
+        json=payload,
+        headers={"X-DTM-Link-Secret": "shared-secret"},
+    )
+    assert delivered.status_code == 200
+    assert delivered.json()["ok"] is True
 
 
 def test_stream_turn_unknown_campaign_returns_error_event(client):
