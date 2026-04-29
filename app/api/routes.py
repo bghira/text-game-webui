@@ -1778,6 +1778,29 @@ async def generate_avatar(
             cfg=settings.image_guidance_scale,
         )
         return {"job_id": prompt_id, "status": "pending", "backend": "comfyui", "actor_id": payload.actor_id}
+    elif backend == "dtm":
+        dtm_port = getattr(request.app.state, "media_port", None)
+        if dtm_port is None:
+            raise HTTPException(status_code=400, detail="DTM media port not initialized.")
+        job_id = str(uuid4())
+        dtm_pending = getattr(request.app.state, "dtm_pending_jobs", None)
+        if dtm_pending is None:
+            request.app.state.dtm_pending_jobs = {}
+            dtm_pending = request.app.state.dtm_pending_jobs
+        dtm_pending[job_id] = {"status": "pending"}
+        ok = await dtm_port.enqueue_avatar_generation(
+            actor_id=payload.actor_id,
+            prompt=payload.prompt,
+            model="flux",
+            metadata={
+                "campaign_id": campaign_id,
+                "webui_job_id": job_id,
+            },
+        )
+        if not ok:
+            dtm_pending.pop(job_id, None)
+            raise HTTPException(status_code=502, detail="Failed to enqueue job on DTM.")
+        return {"job_id": job_id, "status": "pending", "backend": "dtm", "actor_id": payload.actor_id}
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported image backend: {backend}")
 
@@ -2707,13 +2730,16 @@ async def generate_image(
             request.app.state.dtm_pending_jobs = {}
             dtm_pending = request.app.state.dtm_pending_jobs
         dtm_pending[job_id] = {"status": "pending"}
-        campaign_id = payload.campaign_id if hasattr(payload, "campaign_id") else None
+        campaign_id = str(payload.campaign_id or "").strip() or None
+        actor_id = str(payload.actor_id or "").strip() or "webui"
+        room_key = str(payload.room_key or "").strip() or None
         ok = await dtm_port.enqueue_scene_generation(
-            actor_id="webui",
+            actor_id=actor_id,
             prompt=payload.prompt,
             model="flux",
             metadata={
                 "campaign_id": campaign_id,
+                "room_key": room_key,
                 "webui_job_id": job_id,
             },
         )

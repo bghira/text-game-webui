@@ -26,6 +26,11 @@ from .engine_gateway import EngineGateway, TurnCancelledError
 
 try:
     from text_game_engine.backends.factory import build_text_completion_port
+    from text_game_engine.completion_phase import (
+        PHASE_NARRATION as _PHASE_NARRATION,
+        PHASE_RESEARCH as _PHASE_RESEARCH,
+        current_phase as _current_completion_phase,
+    )
     from text_game_engine.core.engine import GameEngine
     from text_game_engine.core.types import GiveItemInstruction, LLMTurnOutput, TimerInstruction
     from text_game_engine.tool_aware_llm import (
@@ -251,6 +256,94 @@ class ProviderCompletionPort:
         if not response or not response.strip():
             return False, "No completion content returned."
         return True, f"{self._provider} backend responded."
+
+
+class RandomPoolCompletionPort:
+    """Picks one underlying port at random for each complete() call."""
+
+    def __init__(self, ports: list[CompletionPortProtocol], labels: list[str]) -> None:
+        if not ports:
+            raise ValueError("RandomPoolCompletionPort requires at least one port")
+        self._ports = list(ports)
+        self._labels = list(labels) or [str(i) for i in range(len(ports))]
+
+    def _pick(self) -> tuple[CompletionPortProtocol, str]:
+        import random
+        idx = random.randrange(len(self._ports))
+        return self._ports[idx], self._labels[idx]
+
+    async def complete(
+        self,
+        system_prompt: str,
+        prompt: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str | None:
+        port, label = self._pick()
+        logger.debug("RandomPoolCompletionPort: dispatch model=%s", label)
+        return await port.complete(
+            system_prompt,
+            prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
+        results: list[str] = []
+        all_ok = True
+        for port, label in zip(self._ports, self._labels):
+            ok, detail = await port.probe(timeout_seconds=timeout_seconds)
+            all_ok = all_ok and ok
+            results.append(f"{label}: {detail}")
+        return all_ok, " | ".join(results)
+
+
+class PhasedCompletionPort:
+    """Routes complete() to a research or narration port based on the engine phase contextvar."""
+
+    def __init__(
+        self,
+        *,
+        research_port: CompletionPortProtocol,
+        narration_port: CompletionPortProtocol,
+        research_label: str = "",
+        narration_label: str = "",
+    ) -> None:
+        self._research_port = research_port
+        self._narration_port = narration_port
+        self._research_label = research_label
+        self._narration_label = narration_label
+
+    def _select(self) -> tuple[CompletionPortProtocol, str]:
+        if _current_completion_phase() == _PHASE_RESEARCH:
+            return self._research_port, self._research_label
+        return self._narration_port, self._narration_label
+
+    async def complete(
+        self,
+        system_prompt: str,
+        prompt: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int = 2048,
+    ) -> str | None:
+        port, label = self._select()
+        logger.debug("PhasedCompletionPort: phase=%s model=%s", _current_completion_phase(), label)
+        return await port.complete(
+            system_prompt,
+            prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
+        ok_r, detail_r = await self._research_port.probe(timeout_seconds=timeout_seconds)
+        ok_n, detail_n = await self._narration_port.probe(timeout_seconds=timeout_seconds)
+        return (
+            ok_r and ok_n,
+            f"research[{self._research_label}]: {detail_r} | narration[{self._narration_label}]: {detail_n}",
+        )
 
 
 class RoutedCompletionPort:
@@ -2528,8 +2621,39 @@ class ZorkToolAwareLLM:
 class TextGameEngineGateway(EngineGateway):
     _CAMPAIGN_BACKEND_STATE_KEY = "zork_backend_config"
 
+    @staticmethod
+    def _normalize_model_spec(raw: Any) -> str | list[str] | dict[str, str] | None:
+        """Coerce a model spec into str | list[str] | {"research", "narration"} | None."""
+        if isinstance(raw, dict):
+            research = str(raw.get("research") or "").strip()
+            narration = str(raw.get("narration") or "").strip()
+            if research and narration:
+                return {"research": research, "narration": narration}
+            single = research or narration
+            return single or None
+        if isinstance(raw, (list, tuple)):
+            cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
+            if not cleaned:
+                return None
+            if len(cleaned) == 1:
+                return cleaned[0]
+            return cleaned
+        text = str(raw or "").strip()
+        return text or None
+
+    @staticmethod
+    def _model_signature_key(spec: Any) -> str:
+        if spec is None:
+            return ""
+        if isinstance(spec, str):
+            return spec
+        try:
+            return json.dumps(spec, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return str(spec)
+
     @classmethod
-    def _build_completion_port(
+    def _build_single_provider_port(
         cls,
         *,
         mode: str,
@@ -2538,8 +2662,8 @@ class TextGameEngineGateway(EngineGateway):
         model: str,
         timeout_seconds: int,
         keep_alive: str,
-        ollama_options: dict[str, Any] | None = None,
-        thinking_enabled: bool = False,
+        ollama_options: dict[str, Any] | None,
+        thinking_enabled: bool,
     ) -> CompletionPortProtocol | None:
         normalized = str(mode or "").strip().lower()
         if normalized == "deterministic":
@@ -2563,6 +2687,82 @@ class TextGameEngineGateway(EngineGateway):
                 thinking_enabled=thinking_enabled,
             )
         raise ValueError(f"Unsupported tge completion mode: {normalized}")
+
+    @classmethod
+    def _build_completion_port(
+        cls,
+        *,
+        mode: str,
+        base_url: str,
+        api_key: str,
+        model: Any,
+        timeout_seconds: int,
+        keep_alive: str,
+        ollama_options: dict[str, Any] | None = None,
+        thinking_enabled: bool = False,
+    ) -> CompletionPortProtocol | None:
+        spec = cls._normalize_model_spec(model)
+        if isinstance(spec, dict):
+            research_port = cls._build_single_provider_port(
+                mode=mode,
+                base_url=base_url,
+                api_key=api_key,
+                model=spec["research"],
+                timeout_seconds=timeout_seconds,
+                keep_alive=keep_alive,
+                ollama_options=ollama_options,
+                thinking_enabled=thinking_enabled,
+            )
+            narration_port = cls._build_single_provider_port(
+                mode=mode,
+                base_url=base_url,
+                api_key=api_key,
+                model=spec["narration"],
+                timeout_seconds=timeout_seconds,
+                keep_alive=keep_alive,
+                ollama_options=ollama_options,
+                thinking_enabled=thinking_enabled,
+            )
+            if research_port is None or narration_port is None:
+                return research_port or narration_port
+            return PhasedCompletionPort(
+                research_port=research_port,
+                narration_port=narration_port,
+                research_label=spec["research"],
+                narration_label=spec["narration"],
+            )
+        if isinstance(spec, list):
+            ports: list[CompletionPortProtocol] = []
+            labels: list[str] = []
+            for entry in spec:
+                port = cls._build_single_provider_port(
+                    mode=mode,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=entry,
+                    timeout_seconds=timeout_seconds,
+                    keep_alive=keep_alive,
+                    ollama_options=ollama_options,
+                    thinking_enabled=thinking_enabled,
+                )
+                if port is not None:
+                    ports.append(port)
+                    labels.append(entry)
+            if not ports:
+                return None
+            if len(ports) == 1:
+                return ports[0]
+            return RandomPoolCompletionPort(ports=ports, labels=labels)
+        return cls._build_single_provider_port(
+            mode=mode,
+            base_url=base_url,
+            api_key=api_key,
+            model=str(spec or ""),
+            timeout_seconds=timeout_seconds,
+            keep_alive=keep_alive,
+            ollama_options=ollama_options,
+            thinking_enabled=thinking_enabled,
+        )
 
     @staticmethod
     def _is_all_namespaces(namespace: str) -> bool:
@@ -2635,12 +2835,16 @@ class TextGameEngineGateway(EngineGateway):
         mode = str(
             (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
         ).strip().lower()
-        model = str(
-            (override or {}).get("model")
-            or self._default_model_for_mode(mode)
-            or self._settings.tge_llm_model
-            or ""
-        ).strip()
+        override_model = (override or {}).get("model")
+        if isinstance(override_model, (list, dict)):
+            model: Any = override_model
+        else:
+            model = str(
+                override_model
+                or self._default_model_for_mode(mode)
+                or self._settings.tge_llm_model
+                or ""
+            ).strip()
         try:
             ollama_options = self._parse_json_object(
                 self._settings.tge_ollama_options_json,
@@ -2686,12 +2890,17 @@ class TextGameEngineGateway(EngineGateway):
         mode = str(
             (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
         ).strip().lower()
-        model = str(
-            (override or {}).get("model")
-            or self._default_model_for_mode(mode)
-            or self._settings.tge_llm_model
-            or ""
-        ).strip()
+        override_model = (override or {}).get("model")
+        if isinstance(override_model, (list, dict)):
+            model: Any = override_model
+        else:
+            model = str(
+                override_model
+                or self._default_model_for_mode(mode)
+                or self._settings.tge_llm_model
+                or ""
+            ).strip()
+        model_signature = self._model_signature_key(model)
         # Resolve base_url/api_key from override first, then settings.
         override_base_url = str((override or {}).get("base_url") or "").strip()
         override_api_key = str((override or {}).get("api_key") or "").strip()
@@ -2722,6 +2931,7 @@ class TextGameEngineGateway(EngineGateway):
             thinking_enabled = str(_raw_thinking).strip().lower()
         return (
             mode,
+            model_signature,
             model,
             base_url,
             api_key,
@@ -2736,6 +2946,7 @@ class TextGameEngineGateway(EngineGateway):
     def _build_campaign_runtime(self, signature: tuple[Any, ...]) -> _CampaignRuntime:
         (
             mode,
+            _model_signature,
             model,
             base_url,
             api_key,
@@ -3026,7 +3237,7 @@ class TextGameEngineGateway(EngineGateway):
             )
         return deleted
 
-    def _campaign_backend_override(self, campaign_id: str) -> dict[str, str] | None:
+    def _campaign_backend_override(self, campaign_id: str) -> dict[str, Any] | None:
         with self._session_factory() as session:
             campaign = session.get(Campaign, campaign_id)
             if campaign is None:
@@ -3040,10 +3251,10 @@ class TextGameEngineGateway(EngineGateway):
         mode = str(raw.get("backend") or "").strip().lower()
         if not mode:
             return None
-        result = {"completion_mode": mode}
-        model = str(raw.get("model") or "").strip()
-        if model:
-            result["model"] = model
+        result: dict[str, Any] = {"completion_mode": mode}
+        model_spec = self._normalize_model_spec(raw.get("model"))
+        if model_spec:
+            result["model"] = model_spec
         base_url = str(raw.get("base_url") or "").strip()
         if base_url:
             result["base_url"] = base_url

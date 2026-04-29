@@ -273,6 +273,9 @@ class ImageSettingsUpdate(BaseModel):
 
 class ImageGenerateRequest(BaseModel):
     prompt: str
+    campaign_id: str | None = None
+    actor_id: str | None = None
+    room_key: str | None = None
     model_id: str | None = None
     width: int | None = None
     height: int | None = None

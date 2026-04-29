@@ -20,12 +20,14 @@ describe("DTM image generation flow", () => {
     const { calls, result } = await dtmImageGenerateFlow(
       fetcher,
       "A dark forest at twilight",
+      CAMPAIGN,
     );
     expect(calls).toEqual(["/api/image/generate"]);
     const body = JSON.parse(
       (fetcher.mock.calls[0] as unknown as [string, { body: string }])[1].body,
     );
     expect(body.prompt).toBe("A dark forest at twilight");
+    expect(body.campaign_id).toBe(CAMPAIGN);
     expect(result.backend).toBe("dtm");
     expect(result.status).toBe("pending");
     expect(result.job_id).toBe("dtm-job-abc");
@@ -110,7 +112,7 @@ describe("DTM image generation flow", () => {
       backend: "dtm",
     };
     const genFetcher = jest.fn().mockResolvedValue(genResponse);
-    const gen = await dtmImageGenerateFlow(genFetcher, "Castle at dawn");
+    const gen = await dtmImageGenerateFlow(genFetcher, "Castle at dawn", CAMPAIGN);
     expect(gen.result.job_id).toBe("roundtrip-001");
 
     // Step 2: Poll — still pending

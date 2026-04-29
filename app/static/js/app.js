@@ -2709,7 +2709,12 @@
         try {
           const result = await this.api("/api/image/generate", {
             method: "POST",
-            body: JSON.stringify({ prompt: entry.text }),
+            body: JSON.stringify({
+              prompt: entry.text,
+              campaign_id: this.selectedCampaignId || null,
+              actor_id: this.resolveMediaActorId() || "webui",
+              room_key: entry.meta && entry.meta.room_key ? entry.meta.room_key : null,
+            }),
           });
           const jobId = result.job_id;
           if (!jobId) {

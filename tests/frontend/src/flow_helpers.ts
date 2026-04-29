@@ -1656,13 +1656,17 @@ export function recoverCompletedTurnAfterReconnectState(state: {
 export async function dtmImageGenerateFlow(
   fetcher: FetchLike,
   prompt: string,
+  campaignId?: string,
 ): Promise<{ calls: string[]; result: DtmImageGenerateResult }> {
   const calls: string[] = [];
   const url = "/api/image/generate";
   calls.push(url);
   const result = (await fetcher(url, {
     method: "POST",
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({
+      prompt,
+      campaign_id: campaignId || null,
+    }),
   })) as DtmImageGenerateResult;
   return { calls, result };
 }
