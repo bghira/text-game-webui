@@ -2621,9 +2621,15 @@ class ZorkToolAwareLLM:
 class TextGameEngineGateway(EngineGateway):
     _CAMPAIGN_BACKEND_STATE_KEY = "zork_backend_config"
 
-    @staticmethod
-    def _normalize_model_spec(raw: Any) -> str | list[str] | dict[str, str] | None:
-        """Coerce a model spec into str | list[str] | {"research", "narration"} | None."""
+    @classmethod
+    def _normalize_model_spec(cls, raw: Any):
+        """Coerce a model spec to one of:
+
+        - ``None`` for empty;
+        - ``str`` for a single model;
+        - ``{"research": str, "narration": str}`` for a phased pair;
+        - ``list`` of (str | phased-pair dict) for a random pool of mixed items.
+        """
         if isinstance(raw, dict):
             research = str(raw.get("research") or "").strip()
             narration = str(raw.get("narration") or "").strip()
@@ -2632,7 +2638,16 @@ class TextGameEngineGateway(EngineGateway):
             single = research or narration
             return single or None
         if isinstance(raw, (list, tuple)):
-            cleaned = [str(item).strip() for item in raw if str(item or "").strip()]
+            cleaned: list = []
+            for item in raw:
+                if isinstance(item, dict):
+                    pair = cls._normalize_model_spec(item)
+                    if pair is not None:
+                        cleaned.append(pair)
+                else:
+                    text = str(item or "").strip()
+                    if text:
+                        cleaned.append(text)
             if not cleaned:
                 return None
             if len(cleaned) == 1:
@@ -2735,19 +2750,53 @@ class TextGameEngineGateway(EngineGateway):
             ports: list[CompletionPortProtocol] = []
             labels: list[str] = []
             for entry in spec:
-                port = cls._build_single_provider_port(
-                    mode=mode,
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=entry,
-                    timeout_seconds=timeout_seconds,
-                    keep_alive=keep_alive,
-                    ollama_options=ollama_options,
-                    thinking_enabled=thinking_enabled,
-                )
+                if isinstance(entry, dict):
+                    research_port = cls._build_single_provider_port(
+                        mode=mode,
+                        base_url=base_url,
+                        api_key=api_key,
+                        model=entry["research"],
+                        timeout_seconds=timeout_seconds,
+                        keep_alive=keep_alive,
+                        ollama_options=ollama_options,
+                        thinking_enabled=thinking_enabled,
+                    )
+                    narration_port = cls._build_single_provider_port(
+                        mode=mode,
+                        base_url=base_url,
+                        api_key=api_key,
+                        model=entry["narration"],
+                        timeout_seconds=timeout_seconds,
+                        keep_alive=keep_alive,
+                        ollama_options=ollama_options,
+                        thinking_enabled=thinking_enabled,
+                    )
+                    if research_port is None or narration_port is None:
+                        port = research_port or narration_port
+                        label = entry.get("research") or entry.get("narration") or ""
+                    else:
+                        port = PhasedCompletionPort(
+                            research_port=research_port,
+                            narration_port=narration_port,
+                            research_label=entry["research"],
+                            narration_label=entry["narration"],
+                        )
+                        label = f"{entry['research']}->{entry['narration']}"
+                else:
+                    port = cls._build_single_provider_port(
+                        mode=mode,
+                        base_url=base_url,
+                        api_key=api_key,
+                        model=entry,
+                        timeout_seconds=timeout_seconds,
+                        keep_alive=keep_alive,
+                        ollama_options=ollama_options,
+                        thinking_enabled=thinking_enabled,
+                    )
+                    label = str(entry)
                 if port is not None:
                     ports.append(port)
-                    labels.append(entry)
+                    labels.append(label)
             if not ports:
                 return None
             if len(ports) == 1:
