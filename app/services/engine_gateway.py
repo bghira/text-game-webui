@@ -561,6 +561,10 @@ class InMemoryEngineGateway:
                     "room_key": str(player.get("state", {}).get("location") or "unknown-room"),
                 }
             )
+            self._turns[campaign_id][-1]["image_prompt"] = image_prompt
+            self._turns[campaign_id][-1]["image_prompt_room_key"] = str(
+                player.get("state", {}).get("location") or "unknown-room"
+            )
         if action.startswith("take "):
             item = request.action.strip()[5:].strip()
             inventory = player["state"].get("inventory")

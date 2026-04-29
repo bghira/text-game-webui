@@ -566,6 +566,8 @@ export type HistoryTurn = {
   session_id?: string;
   created_at?: string;
   meta?: Record<string, unknown>;
+  image_prompt?: string | null;
+  image_prompt_room_key?: string | null;
 };
 
 export type Campaign = {
@@ -608,6 +610,23 @@ export function populateTurnStreamFromHistory(
         entry.meta.scene_output = meta.scene_output;
       }
       entries.push(entry);
+      const imagePrompt = String(turn.image_prompt || "").trim();
+      if (imagePrompt) {
+        counter++;
+        entries.push({
+          id: counter,
+          type: "image_prompt",
+          at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
+          text: imagePrompt,
+          meta: {
+            ...entry.meta,
+            image_prompt: imagePrompt,
+            room_key: turn.image_prompt_room_key || (meta.room_key as string | undefined) || null,
+            source_turn_id: turn.id || null,
+          },
+          _backendTurnId: turn.id || null,
+        });
+      }
     }
   }
   return { entries, turnCounter: counter, gameTime };

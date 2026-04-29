@@ -142,5 +142,26 @@ describe("speaker format flow", () => {
       const result = populateTurnStreamFromHistory(turns, "");
       expect(result.entries[0].meta.scene_output).toBeUndefined();
     });
+
+    it("restores image prompt entries from recent turns", () => {
+      const turns: HistoryTurn[] = [
+        {
+          id: 42,
+          kind: "narration",
+          content: "The room is dark.",
+          session_id: "sess-A",
+          created_at: "2026-03-10T14:00:00Z",
+          meta: { room_key: "dark-room" },
+          image_prompt: "Moody dark room concept art",
+          image_prompt_room_key: "dark-room",
+        },
+      ];
+      const result = populateTurnStreamFromHistory(turns, "");
+      expect(result.entries).toHaveLength(2);
+      expect(result.entries[1].type).toBe("image_prompt");
+      expect(result.entries[1].text).toBe("Moody dark room concept art");
+      expect(result.entries[1].meta.room_key).toBe("dark-room");
+      expect(result.entries[1].meta.source_turn_id).toBe(42);
+    });
   });
 });

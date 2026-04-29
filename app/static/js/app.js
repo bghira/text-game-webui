@@ -1437,6 +1437,25 @@
               entry.meta.scene_output = meta.scene_output;
             }
             entries.push(entry);
+            const imagePrompt = String(turn.image_prompt || "").trim();
+            if (turn.kind !== "player" && imagePrompt) {
+              counter++;
+              entries.push({
+                id: counter,
+                type: "image_prompt",
+                at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
+                text: imagePrompt,
+                meta: {
+                  ...entry.meta,
+                  image_prompt: imagePrompt,
+                  room_key: turn.image_prompt_room_key || meta.room_key || null,
+                  source_turn_id: turn.id || null,
+                },
+                _backendTurnId: turn.id || null,
+                _createdAt: turn.created_at || "",
+                _sessionId: turn.session_id || "",
+              });
+            }
           }
         }
         return { entries, counter, lastGameTime };

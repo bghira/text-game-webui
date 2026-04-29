@@ -52,6 +52,11 @@ def test_campaign_flow_and_inspector_surfaces(client):
     assert "TURN 1" in turn["narration"]
     assert turn["image_prompt"] is not None
 
+    recent_turns_res = client.get(f"/api/campaigns/{campaign_id}/recent-turns", params={"limit": 30})
+    assert recent_turns_res.status_code == 200
+    recent_turns = recent_turns_res.json()["turns"]
+    assert recent_turns[-1]["image_prompt"] == turn["image_prompt"]
+
     map_res = client.get(f"/api/campaigns/{campaign_id}/map", params={"actor_id": "dale-denton"})
     assert map_res.status_code == 200
     assert "TEST FACILITY" in map_res.json()["map"]

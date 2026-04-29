@@ -5895,6 +5895,7 @@ class TextGameEngineGateway(EngineGateway):
         campaign_id: str,
         turn: Turn,
         player_labels: dict[str, str],
+        image_prompts_by_turn_id: dict[int, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         meta = self._parse_json(turn.meta_json, {})
         if isinstance(meta, dict):
@@ -5917,6 +5918,9 @@ class TextGameEngineGateway(EngineGateway):
                     merged_actor_ids.append(actor_id_text)
             resolved_turn_visibility["visible_actor_ids"] = merged_actor_ids
             meta["turn_visibility"] = resolved_turn_visibility
+        image_prompt_entry = (image_prompts_by_turn_id or {}).get(int(turn.id or 0), {})
+        image_prompt = image_prompt_entry.get("prompt")
+        image_prompt_room_key = image_prompt_entry.get("room_key")
         return {
             "id": turn.id,
             "kind": turn.kind,
@@ -5925,6 +5929,8 @@ class TextGameEngineGateway(EngineGateway):
             "session_id": turn.session_id,
             "content": turn.content,
             "meta": meta,
+            "image_prompt": image_prompt,
+            "image_prompt_room_key": image_prompt_room_key,
             "created_at": turn.created_at.isoformat() if turn.created_at else None,
         }
 
@@ -6022,6 +6028,32 @@ class TextGameEngineGateway(EngineGateway):
                     player = row
             viewer_slug = ""
             viewer_location_key = ""
+            image_prompts_by_turn_id: dict[int, dict[str, Any]] = {}
+            scene_request_rows = (
+                session.query(OutboxEvent)
+                .filter(OutboxEvent.campaign_id == campaign_id)
+                .filter(OutboxEvent.event_type == "scene_image_requested")
+                .order_by(OutboxEvent.created_at.desc())
+                .limit(500)
+                .all()
+            )
+            for event in scene_request_rows:
+                payload = self._parse_json(event.payload_json, {})
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    turn_id = int(payload.get("turn_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if turn_id <= 0 or turn_id in image_prompts_by_turn_id:
+                    continue
+                raw_prompt = payload.get("scene_image_prompt")
+                if not isinstance(raw_prompt, str) or not raw_prompt.strip():
+                    continue
+                image_prompts_by_turn_id[turn_id] = {
+                    "prompt": raw_prompt.strip(),
+                    "room_key": str(payload.get("room_key") or "").strip() or None,
+                }
             if actor_id_text:
                 if player is None:
                     raise KeyError(f"Unknown player in campaign: {actor_id_text}")
@@ -6067,7 +6099,12 @@ class TextGameEngineGateway(EngineGateway):
                             for w in query_words
                         ):
                             continue
-                    row = self._turn_row_for_webui(campaign_id, turn, player_labels)
+                    row = self._turn_row_for_webui(
+                        campaign_id,
+                        turn,
+                        player_labels,
+                        image_prompts_by_turn_id,
+                    )
                     if not self._turn_row_matches_session(row, selected_session, actor_id_text):
                         continue
                     if query_text:
