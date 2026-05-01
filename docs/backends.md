@@ -31,6 +31,8 @@ Notes:
   `{"research":"model-a","narration":"model-b"}` or a random pool containing
   strings and phased pairs. This runtime setting replaces the old campaign
   `WORLD_STATE.zork_backend_config` transport.
+- Per-session DTM overrides use non-secret `zork_runtime_config` session
+  metadata. API keys and base URLs still come from process settings/env.
 - Runtime probe uses the same native Ollama completion path as gameplay setup/tool calls.
 
 ## OpenAI-Compatible

@@ -206,3 +206,85 @@ def test_tge_gateway_uses_structured_model_spec_env(monkeypatch, tmp_path):
         assert effective_for_campaign["model_spec"] == effective["model_spec"]
 
     asyncio.run(run_check())
+
+
+@pytest.mark.skipif(importlib.util.find_spec("text_game_engine") is None, reason="text_game_engine not installed")
+def test_tge_gateway_uses_session_runtime_model_spec(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime-tge-session-model-spec.db"
+    monkeypatch.setenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "tge")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_DATABASE_URL", f"sqlite+pysqlite:///{db_path}")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "ollama")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "local-model")
+
+    settings = Settings()
+    gateway, backend = build_gateway(settings)
+    assert backend == "tge"
+
+    async def run_check() -> None:
+        campaign = await gateway.create_campaign("default", "session-model-spec", "actor-1")
+        row = await gateway.create_or_update_session(
+            campaign.id,
+            surface="discord_thread",
+            surface_key="discord:guild-1:thread-99",
+            surface_guild_id="guild-1",
+            surface_channel_id="channel-9",
+            surface_thread_id="thread-99",
+            enabled=True,
+            metadata={
+                "zork_runtime_config": {
+                    "backend": "ollama",
+                    "model": [
+                        {"research": "research-a", "narration": "narration-a"},
+                        {"research": "research-b", "narration": "narration-b"},
+                    ],
+                    "thinking_enabled": False,
+                }
+            },
+        )
+        effective = await gateway.effective_llm_settings(campaign.id)
+        assert effective["model_spec"] == [
+            {"research": "research-a", "narration": "narration-a"},
+            {"research": "research-b", "narration": "narration-b"},
+        ]
+        signature = gateway._campaign_runtime_signature(campaign.id, session_id=row["id"])
+        assert signature[2] == effective["model_spec"]
+        assert signature[-1] == "false"
+
+    asyncio.run(run_check())
+
+
+@pytest.mark.skipif(importlib.util.find_spec("text_game_engine") is None, reason="text_game_engine not installed")
+def test_tge_gateway_reads_legacy_state_model_without_secrets(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime-tge-legacy-model-spec.db"
+    monkeypatch.setenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "tge")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_DATABASE_URL", f"sqlite+pysqlite:///{db_path}")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "ollama")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "local-model")
+
+    settings = Settings()
+    gateway, backend = build_gateway(settings)
+    assert backend == "tge"
+
+    async def run_check() -> None:
+        campaign = await gateway.create_campaign("default", "legacy-model-spec", "actor-1")
+        with gateway._session_factory() as session:
+            from text_game_engine.persistence.sqlalchemy.models import Campaign
+
+            row = session.get(Campaign, campaign.id)
+            row.state_json = json.dumps(
+                {
+                    "zork_backend_config": {
+                        "backend": "ollama",
+                        "model": {"research": "research-a", "narration": "narration-a"},
+                        "api_key": "sk-should-not-be-read",
+                        "base_url": "https://should-not-be-read.invalid",
+                    }
+                }
+            )
+            session.commit()
+        effective = await gateway.effective_llm_settings(campaign.id)
+        assert effective["model_spec"] == {"research": "research-a", "narration": "narration-a"}
+        assert effective["base_url"] != "https://should-not-be-read.invalid"
+        assert effective["api_key"] != "sk-should-not-be-read"
+
+    asyncio.run(run_check())

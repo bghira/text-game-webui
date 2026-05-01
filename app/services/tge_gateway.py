@@ -2619,6 +2619,8 @@ class ZorkToolAwareLLM:
 
 
 class TextGameEngineGateway(EngineGateway):
+    _SESSION_RUNTIME_CONFIG_KEY = "zork_runtime_config"
+
     @classmethod
     def _normalize_model_spec(cls, raw: Any):
         """Coerce a model spec to one of:
@@ -2982,8 +2984,8 @@ class TextGameEngineGateway(EngineGateway):
         val = merged.get(key)
         return val if val is not None else fallback
 
-    def _campaign_runtime_signature(self, campaign_id: str | None) -> tuple[Any, ...]:
-        override = self._campaign_backend_override(campaign_id) if campaign_id else None
+    def _campaign_runtime_signature(self, campaign_id: str | None, session_id: str | None = None) -> tuple[Any, ...]:
+        override = self._campaign_backend_override(campaign_id, session_id=session_id) if campaign_id else None
         mode = str(
             (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
         ).strip().lower()
@@ -3100,19 +3102,23 @@ class TextGameEngineGateway(EngineGateway):
             emulator=emulator,
         )
 
-    def _campaign_runtime(self, campaign_id: str) -> _CampaignRuntime:
-        signature = self._campaign_runtime_signature(campaign_id)
+    def _campaign_runtime(self, campaign_id: str, session_id: str | None = None) -> _CampaignRuntime:
+        signature = self._campaign_runtime_signature(campaign_id, session_id=session_id)
+        cache_key = f"{campaign_id}:{session_id or ''}"
         with self._campaign_runtime_lock:
-            runtime = self._campaign_runtimes.get(campaign_id)
+            runtime = self._campaign_runtimes.get(cache_key)
             if runtime is not None and runtime.signature == signature:
                 return runtime
             runtime = self._build_campaign_runtime(signature)
-            self._campaign_runtimes[campaign_id] = runtime
+            self._campaign_runtimes[cache_key] = runtime
             return runtime
 
     def _invalidate_campaign_runtime(self, campaign_id: str) -> None:
         with self._campaign_runtime_lock:
-            self._campaign_runtimes.pop(campaign_id, None)
+            prefix = f"{campaign_id}:"
+            for key in list(self._campaign_runtimes):
+                if key == campaign_id or key.startswith(prefix):
+                    self._campaign_runtimes.pop(key, None)
 
     def _browser_local_ollama_override(self, request: TurnRequest) -> dict[str, Any] | None:
         raw = request.browser_local_ollama
@@ -3325,11 +3331,59 @@ class TextGameEngineGateway(EngineGateway):
             )
         return deleted
 
-    def _campaign_backend_override(self, campaign_id: str) -> dict[str, Any] | None:
+    def _normalize_runtime_override(self, raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        mode = str(raw.get("backend") or raw.get("completion_mode") or "").strip().lower()
+        if not mode:
+            return None
+        result: dict[str, Any] = {"completion_mode": mode}
+        model_spec = self._normalize_model_spec(raw.get("model"))
+        if model_spec:
+            result["model"] = model_spec
+        thinking_enabled = raw.get("thinking_enabled")
+        if isinstance(thinking_enabled, bool):
+            result["thinking_enabled"] = str(thinking_enabled).lower()
+        return result
+
+    def _campaign_backend_override(
+        self,
+        campaign_id: str,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any] | None:
         # Legacy DTM builds wrote zork_backend_config into WORLD_STATE, including
-        # backend credentials. Current launches pass runtime settings through
-        # environment variables instead, so never honor campaign-state backend
-        # overrides here.
+        # backend credentials. Current sync stores non-secret runtime selection
+        # in session metadata and keeps base_url/api_key in process settings.
+        with self._session_factory() as session:
+            if session_id:
+                row = session.get(GameSession, str(session_id))
+                if row is None or row.campaign_id != campaign_id:
+                    return None
+                metadata = self._parse_json(row.metadata_json, {})
+                return self._normalize_runtime_override(metadata.get(self._SESSION_RUNTIME_CONFIG_KEY))
+
+            rows = (
+                session.query(GameSession)
+                .filter(GameSession.campaign_id == campaign_id)
+                .filter(GameSession.enabled == True)  # noqa: E712
+                .order_by(GameSession.updated_at.desc(), GameSession.id.desc())
+                .all()
+            )
+            for row in rows:
+                metadata = self._parse_json(row.metadata_json, {})
+                override = self._normalize_runtime_override(metadata.get(self._SESSION_RUNTIME_CONFIG_KEY))
+                if override:
+                    return override
+            campaign = session.get(Campaign, str(campaign_id))
+            if campaign is not None and not isinstance(self._settings_model_spec(), (list, dict)):
+                state = self._parse_json(campaign.state_json, {})
+                if isinstance(state, dict):
+                    legacy = state.get("zork_backend_config")
+                    # Migration fallback only: keep ignoring legacy base_url/api_key.
+                    override = self._normalize_runtime_override(legacy)
+                    if override:
+                        return override
         return None
 
     def _ensure_campaign_llm(self, campaign_id: str) -> None:
@@ -4128,12 +4182,12 @@ class TextGameEngineGateway(EngineGateway):
         )
 
     async def submit_turn(self, campaign_id: str, request: TurnRequest) -> TurnResult:
-        runtime = self._campaign_runtime(campaign_id)
         xp_before, session_id = self._pre_turn_setup(
             campaign_id,
             request,
-            emulator=runtime.emulator,
+            emulator=self._emulator,
         )
+        runtime = self._campaign_runtime(campaign_id, session_id=session_id)
         completion_override = self._browser_local_completion_port(campaign_id, request)
         active_task = asyncio.current_task()
         self._register_active_turn_task(
@@ -4191,12 +4245,12 @@ class TextGameEngineGateway(EngineGateway):
         """Async generator yielding SSE event dicts for streaming turn resolution."""
         yield {"event": "phase", "data": {"phase": "starting"}}
 
-        runtime = self._campaign_runtime(campaign_id)
         xp_before, session_id = self._pre_turn_setup(
             campaign_id,
             request,
-            emulator=runtime.emulator,
+            emulator=self._emulator,
         )
+        runtime = self._campaign_runtime(campaign_id, session_id=session_id)
         completion_override = self._browser_local_completion_port(campaign_id, request)
 
         yield {"event": "phase", "data": {"phase": "generating"}}
