@@ -2619,8 +2619,6 @@ class ZorkToolAwareLLM:
 
 
 class TextGameEngineGateway(EngineGateway):
-    _CAMPAIGN_BACKEND_STATE_KEY = "zork_backend_config"
-
     @classmethod
     def _normalize_model_spec(cls, raw: Any):
         """Coerce a model spec to one of:
@@ -2848,6 +2846,39 @@ class TextGameEngineGateway(EngineGateway):
         normalized = str(mode or "").strip().lower()
         return str(_DEFAULT_PROVIDER_MODELS.get(normalized) or "").strip()
 
+    def _settings_model_spec(self) -> Any:
+        raw_json = str(getattr(self._settings, "tge_llm_model_spec_json", "") or "").strip()
+        if raw_json:
+            try:
+                parsed = json.loads(raw_json)
+            except Exception:
+                logger.warning(
+                    "TEXT_GAME_WEBUI_TGE_LLM_MODEL_SPEC_JSON must contain valid JSON; falling back to scalar model.",
+                    exc_info=True,
+                )
+            else:
+                spec = self._normalize_model_spec(parsed)
+                if spec:
+                    return spec
+                logger.warning(
+                    "TEXT_GAME_WEBUI_TGE_LLM_MODEL_SPEC_JSON did not contain a usable model spec; falling back to scalar model."
+                )
+        return self._normalize_model_spec(self._settings.tge_llm_model)
+
+    def _resolve_runtime_model(self, mode: str, override_model: Any = None) -> Any:
+        if isinstance(override_model, (list, dict)):
+            return override_model
+        if override_model:
+            return str(override_model).strip()
+        settings_model = self._settings_model_spec()
+        if isinstance(settings_model, (list, dict)):
+            return settings_model
+        return str(
+            settings_model
+            or self._default_model_for_mode(mode)
+            or ""
+        ).strip()
+
     @staticmethod
     def _parse_json_object(text: str, env_name: str) -> dict[str, Any]:
         raw = str(text or "").strip() or "{}"
@@ -2909,16 +2940,7 @@ class TextGameEngineGateway(EngineGateway):
         mode = str(
             (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
         ).strip().lower()
-        override_model = (override or {}).get("model")
-        if isinstance(override_model, (list, dict)):
-            model: Any = override_model
-        else:
-            model = str(
-                override_model
-                or self._default_model_for_mode(mode)
-                or self._settings.tge_llm_model
-                or ""
-            ).strip()
+        model = self._resolve_runtime_model(mode, (override or {}).get("model"))
         try:
             ollama_options = self._parse_json_object(
                 self._settings.tge_ollama_options_json,
@@ -2965,16 +2987,7 @@ class TextGameEngineGateway(EngineGateway):
         mode = str(
             (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
         ).strip().lower()
-        override_model = (override or {}).get("model")
-        if isinstance(override_model, (list, dict)):
-            model: Any = override_model
-        else:
-            model = str(
-                override_model
-                or self._default_model_for_mode(mode)
-                or self._settings.tge_llm_model
-                or ""
-            ).strip()
+        model = self._resolve_runtime_model(mode, (override or {}).get("model"))
         model_signature = self._model_signature_key(model)
         # Resolve base_url/api_key from override first, then settings.
         override_base_url = str((override or {}).get("base_url") or "").strip()
@@ -3313,48 +3326,24 @@ class TextGameEngineGateway(EngineGateway):
         return deleted
 
     def _campaign_backend_override(self, campaign_id: str) -> dict[str, Any] | None:
-        with self._session_factory() as session:
-            campaign = session.get(Campaign, campaign_id)
-            if campaign is None:
-                raise KeyError(f"Unknown campaign: {campaign_id}")
-            state = self._parse_json(campaign.state_json, {})
-        if not isinstance(state, dict):
-            return None
-        raw = state.get(self._CAMPAIGN_BACKEND_STATE_KEY)
-        if not isinstance(raw, dict):
-            return None
-        mode = str(raw.get("backend") or "").strip().lower()
-        if not mode:
-            return None
-        result: dict[str, Any] = {"completion_mode": mode}
-        model_spec = self._normalize_model_spec(raw.get("model"))
-        if model_spec:
-            result["model"] = model_spec
-        base_url = str(raw.get("base_url") or "").strip()
-        if base_url:
-            result["base_url"] = base_url
-        api_key = str(raw.get("api_key") or "").strip()
-        if api_key:
-            result["api_key"] = api_key
-        thinking_enabled = raw.get("thinking_enabled")
-        if isinstance(thinking_enabled, bool):
-            result["thinking_enabled"] = str(thinking_enabled).lower()
-        return result
+        # Legacy DTM builds wrote zork_backend_config into WORLD_STATE, including
+        # backend credentials. Current launches pass runtime settings through
+        # environment variables instead, so never honor campaign-state backend
+        # overrides here.
+        return None
 
     def _ensure_campaign_llm(self, campaign_id: str) -> None:
         override = self._campaign_backend_override(campaign_id)
         if not override:
             return
         target_mode = str(override.get("completion_mode") or "").strip().lower()
-        target_model = str(
-            override.get("model")
-            or self._default_model_for_mode(target_mode)
-            or self._settings.tge_llm_model
-            or ""
-        ).strip()
+        target_model = self._resolve_runtime_model(target_mode, override.get("model"))
         current_mode = str(self._completion_mode or "").strip().lower()
-        current_model = str(self._settings.tge_llm_model or "").strip()
-        if target_mode == current_mode and target_model == current_model:
+        current_model = self._settings_model_spec()
+        if (
+            target_mode == current_mode
+            and self._model_signature_key(target_model) == self._model_signature_key(current_model)
+        ):
             return
         merged: dict[str, Any] = {
             "completion_mode": target_mode,
@@ -3385,7 +3374,11 @@ class TextGameEngineGateway(EngineGateway):
             mode = str(self._pick(merged, "completion_mode", self._completion_mode)).strip().lower()
             base_url = str(self._pick(merged, "base_url", self._settings.tge_llm_base_url)).strip()
             api_key = str(self._pick(merged, "api_key", self._settings.tge_llm_api_key)).strip()
-            model = str(self._pick(merged, "model", self._settings.tge_llm_model)).strip()
+            raw_model = self._pick(merged, "model", self._settings_model_spec())
+            model = self._normalize_model_spec(raw_model)
+            if model is None:
+                model = str(raw_model or "").strip()
+            model_display = self._format_model_spec(model)
             temperature = float(self._pick(merged, "temperature", self._settings.tge_llm_temperature))
             max_tokens = int(self._pick(merged, "max_tokens", self._settings.tge_llm_max_tokens))
             timeout_seconds = int(self._pick(merged, "timeout_seconds", self._settings.tge_llm_timeout_seconds))
@@ -3444,7 +3437,12 @@ class TextGameEngineGateway(EngineGateway):
             self._settings.tge_completion_mode = mode
             self._settings.tge_llm_base_url = base_url
             self._settings.tge_llm_api_key = api_key
-            self._settings.tge_llm_model = model
+            self._settings.tge_llm_model = "" if isinstance(model, (list, dict)) else model_display
+            self._settings.tge_llm_model_spec_json = (
+                json.dumps(model, ensure_ascii=True)
+                if isinstance(model, (list, dict))
+                else ""
+            )
             self._settings.tge_llm_temperature = temperature
             self._settings.tge_llm_max_tokens = max_tokens
             self._settings.tge_llm_timeout_seconds = timeout_seconds
@@ -3455,7 +3453,7 @@ class TextGameEngineGateway(EngineGateway):
             return {
                 "status": "ok",
                 "completion_mode": mode,
-                "model": model,
+                "model": model_display,
                 "base_url": base_url,
                 "note": "Settings applied and saved.",
             }

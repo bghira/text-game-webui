@@ -26,6 +26,11 @@ Notes:
 
 - `TEXT_GAME_WEBUI_TGE_LLM_BASE_URL` should point at the Ollama root URL, not `/v1`.
 - `TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON` must decode to a JSON object.
+- `TEXT_GAME_WEBUI_TGE_LLM_MODEL_SPEC_JSON` may contain a JSON model spec when
+  launched from DTM sync mode. It supports a phased pair such as
+  `{"research":"model-a","narration":"model-b"}` or a random pool containing
+  strings and phased pairs. This runtime setting replaces the old campaign
+  `WORLD_STATE.zork_backend_config` transport.
 - Runtime probe uses the same native Ollama completion path as gameplay setup/tool calls.
 
 ## OpenAI-Compatible

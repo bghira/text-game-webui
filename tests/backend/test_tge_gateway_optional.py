@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -161,3 +162,47 @@ def test_runtime_reports_ollama_mode(monkeypatch, tmp_path):
     assert checks_body["database"]["ok"] is True
     assert checks_body["llm"]["configured"] is True
     assert checks_body["llm"]["probe_attempted"] is False
+
+
+@pytest.mark.skipif(importlib.util.find_spec("text_game_engine") is None, reason="text_game_engine not installed")
+def test_tge_gateway_uses_structured_model_spec_env(monkeypatch, tmp_path):
+    db_path = tmp_path / "runtime-tge-model-spec.db"
+    monkeypatch.setenv("TEXT_GAME_WEBUI_GATEWAY_BACKEND", "tge")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_DATABASE_URL", f"sqlite+pysqlite:///{db_path}")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "zai")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "glm-5.1")
+    monkeypatch.setenv(
+        "TEXT_GAME_WEBUI_TGE_LLM_MODEL_SPEC_JSON",
+        '[{"research":"research-a","narration":"narration-a"},{"research":"research-b","narration":"narration-b"}]',
+    )
+
+    settings = Settings()
+    gateway, backend = build_gateway(settings)
+    assert backend == "tge"
+
+    async def run_check() -> None:
+        effective = await gateway.effective_llm_settings()
+        assert effective["model_spec"] == [
+            {"research": "research-a", "narration": "narration-a"},
+            {"research": "research-b", "narration": "narration-b"},
+        ]
+        assert effective["model"] == "[[research-a, narration-a], [research-b, narration-b]]"
+        campaign = await gateway.create_campaign("default", "model-spec", "actor-1")
+        with gateway._session_factory() as session:
+            from text_game_engine.persistence.sqlalchemy.models import Campaign
+
+            row = session.get(Campaign, campaign.id)
+            row.state_json = json.dumps(
+                {
+                    "zork_backend_config": {
+                        "backend": "zai",
+                        "model": "legacy-scalar",
+                        "api_key": "sk-should-not-be-read",
+                    }
+                }
+            )
+            session.commit()
+        effective_for_campaign = await gateway.effective_llm_settings(campaign.id)
+        assert effective_for_campaign["model_spec"] == effective["model_spec"]
+
+    asyncio.run(run_check())

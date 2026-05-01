@@ -44,6 +44,7 @@ _SYNC_LOCKED_TGE_KEYS = frozenset({
     "tge_llm_base_url",
     "tge_llm_api_key",
     "tge_llm_model",
+    "tge_llm_model_spec_json",
     "tge_llm_temperature",
     "tge_llm_max_tokens",
     "tge_llm_timeout_seconds",
@@ -131,6 +132,8 @@ def _default_tge_model() -> str:
     explicit = str(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "")).strip()
     if explicit:
         return explicit
+    if str(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL_SPEC_JSON", "")).strip():
+        return ""
     mode = str(os.getenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "ollama") or "").strip().lower()
     if mode == "zai":
         return "glm-5-turbo"
@@ -162,6 +165,9 @@ class Settings(BaseModel):
     )
     tge_llm_api_key: str = Field(default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_LLM_API_KEY", "sk-local"))
     tge_llm_model: str = Field(default_factory=_default_tge_model)
+    tge_llm_model_spec_json: str = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL_SPEC_JSON", "")
+    )
     tge_llm_timeout_seconds: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_TIMEOUT_SECONDS", "90"))
     )
