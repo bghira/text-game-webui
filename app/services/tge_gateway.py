@@ -3361,7 +3361,9 @@ class TextGameEngineGateway(EngineGateway):
                 if row is None or row.campaign_id != campaign_id:
                     return None
                 metadata = self._parse_json(row.metadata_json, {})
-                return self._normalize_runtime_override(metadata.get(self._SESSION_RUNTIME_CONFIG_KEY))
+                override = self._normalize_runtime_override(metadata.get(self._SESSION_RUNTIME_CONFIG_KEY))
+                if override:
+                    return override
 
             rows = (
                 session.query(GameSession)

@@ -249,6 +249,20 @@ def test_tge_gateway_uses_session_runtime_model_spec(monkeypatch, tmp_path):
         signature = gateway._campaign_runtime_signature(campaign.id, session_id=row["id"])
         assert signature[2] == effective["model_spec"]
         assert signature[-1] == "false"
+        private_row = await gateway.create_or_update_session(
+            campaign.id,
+            surface="web_private",
+            surface_key=f"webui:{campaign.id}:private:actor-1",
+            enabled=True,
+            metadata={
+                "scope": "private",
+                "owner_actor_id": "actor-1",
+                "allowed_actor_ids": ["actor-1"],
+            },
+        )
+        private_signature = gateway._campaign_runtime_signature(campaign.id, session_id=private_row["id"])
+        assert private_signature[2] == effective["model_spec"]
+        assert private_signature[-1] == "false"
 
     asyncio.run(run_check())
 
