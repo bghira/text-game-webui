@@ -134,9 +134,13 @@
     "shhh", "quiet", "silence",
   ]);
 
-  /** Strip <emotive> tags from text for display purposes. */
+  /** Strip TTS emotive markers from text for display purposes. */
   function _ttsStripEmotives(text) {
-    return text.replace(/<(\w+)>/g, function (m, tag) {
+    return String(text || "").replace(/\[emotive:[^\]\r\n]{1,80}\]/gi, "")
+      .replace(/\[\/\s*emotive\s*\]/gi, "")
+      .replace(/<(\w+)>/g, function (m, tag) {
+      return TTS_EMOTIVE_TAGS.has(tag.toLowerCase()) ? "" : m;
+    }).replace(/<\/\s*(\w+)\s*>/g, function (m, tag) {
       return TTS_EMOTIVE_TAGS.has(tag.toLowerCase()) ? "" : m;
     }).replace(/ {2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
   }

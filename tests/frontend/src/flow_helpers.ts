@@ -582,6 +582,28 @@ export type Session = {
   metadata?: Record<string, unknown>;
 };
 
+const TTS_EMOTIVE_TAGS = new Set([
+  "giggle", "laughter", "guffaw", "sigh", "cry", "gasp", "groan",
+  "inhale", "exhale", "whisper", "mumble", "uh", "um",
+  "singing", "humming", "cough", "sneeze", "sniff", "clear_throat",
+  "shhh", "quiet", "silence",
+]);
+
+export function stripTtsEmotivesForDisplay(text: string): string {
+  return String(text || "")
+    .replace(/\[emotive:[^\]\r\n]{1,80}\]/gi, "")
+    .replace(/\[\/\s*emotive\s*\]/gi, "")
+    .replace(/<(\w+)>/g, (match, tag: string) => (
+      TTS_EMOTIVE_TAGS.has(tag.toLowerCase()) ? "" : match
+    ))
+    .replace(/<\/\s*(\w+)\s*>/g, (match, tag: string) => (
+      TTS_EMOTIVE_TAGS.has(tag.toLowerCase()) ? "" : match
+    ))
+    .replace(/ {2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function populateTurnStreamFromHistory(
   recentTurns: HistoryTurn[],
   selectedSessionId: string,
@@ -598,7 +620,7 @@ export function populateTurnStreamFromHistory(
         id: counter,
         type: "narrator",
         at: turn.created_at ? new Date(turn.created_at).toLocaleTimeString() : "",
-        text: turn.content || "[No content]",
+        text: stripTtsEmotivesForDisplay(turn.content || "[No content]"),
         meta: {},
         _backendTurnId: turn.id || null,
       };

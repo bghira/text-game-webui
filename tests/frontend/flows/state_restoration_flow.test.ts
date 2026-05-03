@@ -102,6 +102,18 @@ describe("state restoration flow", () => {
       expect(result.entries[0].text).toBe("[No content]");
     });
 
+    it("strips TTS emotive markers from restored turn stream text", () => {
+      const turnsWithEmotives: HistoryTurn[] = [
+        {
+          kind: "narration",
+          content: "\"[emotive:quiet giggle]Fine,\" she says. <sigh>Still here.</sigh>[/emotive]",
+          session_id: "sess-A",
+        },
+      ];
+      const result = populateTurnStreamFromHistory(turnsWithEmotives, "");
+      expect(result.entries[0].text).toBe("\"Fine,\" she says. Still here.");
+    });
+
     it("includes turns without session_id regardless of filter", () => {
       const turnsNoSession: HistoryTurn[] = [
         { kind: "narration", content: "No session turn." },
