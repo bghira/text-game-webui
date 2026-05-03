@@ -2455,13 +2455,18 @@
           <p class="settings-group-title">Connection</p>
           <div class="stack compact">
             <label>
-              Model
+              Detected Model
               <select x-model="settingsForm.model" x-show="ollamaModels.length > 0 && settingsForm.completion_mode === 'ollama' && !settingsLocked" :disabled="settingsSaving">
                 <template x-for="m in ollamaModels" :key="m.name">
                   <option :value="m.name" x-text="m.name"></option>
                 </template>
               </select>
               <input x-model="settingsForm.model" placeholder="model name" x-show="ollamaModels.length === 0 || settingsForm.completion_mode !== 'ollama' || settingsLocked" :disabled="settingsSaving || settingsLocked" />
+            </label>
+
+            <label>
+              Custom Model
+              <input x-model="settingsForm.model" placeholder="[[research-model, narrative-model]]" :disabled="settingsSaving || settingsLocked" />
             </label>
 
             <label>
