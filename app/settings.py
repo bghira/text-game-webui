@@ -17,6 +17,7 @@ _PERSISTABLE_KEYS = frozenset({
     "tge_llm_temperature",
     "tge_llm_max_tokens",
     "tge_llm_timeout_seconds",
+    "tge_thinking_enabled",
     "tge_ollama_keep_alive",
     "tge_ollama_options_json",
     # Image generation settings
@@ -48,6 +49,7 @@ _SYNC_LOCKED_TGE_KEYS = frozenset({
     "tge_llm_temperature",
     "tge_llm_max_tokens",
     "tge_llm_timeout_seconds",
+    "tge_thinking_enabled",
     "tge_ollama_keep_alive",
     "tge_ollama_options_json",
 })
@@ -176,6 +178,9 @@ class Settings(BaseModel):
     )
     tge_llm_max_tokens: int = Field(
         default_factory=lambda: int(os.getenv("TEXT_GAME_WEBUI_TGE_LLM_MAX_TOKENS", "3200"))
+    )
+    tge_thinking_enabled: bool = Field(
+        default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_THINKING_ENABLED", "1") in {"1", "true", "True"}
     )
     tge_ollama_keep_alive: str = Field(
         default_factory=lambda: os.getenv("TEXT_GAME_WEBUI_TGE_OLLAMA_KEEP_ALIVE", "30m")

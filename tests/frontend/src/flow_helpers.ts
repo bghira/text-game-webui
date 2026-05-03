@@ -896,6 +896,7 @@ export type SettingsForm = {
   model: string;
   temperature: number;
   max_tokens: number;
+  thinking_enabled: boolean;
   timeout_seconds: number;
   keep_alive: string;
   ollama_options_json: string;
@@ -1395,6 +1396,7 @@ export async function loadLLMSettingsFlow(
       model: data.model || "",
       temperature: typeof data.temperature === "number" ? data.temperature : 0.7,
       max_tokens: typeof data.max_tokens === "number" ? data.max_tokens : 2048,
+      thinking_enabled: data.thinking_enabled !== false,
       timeout_seconds: typeof data.timeout_seconds === "number" ? data.timeout_seconds : 120,
       keep_alive: data.keep_alive || "5m",
       gateway_backend: data.gateway_backend || "inmemory",

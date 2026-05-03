@@ -74,6 +74,7 @@ def test_settings_persistence_round_trip(tmp_path):
         s1.tge_llm_model = "my-custom-model"
         s1.tge_llm_base_url = "http://10.0.0.5:11434"
         s1.tge_llm_temperature = 0.42
+        s1.tge_thinking_enabled = False
         persist_settings(s1)
 
         # Create fresh settings (would use env/defaults) and load persisted overrides
@@ -85,6 +86,7 @@ def test_settings_persistence_round_trip(tmp_path):
         assert s2.tge_llm_model == "my-custom-model"
         assert s2.tge_llm_base_url == "http://10.0.0.5:11434"
         assert s2.tge_llm_temperature == 0.42
+        assert s2.tge_thinking_enabled is False
     finally:
         os.environ.pop("TEXT_GAME_WEBUI_TGE_DATABASE_URL", None)
         os.environ.pop("TEXT_GAME_WEBUI_GATEWAY_BACKEND", None)

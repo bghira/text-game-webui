@@ -27,6 +27,7 @@ describe("LLM settings flow", () => {
       model: "llama3.2:latest",
       temperature: 0.9,
       max_tokens: 4096,
+      thinking_enabled: false,
       timeout_seconds: 180,
       keep_alive: "10m",
       gateway_backend: "tge",
@@ -40,6 +41,7 @@ describe("LLM settings flow", () => {
     expect(result.settings.completion_mode).toBe("ollama");
     expect(result.settings.model).toBe("llama3.2:latest");
     expect(result.settings.temperature).toBe(0.9);
+    expect(result.settings.thinking_enabled).toBe(false);
     expect(result.settings.gateway_backend).toBe("tge");
   });
 
@@ -53,6 +55,7 @@ describe("LLM settings flow", () => {
     expect(result.settings.model).toBe("");
     expect(result.settings.temperature).toBe(0.7);
     expect(result.settings.max_tokens).toBe(2048);
+    expect(result.settings.thinking_enabled).toBe(true);
     expect(result.settings.timeout_seconds).toBe(120);
     expect(result.settings.keep_alive).toBe("5m");
     expect(result.settings.gateway_backend).toBe("inmemory");

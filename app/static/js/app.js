@@ -883,6 +883,7 @@
         model: "",
         temperature: 0.8,
         max_tokens: 3200,
+        thinking_enabled: true,
         timeout_seconds: 90,
         keep_alive: "30m",
         ollama_options_json: "{}",
@@ -901,6 +902,7 @@
         model: "",
         keep_alive: "30m",
         timeout_seconds: 600,
+        thinking_enabled: true,
         ollama_options_json: "{}",
       },
       browserLocalOllamaStatus: { ok: null, message: "" },
@@ -2296,6 +2298,9 @@
             model,
             stream: false,
             keep_alive: String(data.keep_alive || this.browserLocalOllama.keep_alive || "30m"),
+            think: (typeof data.thinking_enabled === "boolean")
+              ? data.thinking_enabled
+              : this.browserLocalOllama.thinking_enabled === true,
             messages: [
               { role: "system", content: String(data.system_prompt || "") },
               { role: "user", content: String(data.prompt || "") },
@@ -2391,6 +2396,7 @@
           this.settingsLoadedModelSpec = data.model_spec === undefined ? null : data.model_spec;
           this.settingsForm.temperature = typeof data.temperature === "number" ? data.temperature : 0.8;
           this.settingsForm.max_tokens = typeof data.max_tokens === "number" ? data.max_tokens : 3200;
+          this.settingsForm.thinking_enabled = data.thinking_enabled !== false;
           this.settingsForm.timeout_seconds = typeof data.timeout_seconds === "number" ? data.timeout_seconds : 90;
           this.settingsForm.keep_alive = data.keep_alive || "30m";
           this.settingsForm.ollama_options_json = JSON.stringify(data.ollama_options || {}, null, 2);
@@ -2410,6 +2416,7 @@
           this.browserLocalOllama.model = String(parsed.model || "").trim();
           this.browserLocalOllama.keep_alive = String(parsed.keep_alive || "").trim() || "30m";
           this.browserLocalOllama.timeout_seconds = Number(parsed.timeout_seconds) > 0 ? Number(parsed.timeout_seconds) : 600;
+          this.browserLocalOllama.thinking_enabled = parsed.thinking_enabled !== false;
           this.browserLocalOllama.ollama_options_json = typeof parsed.ollama_options_json === "string"
             ? parsed.ollama_options_json
             : "{}";
@@ -2424,6 +2431,7 @@
           model: String(this.browserLocalOllama.model || "").trim(),
           keep_alive: String(this.browserLocalOllama.keep_alive || "").trim() || "30m",
           timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 600,
+          thinking_enabled: this.browserLocalOllama.thinking_enabled !== false,
           ollama_options_json: String(this.browserLocalOllama.ollama_options_json || "{}"),
         };
         localStorage.setItem("browserLocalOllamaSettings", JSON.stringify(payload));
@@ -2451,6 +2459,7 @@
           model,
           keep_alive: String(this.browserLocalOllama.keep_alive || "").trim() || "30m",
           timeout_seconds: Number(this.browserLocalOllama.timeout_seconds) > 0 ? Number(this.browserLocalOllama.timeout_seconds) : 600,
+          thinking_enabled: this.browserLocalOllama.thinking_enabled !== false,
           ollama_options: ollamaOptions && typeof ollamaOptions === "object" ? ollamaOptions : {},
         };
       },
@@ -2467,6 +2476,7 @@
               model: cfg.model,
               stream: false,
               keep_alive: cfg.keep_alive || "30m",
+              think: cfg.thinking_enabled === true,
               messages: [
                 { role: "user", content: "Reply with exactly: OK" },
               ],
@@ -2566,6 +2576,7 @@
           const payload = {
             completion_mode: this.settingsForm.completion_mode,
             model: this.settingsForm.model,
+            thinking_enabled: this.settingsForm.thinking_enabled !== false,
           };
           if (
             this.settingsDtmSync

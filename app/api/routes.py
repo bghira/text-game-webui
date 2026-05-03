@@ -2106,6 +2106,7 @@ async def get_settings(
         "model_spec": effective.get("model_spec"),
         "temperature": effective.get("temperature", settings.tge_llm_temperature),
         "max_tokens": effective.get("max_tokens", settings.tge_llm_max_tokens),
+        "thinking_enabled": effective.get("thinking_enabled", settings.tge_thinking_enabled),
         "timeout_seconds": effective.get("timeout_seconds", settings.tge_llm_timeout_seconds),
         "keep_alive": effective.get("keep_alive") or settings.tge_ollama_keep_alive,
         "ollama_options": effective.get("ollama_options") or {},

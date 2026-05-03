@@ -215,6 +215,7 @@ def test_tge_gateway_uses_session_runtime_model_spec(monkeypatch, tmp_path):
     monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_DATABASE_URL", f"sqlite+pysqlite:///{db_path}")
     monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_COMPLETION_MODE", "ollama")
     monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_LLM_MODEL", "local-model")
+    monkeypatch.setenv("TEXT_GAME_WEBUI_TGE_THINKING_ENABLED", "0")
 
     settings = Settings()
     gateway, backend = build_gateway(settings)
@@ -246,6 +247,7 @@ def test_tge_gateway_uses_session_runtime_model_spec(monkeypatch, tmp_path):
             {"research": "research-a", "narration": "narration-a"},
             {"research": "research-b", "narration": "narration-b"},
         ]
+        assert effective["thinking_enabled"] is False
         signature = gateway._campaign_runtime_signature(campaign.id, session_id=row["id"])
         assert signature[2] == effective["model_spec"]
         assert signature[-1] == "false"

@@ -402,6 +402,7 @@ class BrowserLLMRelayBroker:
         timeout_seconds: int,
         keep_alive: str,
         ollama_options: dict[str, Any] | None = None,
+        thinking_enabled: bool = False,
     ) -> str:
         hub = self._hub
         if hub is None:
@@ -437,6 +438,7 @@ class BrowserLLMRelayBroker:
                         "max_tokens": max_tokens,
                         "timeout_seconds": timeout_seconds,
                         "keep_alive": keep_alive,
+                        "thinking_enabled": bool(thinking_enabled),
                         "ollama_options": ollama_options if isinstance(ollama_options, dict) else {},
                     },
                 },
@@ -489,6 +491,7 @@ class BrowserOllamaCompletionPort:
         timeout_seconds: int,
         keep_alive: str,
         ollama_options: dict[str, Any] | None = None,
+        thinking_enabled: bool = False,
     ) -> None:
         self._broker = broker
         self._campaign_id = str(campaign_id or "").strip()
@@ -498,6 +501,7 @@ class BrowserOllamaCompletionPort:
         self._timeout_seconds = max(int(timeout_seconds or 600), 1)
         self._keep_alive = str(keep_alive or "").strip()
         self._ollama_options = ollama_options if isinstance(ollama_options, dict) else {}
+        self._thinking_enabled = bool(thinking_enabled)
 
     async def complete(
         self,
@@ -519,6 +523,7 @@ class BrowserOllamaCompletionPort:
             timeout_seconds=self._timeout_seconds,
             keep_alive=self._keep_alive,
             ollama_options=self._ollama_options,
+            thinking_enabled=self._thinking_enabled,
         )
 
     async def probe(self, timeout_seconds: int = 8) -> tuple[bool, str]:
@@ -2942,6 +2947,11 @@ class TextGameEngineGateway(EngineGateway):
         mode = str(
             (override or {}).get("completion_mode") or self._completion_mode or "deterministic"
         ).strip().lower()
+        raw_thinking = (override or {}).get("thinking_enabled")
+        if raw_thinking is None or raw_thinking == "":
+            thinking_enabled = bool(self._settings.tge_thinking_enabled)
+        else:
+            thinking_enabled = str(raw_thinking).strip().lower() in {"1", "true", "yes", "on"}
         model = self._resolve_runtime_model(mode, (override or {}).get("model"))
         try:
             ollama_options = self._parse_json_object(
@@ -2974,6 +2984,7 @@ class TextGameEngineGateway(EngineGateway):
             "api_key": api_key,
             "temperature": float(self._settings.tge_llm_temperature),
             "max_tokens": int(self._settings.tge_llm_max_tokens),
+            "thinking_enabled": thinking_enabled,
             "timeout_seconds": int(self._settings.tge_llm_timeout_seconds),
             "keep_alive": str(self._settings.tge_ollama_keep_alive or "").strip(),
             "ollama_options": ollama_options,
@@ -3013,10 +3024,9 @@ class TextGameEngineGateway(EngineGateway):
         timeout_seconds = int(self._settings.tge_llm_timeout_seconds)
         keep_alive = str(self._settings.tge_ollama_keep_alive or "").strip()
         ollama_options_json = str(self._settings.tge_ollama_options_json or "{}")
-        # Default to "true" for ollama when the campaign state doesn't specify.
         _raw_thinking = (override or {}).get("thinking_enabled")
         if _raw_thinking is None or _raw_thinking == "":
-            thinking_enabled = "true" if mode == "ollama" else ""
+            thinking_enabled = "true" if bool(self._settings.tge_thinking_enabled) else "false"
         else:
             thinking_enabled = str(_raw_thinking).strip().lower()
         return (
@@ -3135,12 +3145,14 @@ class TextGameEngineGateway(EngineGateway):
         ollama_options = raw.get("ollama_options")
         if not isinstance(ollama_options, dict):
             ollama_options = {}
+        thinking_enabled = raw.get("thinking_enabled")
         return {
             "base_url": base_url,
             "model": model,
             "keep_alive": keep_alive,
             "timeout_seconds": max(timeout_seconds, 1),
             "ollama_options": ollama_options,
+            "thinking_enabled": bool(thinking_enabled),
         }
 
     def _browser_local_completion_port(
@@ -3160,6 +3172,7 @@ class TextGameEngineGateway(EngineGateway):
             timeout_seconds=int(override.get("timeout_seconds") or 600),
             keep_alive=str(override.get("keep_alive") or ""),
             ollama_options=override.get("ollama_options"),
+            thinking_enabled=bool(override.get("thinking_enabled")),
         )
 
     def _resolve_rewind_target_turn_id(
@@ -3420,12 +3433,14 @@ class TextGameEngineGateway(EngineGateway):
                 or str(self._settings.tge_llm_api_key or "").strip()
             )
             merged["keep_alive"] = str(self._settings.tge_ollama_keep_alive or "").strip()
+            if "thinking_enabled" in override:
+                merged["thinking_enabled"] = override.get("thinking_enabled")
         elif target_mode in {"zai", "openai"}:
             merged["base_url"] = override_base_url or str(self._settings.tge_llm_base_url or "").strip()
             merged["api_key"] = override_api_key or str(self._settings.tge_llm_api_key or "").strip()
         self.reconfigure_llm(merged)
 
-    def reconfigure_llm(self, merged: dict[str, Any]) -> dict[str, str]:
+    def reconfigure_llm(self, merged: dict[str, Any]) -> dict[str, Any]:
         with self._reconfigure_lock:
             mode = str(self._pick(merged, "completion_mode", self._completion_mode)).strip().lower()
             base_url = str(self._pick(merged, "base_url", self._settings.tge_llm_base_url)).strip()
@@ -3438,6 +3453,12 @@ class TextGameEngineGateway(EngineGateway):
             temperature = float(self._pick(merged, "temperature", self._settings.tge_llm_temperature))
             max_tokens = int(self._pick(merged, "max_tokens", self._settings.tge_llm_max_tokens))
             timeout_seconds = int(self._pick(merged, "timeout_seconds", self._settings.tge_llm_timeout_seconds))
+            thinking_enabled_raw = self._pick(merged, "thinking_enabled", self._settings.tge_thinking_enabled)
+            thinking_enabled = (
+                thinking_enabled_raw
+                if isinstance(thinking_enabled_raw, bool)
+                else str(thinking_enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+            )
             keep_alive = str(self._pick(merged, "keep_alive", self._settings.tge_ollama_keep_alive)).strip()
             ollama_options = merged.get("ollama_options")
             if ollama_options is None:
@@ -3455,6 +3476,7 @@ class TextGameEngineGateway(EngineGateway):
                 timeout_seconds=timeout_seconds,
                 keep_alive=keep_alive,
                 ollama_options=ollama_options if isinstance(ollama_options, dict) else {},
+                thinking_enabled=thinking_enabled,
             )
 
             # -- swap or rebuild the LLM instance --
@@ -3502,6 +3524,7 @@ class TextGameEngineGateway(EngineGateway):
             self._settings.tge_llm_temperature = temperature
             self._settings.tge_llm_max_tokens = max_tokens
             self._settings.tge_llm_timeout_seconds = timeout_seconds
+            self._settings.tge_thinking_enabled = bool(thinking_enabled)
             self._settings.tge_ollama_keep_alive = keep_alive
             if isinstance(ollama_options, dict):
                 self._settings.tge_ollama_options_json = json.dumps(ollama_options)
@@ -3511,6 +3534,7 @@ class TextGameEngineGateway(EngineGateway):
                 "completion_mode": mode,
                 "model": model_display,
                 "base_url": base_url,
+                "thinking_enabled": bool(thinking_enabled),
                 "note": "Settings applied and saved.",
             }
 

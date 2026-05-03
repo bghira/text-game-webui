@@ -168,6 +168,7 @@ class LLMSettingsUpdate(BaseModel):
     model_spec: Any | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    thinking_enabled: bool | None = None
     timeout_seconds: int | None = None
     keep_alive: str | None = None
     ollama_options: dict[str, Any] | None = None
