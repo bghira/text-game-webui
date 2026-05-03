@@ -884,7 +884,11 @@
         ollama_options_json: "{}",
       },
       settingsLocked: false,
+      settingsDtmSync: false,
+      settingsDtmConfigWritable: false,
       settingsLockMessage: "",
+      settingsLoadedModel: "",
+      settingsLoadedModelSpec: null,
       settingsSaving: false,
       settingsStatus: { ok: null, message: "" },
       browserLocalOllama: {
@@ -2370,6 +2374,8 @@
             : "";
           const data = await this.api(`/api/settings${query}`);
           this.settingsLocked = data.locked === true;
+          this.settingsDtmSync = data.dtm_sync === true;
+          this.settingsDtmConfigWritable = data.dtm_config_writable === true;
           this.settingsLockMessage = data.lock_message || "";
           this.settingsForm.completion_mode =
             data.completion_mode ||
@@ -2377,6 +2383,8 @@
             "ollama";
           this.settingsForm.base_url = data.base_url || "";
           this.settingsForm.model = data.model || "";
+          this.settingsLoadedModel = this.settingsForm.model;
+          this.settingsLoadedModelSpec = data.model_spec === undefined ? null : data.model_spec;
           this.settingsForm.temperature = typeof data.temperature === "number" ? data.temperature : 0.8;
           this.settingsForm.max_tokens = typeof data.max_tokens === "number" ? data.max_tokens : 3200;
           this.settingsForm.timeout_seconds = typeof data.timeout_seconds === "number" ? data.timeout_seconds : 90;
@@ -2553,24 +2561,36 @@
         try {
           const payload = {
             completion_mode: this.settingsForm.completion_mode,
-            base_url: this.settingsForm.base_url,
             model: this.settingsForm.model,
-            temperature: this.settingsForm.temperature,
-            max_tokens: this.settingsForm.max_tokens,
-            timeout_seconds: this.settingsForm.timeout_seconds,
-            keep_alive: this.settingsForm.keep_alive,
           };
-          const optionsRaw = (this.settingsForm.ollama_options_json || "").trim();
-          if (optionsRaw && optionsRaw !== "{}") {
-            try {
-              payload.ollama_options = JSON.parse(optionsRaw);
-            } catch (_e) {
-              this.settingsStatus = { ok: false, message: "Invalid Ollama Options JSON." };
-              this.settingsSaving = false;
-              return;
+          if (
+            this.settingsDtmSync
+            && this.settingsLoadedModelSpec !== null
+            && String(this.settingsForm.model || "") === String(this.settingsLoadedModel || "")
+          ) {
+            payload.model_spec = this.settingsLoadedModelSpec;
+          }
+          if (!this.settingsDtmSync) {
+            payload.base_url = this.settingsForm.base_url;
+            payload.temperature = this.settingsForm.temperature;
+            payload.max_tokens = this.settingsForm.max_tokens;
+            payload.timeout_seconds = this.settingsForm.timeout_seconds;
+            payload.keep_alive = this.settingsForm.keep_alive;
+            const optionsRaw = (this.settingsForm.ollama_options_json || "").trim();
+            if (optionsRaw && optionsRaw !== "{}") {
+              try {
+                payload.ollama_options = JSON.parse(optionsRaw);
+              } catch (_e) {
+                this.settingsStatus = { ok: false, message: "Invalid Ollama Options JSON." };
+                this.settingsSaving = false;
+                return;
+              }
             }
           }
-          const result = await this.api("/api/settings", {
+          const query = this.selectedCampaignId
+            ? `?campaign_id=${encodeURIComponent(this.selectedCampaignId)}`
+            : "";
+          const result = await this.api(`/api/settings${query}`, {
             method: "POST",
             body: JSON.stringify(payload),
           });

@@ -165,6 +165,7 @@ class LLMSettingsUpdate(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str | None = None
+    model_spec: Any | None = None
     temperature: float | None = None
     max_tokens: int | None = None
     timeout_seconds: int | None = None

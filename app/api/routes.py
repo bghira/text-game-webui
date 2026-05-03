@@ -12,6 +12,7 @@ import subprocess
 import time
 from datetime import UTC, datetime
 from typing import NoReturn
+from urllib.error import HTTPError, URLError
 from urllib import request as urllib_request
 from uuid import uuid4
 
@@ -2045,6 +2046,46 @@ async def debug_snapshot(campaign_id: str, gateway: EngineGateway = Depends(get_
         _not_found(err)
 
 
+def _post_dtm_backend_config(settings: object, payload: dict[str, object]) -> dict:
+    base_url = str(getattr(settings, "dtm_image_api_url", "") or "").strip().rstrip("/")
+    secret = str(getattr(settings, "dtm_link_secret", "") or "").strip()
+    if not base_url or not secret:
+        raise RuntimeError("DTM link is not configured for backend updates.")
+    url = f"{base_url}/api/zork/backend/config"
+    encoded = json.dumps(payload).encode("utf-8")
+    req = urllib_request.Request(
+        url,
+        data=encoded,
+        headers={
+            "Content-Type": "application/json",
+            "X-DTM-Link-Secret": secret,
+        },
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace").strip()
+        try:
+            parsed = json.loads(detail) if detail else {}
+        except Exception:
+            parsed = {}
+        message = parsed.get("error") or parsed.get("detail") or detail or f"HTTP {exc.code}"
+        raise RuntimeError(f"DTM backend update failed: {message}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"DTM backend update failed: {exc.reason}") from exc
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception as exc:
+        raise RuntimeError("DTM backend update returned invalid JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("DTM backend update returned invalid JSON.")
+    if parsed.get("error"):
+        raise RuntimeError(str(parsed.get("error")))
+    return parsed
+
+
 @router.get("/settings")
 async def get_settings(
     request: Request,
@@ -2053,20 +2094,27 @@ async def get_settings(
 ) -> dict:
     settings = request.app.state.settings
     effective = await gateway.effective_llm_settings(campaign_id=str(campaign_id or "").strip() or None)
+    dtm_config_writable = bool(
+        settings.tge_sync_with_dtm
+        and str(settings.dtm_link_secret or "").strip()
+        and str(settings.dtm_image_api_url or "").strip()
+    )
     return {
         "completion_mode": effective.get("completion_mode") or settings.tge_completion_mode,
         "base_url": effective.get("base_url") or settings.tge_llm_base_url,
         "model": effective.get("model") or settings.tge_llm_model,
+        "model_spec": effective.get("model_spec"),
         "temperature": effective.get("temperature", settings.tge_llm_temperature),
         "max_tokens": effective.get("max_tokens", settings.tge_llm_max_tokens),
         "timeout_seconds": effective.get("timeout_seconds", settings.tge_llm_timeout_seconds),
         "keep_alive": effective.get("keep_alive") or settings.tge_ollama_keep_alive,
         "ollama_options": effective.get("ollama_options") or {},
         "gateway_backend": settings.gateway_backend,
-        "locked": bool(settings.tge_sync_with_dtm),
+        "dtm_sync": bool(settings.tge_sync_with_dtm),
+        "dtm_config_writable": dtm_config_writable,
+        "locked": bool(settings.tge_sync_with_dtm and not dtm_config_writable),
         "lock_message": (
-            "LLM settings are managed by DTM while sync_zork_backend is enabled. "
-            "Use Discord-side backend controls instead."
+            "DTM sync is enabled, but the WebUI-to-DTM link is not configured."
             if settings.tge_sync_with_dtm
             else ""
         ),
@@ -2077,6 +2125,7 @@ async def get_settings(
 async def update_settings(
     payload: LLMSettingsUpdate,
     request: Request,
+    campaign_id: str | None = None,
     gateway: EngineGateway = Depends(get_gateway),
 ) -> dict:
     if request.app.state.gateway_backend != "tge":
@@ -2085,11 +2134,6 @@ async def update_settings(
 
     if not isinstance(gateway, TextGameEngineGateway):
         raise HTTPException(status_code=400, detail="Gateway does not support reconfiguration.")
-    if request.app.state.settings.tge_sync_with_dtm:
-        raise HTTPException(
-            status_code=400,
-            detail="LLM settings are managed by DTM while sync_zork_backend is enabled.",
-        )
     raw = payload.model_dump()
     merged = {}
     for k, v in raw.items():
@@ -2101,6 +2145,32 @@ async def update_settings(
         merged[k] = v
     if not merged:
         raise HTTPException(status_code=400, detail="No settings provided.")
+    settings = request.app.state.settings
+    if settings.tge_sync_with_dtm:
+        campaign_text = str(campaign_id or "").strip()
+        if not campaign_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Select a campaign before applying DTM-synced LLM settings.",
+            )
+        dtm_payload: dict[str, object] = {
+            "campaign_id": campaign_text,
+        }
+        for key in ("completion_mode", "model", "model_spec"):
+            if key in merged:
+                dtm_payload[key] = merged[key]
+        if "thinking_enabled" in merged:
+            dtm_payload["thinking_enabled"] = merged["thinking_enabled"]
+        try:
+            result = await asyncio.to_thread(_post_dtm_backend_config, settings, dtm_payload)
+        except RuntimeError as err:
+            raise HTTPException(status_code=502, detail=str(err)) from err
+        invalidate = getattr(gateway, "_invalidate_campaign_runtime", None)
+        if callable(invalidate):
+            invalidate(campaign_text)
+        result.setdefault("status", "ok")
+        result.setdefault("note", "Settings sent to DTM sidecar.")
+        return result
     try:
         result = gateway.reconfigure_llm(merged)
     except ValueError as err:

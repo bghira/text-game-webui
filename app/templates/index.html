@@ -2393,7 +2393,12 @@
         <template x-if="settingsLocked">
           <p class="settings-note" style="margin-top:0">
             Managed by DTM sync.
-            <span x-text="settingsLockMessage || 'Use Discord-side backend controls instead.'"></span>
+            <span x-text="settingsLockMessage || 'The WebUI-to-DTM update link is not configured.'"></span>
+          </p>
+        </template>
+        <template x-if="settingsDtmSync && !settingsLocked">
+          <p class="settings-note" style="margin-top:0">
+            DTM sync is enabled. Applying changes sends the backend and model for this campaign to the DTM sidecar.
           </p>
         </template>
 
@@ -2461,7 +2466,7 @@
 
             <label>
               Base URL
-              <input x-model="settingsForm.base_url" placeholder="http://127.0.0.1:11434" @change="loadOllamaModels()" :disabled="settingsSaving || settingsLocked" />
+              <input x-model="settingsForm.base_url" placeholder="http://127.0.0.1:11434" @change="loadOllamaModels()" :disabled="settingsSaving || settingsLocked || settingsDtmSync" />
             </label>
 
             <label>
@@ -2485,17 +2490,17 @@
           <div class="stack compact">
             <label>
               Temperature: <strong x-text="Number(settingsForm.temperature).toFixed(2)"></strong>
-              <input type="range" min="0" max="2" step="0.05" x-model.number="settingsForm.temperature" :disabled="settingsSaving || settingsLocked" />
+              <input type="range" min="0" max="2" step="0.05" x-model.number="settingsForm.temperature" :disabled="settingsSaving || settingsLocked || settingsDtmSync" />
             </label>
 
             <label>
               Max Tokens
-              <input type="number" x-model.number="settingsForm.max_tokens" min="64" max="65536" :disabled="settingsSaving || settingsLocked" />
+              <input type="number" x-model.number="settingsForm.max_tokens" min="64" max="65536" :disabled="settingsSaving || settingsLocked || settingsDtmSync" />
             </label>
 
             <label>
               Timeout (seconds)
-              <input type="number" x-model.number="settingsForm.timeout_seconds" min="1" max="600" :disabled="settingsSaving || settingsLocked" />
+              <input type="number" x-model.number="settingsForm.timeout_seconds" min="1" max="600" :disabled="settingsSaving || settingsLocked || settingsDtmSync" />
             </label>
           </div>
         </div>
@@ -2505,14 +2510,14 @@
           <div class="stack compact">
             <label>
               Keep-Alive
-              <input x-model="settingsForm.keep_alive" placeholder="30m" :disabled="settingsSaving || settingsLocked" />
+              <input x-model="settingsForm.keep_alive" placeholder="30m" :disabled="settingsSaving || settingsLocked || settingsDtmSync" />
             </label>
 
             <details>
               <summary>Advanced Options</summary>
               <label>
                 Options JSON
-                <textarea x-model="settingsForm.ollama_options_json" rows="3" placeholder="{}" :disabled="settingsSaving || settingsLocked"></textarea>
+                <textarea x-model="settingsForm.ollama_options_json" rows="3" placeholder="{}" :disabled="settingsSaving || settingsLocked || settingsDtmSync"></textarea>
               </label>
             </details>
           </div>
@@ -2523,7 +2528,8 @@
           <button type="button" @click="applySettings()" :disabled="settingsSaving || settingsLocked" class="btn-primary">Apply Changes</button>
         </div>
 
-        <p class="settings-note" x-show="!settingsLocked">Settings persist across restarts after clicking Apply.</p>
+        <p class="settings-note" x-show="!settingsLocked && !settingsDtmSync">Settings persist across restarts after clicking Apply.</p>
+        <p class="settings-note" x-show="!settingsLocked && settingsDtmSync">Backend and model changes are stored as non-secret campaign session metadata.</p>
         <p class="settings-status" :class="settingsStatus.ok === false ? 'error' : 'status'" x-show="settingsStatus.message" x-text="settingsStatus.message"></p>
       </div>
 
