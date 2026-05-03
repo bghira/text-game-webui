@@ -53,7 +53,7 @@ Web UI shell for [bghira/text-game-engine](https://github.com/bghira/text-game-e
 - In-browser TTS toggle in the action bar.
 - Engines: Kokoro (local WebGPU, 21+ voices) and Chatterbox (with reference audio for voice cloning).
 - Per-NPC voice assignment via roster.
-- Configurable sentence splitting, pause timings, and emotive tag handling.
+- Configurable sentence splitting, pause timings, and emotive marker handling; turn-stream display strips legacy `<sigh>`-style tags and `[emotive:...]` markers while preserving them for supported TTS paths.
 
 ### Tools & mechanics
 - **SMS**: Inbox with threaded conversations. Read, write, reply, edit, delete, and schedule messages.
@@ -153,6 +153,7 @@ export TEXT_GAME_WEBUI_TGE_LLM_BASE_URL='http://127.0.0.1:11434'
 export TEXT_GAME_WEBUI_TGE_LLM_MODEL='qwen2.5:14b'
 export TEXT_GAME_WEBUI_TGE_OLLAMA_KEEP_ALIVE='30m'
 export TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON='{"num_ctx":32768}'
+export TEXT_GAME_WEBUI_TGE_THINKING_ENABLED=1  # set 0 to disable native Ollama thinking
 # optional runtime LLM probe in /api/runtime/checks
 export TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_LLM=1
 export TEXT_GAME_WEBUI_TGE_RUNTIME_PROBE_TIMEOUT_SECONDS=8

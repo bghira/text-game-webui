@@ -1376,6 +1376,7 @@ export type LLMSettingsState = {
   model: string;
   temperature: number;
   max_tokens: number;
+  thinking_enabled: boolean;
   timeout_seconds: number;
   keep_alive: string;
   gateway_backend: string;

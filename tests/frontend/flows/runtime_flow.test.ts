@@ -118,6 +118,7 @@ describe("runtime bootstrap flow", () => {
       model: "qwen3.5:27b",
       temperature: 0.8,
       max_tokens: 3200,
+      thinking_enabled: true,
       timeout_seconds: 90,
       keep_alive: "30m",
       ollama_options_json: "{}",

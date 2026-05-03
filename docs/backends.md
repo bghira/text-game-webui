@@ -20,12 +20,15 @@ export TEXT_GAME_WEBUI_TGE_LLM_BASE_URL='http://127.0.0.1:11434'
 export TEXT_GAME_WEBUI_TGE_LLM_MODEL='qwen2.5:14b'
 export TEXT_GAME_WEBUI_TGE_OLLAMA_KEEP_ALIVE='30m'
 export TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON='{"num_ctx":32768}'
+export TEXT_GAME_WEBUI_TGE_THINKING_ENABLED=1  # set 0 to disable native Ollama thinking
 ```
 
 Notes:
 
 - `TEXT_GAME_WEBUI_TGE_LLM_BASE_URL` should point at the Ollama root URL, not `/v1`.
 - `TEXT_GAME_WEBUI_TGE_OLLAMA_OPTIONS_JSON` must decode to a JSON object.
+- `TEXT_GAME_WEBUI_TGE_THINKING_ENABLED` controls Ollama's native `think`
+  request flag and can also be changed from the LLM settings drawer.
 - `TEXT_GAME_WEBUI_TGE_LLM_MODEL_SPEC_JSON` may contain a JSON model spec when
   launched from DTM sync mode. It supports a phased pair such as
   `{"research":"model-a","narration":"model-b"}` or a random pool containing
