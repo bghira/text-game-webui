@@ -2107,7 +2107,16 @@ pre {
 .inspector-panel {
   border-top: 1px solid var(--line);
   padding-top: 0.85rem;
+  padding-bottom: 0.75rem;
   margin-top: 0.65rem;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(42vh, 34rem);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-bottom: 0.75rem;
+  -webkit-overflow-scrolling: touch;
 }
 
 .tab-row {
@@ -2115,6 +2124,11 @@ pre {
   flex-wrap: wrap;
   gap: 0.35rem;
   margin-bottom: 0.75rem;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding-bottom: 0.35rem;
+  background: var(--panel);
 }
 
 .tab-row button {
@@ -2532,8 +2546,9 @@ details summary {
 .turn-history-list {
   display: grid;
   gap: 0.35rem;
-  max-height: 400px;
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
+  padding-bottom: 0.35rem;
 }
 
 .history-row {
@@ -3796,6 +3811,12 @@ details summary {
   .status,
   .error {
     flex-shrink: 0;
+  }
+
+  .inspector-panel {
+    max-height: min(48dvh, 28rem);
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+    scroll-padding-bottom: calc(1rem + env(safe-area-inset-bottom));
   }
 
   .action-bar-wrapper {

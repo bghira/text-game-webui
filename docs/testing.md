@@ -40,6 +40,7 @@ Optional test:
   - player-state refresh in post-turn flow
   - media-status refresh in post-turn flow
   - runtime diagnostics and diagnostics bundle payload shape
+  - debug inspector layout scroll constraints for long Campaign and History tab content
   - state restoration: `resolveRestoredSelection` validation, `populateTurnStreamFromHistory` filtering/hydration
   - campaign creation with documents: create → digest → setup/start flow, failed file tracking, empty-text skipping, document label stripping
 
