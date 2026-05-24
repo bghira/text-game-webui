@@ -2,6 +2,8 @@ import {
   dtmImageGenerateFlow,
   dtmImageStatusFlow,
   dtmMediaDeliverFlow,
+  canGenerateImagePrompt,
+  shouldAutoGenerateImagePrompt,
   DtmImageGenerateResult,
   DtmImageStatusResult,
   DtmMediaDeliverResult,
@@ -10,6 +12,38 @@ import {
 const CAMPAIGN = "camp-dtm-img-1";
 
 describe("DTM image generation flow", () => {
+  test("scene prompt generation remains available during turn submission", () => {
+    expect(canGenerateImagePrompt({ _imgGenerating: false })).toBe(true);
+    expect(canGenerateImagePrompt({ _imgGenerating: true })).toBe(false);
+  });
+
+  test("auto-generate only starts for fresh incoming image prompts", () => {
+    expect(
+      shouldAutoGenerateImagePrompt(
+        { type: "image_prompt", text: "Moonlit station platform" },
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      shouldAutoGenerateImagePrompt(
+        { type: "image_prompt", text: "Moonlit station platform", _imgJobId: "job-1" },
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoGenerateImagePrompt(
+        { type: "narrator", text: "Moonlit station platform" },
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      shouldAutoGenerateImagePrompt(
+        { type: "image_prompt", text: "Moonlit station platform" },
+        false,
+      ),
+    ).toBe(false);
+  });
+
   test("generate returns pending job with dtm backend", async () => {
     const response: DtmImageGenerateResult = {
       job_id: "dtm-job-abc",

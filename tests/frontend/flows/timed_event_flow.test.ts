@@ -205,7 +205,7 @@ describe("Timed event UX", () => {
     ).toBe("Queue");
   });
 
-  test("submit button shows Generating during image generation", () => {
+  test("image generation does not block queued turn affordance", () => {
     expect(
       submitButtonLabel({
         imageGenerating: 1,
@@ -213,7 +213,7 @@ describe("Timed event UX", () => {
         timedEventInProgress: true,
         queuedCount: 0,
       }),
-    ).toBe("Generating...");
+    ).toBe("Queue");
   });
 
   test("reconnect recovery clears stuck submission state and drains queued action", () => {

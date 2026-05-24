@@ -534,7 +534,7 @@
                 <span class="scene-prompt-text" x-text="entry.text"></span>
                 <button type="button" class="scene-prompt-gen-btn"
                   @click="generateImage(entry)"
-                  :disabled="entry._imgGenerating || submitting || imageGenerating > 0"
+                  :disabled="entry._imgGenerating"
                   x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <div class="turn-debug-card" x-show="$store.app.debugMode">
@@ -545,7 +545,7 @@
                 <pre x-text="entry.text"></pre>
                 <button type="button" class="scene-prompt-gen-btn" style="margin-top:0.35rem;"
                   @click="generateImage(entry)"
-                  :disabled="entry._imgGenerating || submitting || imageGenerating > 0"
+                  :disabled="entry._imgGenerating"
                   x-text="entry._imgGenerating ? 'Generating...' : (entry._imgUrl ? 'Re-generate' : 'Generate')"></button>
               </div>
               <template x-if="entry._imgUrl">
@@ -688,11 +688,15 @@
             <input type="checkbox" x-model="ttsEnabled" />
             <span class="tts-toggle-icon" :class="{ active: ttsEnabled }">&#x1F50A;</span>
           </label>
+          <label class="tts-toggle" title="Auto-generate scene images from incoming prompts">
+            <input type="checkbox" x-model="autoGenerateImagePrompts" />
+            <span class="tts-toggle-icon" :class="{ active: autoGenerateImagePrompts }">&#x1F3A8;</span>
+          </label>
           <button
             type="submit"
-            :disabled="!selectedCampaignId || imageGenerating > 0"
+            :disabled="!selectedCampaignId"
             class="action-submit"
-            :class="{ 'action-thinking': imageGenerating > 0, 'action-queuing': _timedEventInProgress }"
+            :class="{ 'action-queuing': _timedEventInProgress }"
             x-text="submitButtonLabel()"
           ></button>
         </form>
@@ -2561,6 +2565,10 @@
                 <option value="diffusers">Diffusers</option>
                 <option value="comfyui">ComfyUI</option>
               </select>
+            </label>
+            <label class="flag-toggle">
+              <input type="checkbox" x-model="autoGenerateImagePrompts" />
+              <span>Auto-generate incoming scene prompts</span>
             </label>
           </div>
         </div>

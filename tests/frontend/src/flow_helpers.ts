@@ -1677,11 +1677,32 @@ export function submitButtonLabel(state: {
   timedEventInProgress: boolean;
   queuedCount: number;
 }): string {
-  if (state.imageGenerating > 0) return "Generating...";
   if (state.submitting || state.timedEventInProgress) {
     return state.queuedCount > 0 ? `Queue (${state.queuedCount})` : "Queue";
   }
   return "Submit";
+}
+
+export function canGenerateImagePrompt(entry: {
+  _imgGenerating?: boolean;
+}): boolean {
+  return entry._imgGenerating !== true;
+}
+
+export function shouldAutoGenerateImagePrompt(entry: {
+  type: string;
+  text?: string;
+  meta?: { image_prompt?: string | null };
+  _imgUrl?: string;
+  _imgGenerating?: boolean;
+  _imgJobId?: string;
+}, autoGenerateImagePrompts: boolean): boolean {
+  if (!autoGenerateImagePrompts) return false;
+  if (!entry || entry.type !== "image_prompt") return false;
+  const prompt = String(entry.text || entry.meta?.image_prompt || "").trim();
+  if (!prompt) return false;
+  if (entry._imgUrl || entry._imgGenerating || entry._imgJobId) return false;
+  return true;
 }
 
 export function recoverCompletedTurnAfterReconnectState(state: {

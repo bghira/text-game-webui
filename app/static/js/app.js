@@ -869,6 +869,7 @@
       _streamingNarration: "",
       _phaseTyper: null,
       imageGenerating: 0,
+      autoGenerateImagePrompts: false,
       _realtimeRefreshTimer: null,
 
       /* Unseen activity tracking */
@@ -1251,9 +1252,11 @@
           if (lsVS !== null && !isNaN(parseInt(lsVS, 10))) this.ttsPauseVoiceSwitch = parseInt(lsVS, 10);
           const lsPB = localStorage.getItem("ttsPauseBeat");
           if (lsPB !== null && !isNaN(parseInt(lsPB, 10))) this.ttsPauseBeat = parseInt(lsPB, 10);
+          this.autoGenerateImagePrompts = localStorage.getItem("autoGenerateImagePrompts") === "true";
         } catch (_) {}
         this.ttsApplySettings();
         this.$watch("ttsEnabled", (v) => { try { localStorage.setItem("ttsEnabled", v ? "true" : "false"); } catch (_) {} });
+        this.$watch("autoGenerateImagePrompts", (v) => { try { localStorage.setItem("autoGenerateImagePrompts", v ? "true" : "false"); } catch (_) {} });
         this.loadPinnedTurns();
         this.loadComposerHistory();
         await this.loadRuntime();
@@ -2751,11 +2754,13 @@
       },
 
       async generateImage(entry) {
-        if (entry._imgGenerating) return;
-        if (this.submitting) {
-          this.statusMessage = "Wait for the current turn to finish before generating images.";
+        if (!entry || entry._imgGenerating) return;
+        const prompt = String(entry.text || entry.meta?.image_prompt || "").trim();
+        if (!prompt) {
+          entry._imgError = "No image prompt to generate.";
           return;
         }
+        const roomKey = entry.meta && entry.meta.room_key ? entry.meta.room_key : null;
         entry._imgGenerating = true;
         entry._imgError = "";
         entry._imgUrl = "";
@@ -2764,17 +2769,21 @@
           const result = await this.api("/api/image/generate", {
             method: "POST",
             body: JSON.stringify({
-              prompt: entry.text,
+              prompt,
               campaign_id: this.selectedCampaignId || null,
               actor_id: this.resolveMediaActorId() || "webui",
-              room_key: entry.meta && entry.meta.room_key ? entry.meta.room_key : null,
+              room_key: roomKey,
             }),
           });
           const jobId = result.job_id;
           if (!jobId) {
-            entry._imgError = result.detail || "No job ID returned.";
-            entry._imgGenerating = false;
-            this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+            if (this.markImagePromptGenerationFailed(entry, {
+              prompt,
+              room_key: roomKey,
+              error: result.detail || "No job ID returned.",
+            })) {
+              this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+            }
             return;
           }
           entry._imgJobId = jobId;
@@ -2783,24 +2792,88 @@
             await new Promise((r) => setTimeout(r, 2000));
             const status = await this.api(`/api/image/status/${encodeURIComponent(jobId)}`);
             if (status.status === "completed") {
-              entry._imgUrl = status.image_url || "";
-              entry._imgGenerating = false;
-              this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+              if (this.markImagePromptGenerationCompleted(entry, {
+                job_id: jobId,
+                prompt,
+                room_key: roomKey,
+                image_url: status.image_url || "",
+              })) {
+                this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+              }
               return;
             }
             if (status.status === "failed" || status.status === "interrupted") {
-              entry._imgError = status.error || status.status;
-              entry._imgGenerating = false;
-              this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+              if (this.markImagePromptGenerationFailed(entry, {
+                job_id: jobId,
+                prompt,
+                room_key: roomKey,
+                error: status.error || status.status,
+              })) {
+                this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+              }
               return;
             }
           }
-          entry._imgError = "Generation timed out.";
+          if (this.markImagePromptGenerationFailed(entry, {
+            job_id: jobId,
+            prompt,
+            room_key: roomKey,
+            error: "Generation timed out.",
+          })) {
+            this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+          }
+          return;
         } catch (err) {
-          entry._imgError = String(err);
+          if (this.markImagePromptGenerationFailed(entry, {
+            prompt,
+            room_key: roomKey,
+            error: String(err),
+          })) {
+            this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+          }
+          return;
         }
-        entry._imgGenerating = false;
-        this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+      },
+
+      findImagePromptEntry({ job_id = "", prompt = "", room_key = "" } = {}) {
+        const jobId = String(job_id || "").trim();
+        const promptText = String(prompt || "").trim();
+        const roomKey = String(room_key || "").trim();
+        return [...this.turnStream].reverse().find((entry) => {
+          if (!entry || entry.type !== "image_prompt") return false;
+          if (jobId && String(entry._imgJobId || "").trim() === jobId) return true;
+          const entryPrompt = String(entry.text || entry.meta?.image_prompt || "").trim();
+          const entryRoom = String(entry.meta?.room_key || "").trim();
+          if (promptText && entryPrompt && promptText === entryPrompt) {
+            return !roomKey || !entryRoom || roomKey === entryRoom;
+          }
+          return false;
+        }) || null;
+      },
+
+      markImagePromptGenerationCompleted(entry, media) {
+        const target = entry && entry._imgGenerating === true
+          ? entry
+          : this.findImagePromptEntry(media || {}) || entry;
+        if (!target) return false;
+        const wasGenerating = target._imgGenerating === true;
+        target._imgUrl = String(media && media.image_url || "");
+        target._imgError = "";
+        target._imgGenerating = false;
+        if (media && media.job_id) target._imgJobId = media.job_id;
+        return wasGenerating;
+      },
+
+      markImagePromptGenerationFailed(entry, media) {
+        const target = entry && entry._imgGenerating === true
+          ? entry
+          : this.findImagePromptEntry(media || {}) || entry;
+        if (!target) return false;
+        const wasGenerating = target._imgGenerating === true;
+        target._imgError = String(media && media.error || "Image generation failed.");
+        target._imgGenerating = false;
+        if (media && media.job_id) target._imgJobId = media.job_id;
+        return wasGenerating;
       },
 
       applyDeliveredMedia(payload) {
@@ -2811,30 +2884,28 @@
         const roomKey = String(media.room_key || "").trim();
         const status = String(media.status || "").trim().toLowerCase();
         const error = String(media.error || "").trim();
-        const target = [...this.turnStream].reverse().find((entry) => {
-          if (!entry || entry.type !== "image_prompt") return false;
-          if (jobId && String(entry._imgJobId || "").trim() === jobId) return true;
-          const entryPrompt = String(entry.text || entry.meta?.image_prompt || "").trim();
-          const entryRoom = String(entry.meta?.room_key || "").trim();
-          if (prompt && entryPrompt && prompt === entryPrompt) {
-            return !roomKey || !entryRoom || roomKey === entryRoom;
-          }
-          return false;
-        });
+        const target = this.findImagePromptEntry({ job_id: jobId, prompt, room_key: roomKey });
         if (!target) return false;
         if (status === "failed" || status === "interrupted" || error) {
-          target._imgError = error || status || "Image generation failed.";
-          target._imgGenerating = false;
-          if (jobId) target._imgJobId = jobId;
-          this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+          if (this.markImagePromptGenerationFailed(target, {
+            job_id: jobId,
+            prompt,
+            room_key: roomKey,
+            error: error || status || "Image generation failed.",
+          })) {
+            this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+          }
           return true;
         }
         if (!media.image_url) return false;
-        target._imgUrl = String(media.image_url || "");
-        target._imgError = "";
-        target._imgGenerating = false;
-        if (jobId) target._imgJobId = jobId;
-        this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+        if (this.markImagePromptGenerationCompleted(target, {
+          job_id: jobId,
+          prompt,
+          room_key: roomKey,
+          image_url: media.image_url,
+        })) {
+          this.imageGenerating = Math.max(0, this.imageGenerating - 1);
+        }
         return true;
       },
 
@@ -2887,14 +2958,29 @@
 
       pushStream(type, text, meta) {
         this.turnCounter += 1;
-        this.turnStream.push({
+        const entry = {
           id: this.turnCounter,
           type,
           at: nowLabel(),
           text,
           meta: meta && typeof meta === "object" ? meta : {},
-        });
+        };
+        this.turnStream.push(entry);
         this._scrollStream();
+        this.maybeAutoGenerateImagePrompt(entry);
+      },
+
+      maybeAutoGenerateImagePrompt(entry) {
+        if (!this.autoGenerateImagePrompts) return;
+        if (!entry || entry.type !== "image_prompt") return;
+        if (!String(entry.text || entry.meta?.image_prompt || "").trim()) return;
+        if (entry._imgUrl || entry._imgGenerating || entry._imgJobId) return;
+        setTimeout(() => {
+          this.generateImage(entry).catch((err) => {
+            entry._imgError = String(err);
+            entry._imgGenerating = false;
+          });
+        }, 0);
       },
 
       _cloneStateValue(value) {
@@ -3419,7 +3505,6 @@
       },
 
       submitButtonLabel() {
-        if (this.imageGenerating > 0) return "Generating...";
         if (this.submitting || this._timedEventInProgress) {
           const queued = this.currentQueuedTurnCount();
           return queued > 0 ? `Queue (${queued})` : "Queue";
@@ -5502,10 +5587,6 @@
         }
         if (!this.turnForm.actor_id || !this.turnForm.actor_id.trim()) {
           this.errorMessage = "Select an actor first.";
-          return;
-        }
-        if (this.imageGenerating) {
-          this.errorMessage = "Wait for image generation to finish before submitting a turn.";
           return;
         }
         const actionText = this.turnForm.action.trim();

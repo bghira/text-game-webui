@@ -180,6 +180,7 @@ export TEXT_GAME_WEBUI_DTM_LINK_SECRET='...'
 ```
 
 The web UI posts image jobs to DTM's bot-process `/api/zork/image/generate` bridge and receives completed images through `/api/internal/campaigns/{id}/media/deliver`.
+Scene prompt generation can run while a text turn is in progress. Use the palette toggle beside the turn composer, or the matching Image settings toggle, to auto-generate newly incoming scene image prompts.
 
 ### Diffusers (local GPU)
 
@@ -218,7 +219,7 @@ export TEXT_GAME_WEBUI_IMAGE_GUIDANCE_SCALE=3.5
 export TEXT_GAME_WEBUI_IMAGE_CACHE_MAX_ENTRIES=50
 ```
 
-When an image backend is active, the engine generates scene images during gameplay and avatar proposals during character creation. Avatars appear in the Player tab with accept/decline controls. Scene images appear in the Campaign tab. Character portraits can be set manually from the Roster tab.
+When an image backend is active, the engine generates scene image prompts during gameplay and avatar proposals during character creation. Scene image prompt cards can be generated manually or auto-generated for newly incoming prompts when the browser-local toggle is enabled. Avatars appear in the Player tab with accept/decline controls. Scene images appear in the Campaign tab. Character portraits can be set manually from the Roster tab.
 
 ## Test
 ```bash
