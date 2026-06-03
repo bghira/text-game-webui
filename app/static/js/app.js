@@ -1163,6 +1163,7 @@
       /* Chapter list for sidebar */
       chapterList: null,
       chaptersPanelOpen: true,
+      plotThreadsPanelOpen: true,
       rewindTargetTurn: "",
       rewindStatus: "",
       collapsedTurnIds: {},

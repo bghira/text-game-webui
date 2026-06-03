@@ -109,6 +109,44 @@
       </div>
     </template>
 
+    <!-- Plot Threads Panel -->
+    <template x-if="storyState && storyState.plot_threads && Object.keys(storyState.plot_threads).length > 0">
+      <div class="threads-panel">
+        <button
+          type="button"
+          class="chapters-heading"
+          @click="plotThreadsPanelOpen = !plotThreadsPanelOpen"
+          :aria-expanded="plotThreadsPanelOpen"
+          aria-controls="threads-list"
+        >
+          Plot Threads <small x-text="plotThreadsPanelOpen ? '▴' : '▾'"></small>
+        </button>
+        <div x-show="plotThreadsPanelOpen" class="threads-list" id="threads-list">
+          <template x-for="th in Object.values(storyState.plot_threads)" :key="th.thread">
+            <div class="thread-entry" :class="{ 'thread-resolved': th.status === 'resolved' }">
+              <div class="thread-header">
+                <span class="thread-status-icon"
+                  x-text="th.status === 'resolved' ? '✓' : '◆'"></span>
+                <span class="thread-title" x-text="(th.thread || '').replace(/[-_]/g, ' ')"></span>
+                <template x-if="th.status !== 'resolved' && th.target_turns">
+                  <span class="thread-turns" x-text="'~' + th.target_turns + 't'"></span>
+                </template>
+              </div>
+              <template x-if="th.setup">
+                <p class="thread-line" x-text="th.setup"></p>
+              </template>
+              <template x-if="th.status === 'resolved' ? th.resolution : th.intended_payoff">
+                <p class="thread-line thread-payoff">
+                  <span class="thread-arrow" x-text="th.status === 'resolved' ? '✔ ' : '→ '"></span>
+                  <span x-text="th.status === 'resolved' ? th.resolution : th.intended_payoff"></span>
+                </p>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+
     <template x-if="selectedCampaignId">
       <div class="calendar-panel">
         <button

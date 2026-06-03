@@ -656,6 +656,76 @@ button:disabled {
   color: var(--accent);
 }
 
+.threads-panel {
+  border-top: 1px solid var(--line);
+  margin-top: 0.25rem;
+  padding-top: 0.25rem;
+}
+
+.threads-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.5rem;
+}
+
+.thread-entry {
+  padding: 0.25rem 0.4rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  border-left: 2px solid var(--accent);
+}
+
+.thread-entry.thread-resolved {
+  opacity: 0.55;
+  border-left-color: var(--ink-secondary);
+}
+
+.thread-header {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.thread-status-icon {
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  width: 0.9rem;
+  text-align: center;
+  color: var(--accent);
+}
+
+.thread-resolved .thread-status-icon {
+  color: var(--ink-secondary);
+}
+
+.thread-title {
+  font-weight: 600;
+  text-transform: capitalize;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.thread-turns {
+  font-size: 0.65rem;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.thread-line {
+  margin: 0.15rem 0 0 1.2rem;
+  font-size: 0.73rem;
+  color: var(--ink-secondary);
+  line-height: 1.35;
+}
+
+.thread-payoff .thread-arrow {
+  color: var(--accent);
+}
+
 .calendar-panel {
   border-top: 1px solid var(--line);
   margin-top: 0.25rem;
